@@ -466,20 +466,21 @@
     },
     {
       "function": {
-        "description": "Read PDFs and images. A text PDF is read locally for free; a scan is rasterized locally and read by the vision model. Reading is page-bounded, so a long document without page_numbers is refused — pass the pages you actually need. Use for visual OCR, figures, and equations.",
+        "description": "Read PDFs and images. A text PDF is read locally for free; a scan is rasterized locally and read by the vision model. Reading is page-bounded, so a long document without page_numbers is refused — pass the pages you actually need. Use for visual OCR, figures, and equations. Before delivering a generated raster figure (PNG/JPG/TIFF), run qa_figure on it: it returns a strict JSON QA verdict (pass, severity, issues, recommendations) for blank/corrupt output, clipped labels, overlapping text, illegible fonts, missing axes/legend, and broken aspect ratio.",
         "name": "vision_reader",
         "parameters": {
           "properties": {
             "file_path": {
-              "description": "Absolute path to the image or PDF file.",
+              "description": "Path to the image or PDF file (absolute, or task-relative for qa_figure).",
               "type": "string"
             },
             "operation": {
-              "description": "Vision operation type.",
+              "description": "Vision operation type. qa_figure = visual QA of a rendered figure before delivery.",
               "enum": [
                 "read_pdf",
                 "read_image",
-                "ocr_page"
+                "ocr_page",
+                "qa_figure"
               ],
               "type": "string"
             },
@@ -1132,7 +1133,7 @@
     },
     {
       "function": {
-        "description": "File system operations: list directories, read/write files, profile/census directories, copy/move/delete. Use profile/census for compact directory-wide evidence before making all/every/completed claims. Use write when the user asks to save, export, create, or update a Markdown/text/JSON/CSV artifact instead of pasting content in chat. In task execution, prefer relative output paths so writes land in the current task output directory.",
+        "description": "File system operations: list directories, read/write files, edit part of an existing file, profile/census directories, copy/move/delete. Use edit (exact old_text -> new_text) to change a few lines of an existing text file instead of rewriting the whole file with write. Use profile/census for compact directory-wide evidence before making all/every/completed claims. Use write when the user asks to save, export, create, or update a Markdown/text/JSON/CSV artifact instead of pasting content in chat. In task execution, prefer relative output paths so writes land in the current task output directory.",
         "name": "file_operations",
         "parameters": {
           "properties": {
@@ -1144,12 +1145,21 @@
               "description": "Destination path (only for copy/move operations). Prefer task-relative destinations for final outputs.",
               "type": "string"
             },
+            "new_text": {
+              "description": "Replacement text (required for edit; an empty string deletes old_text).",
+              "type": "string"
+            },
+            "old_text": {
+              "description": "Exact text to replace (required for edit). Must match exactly once unless replace_all is true; include surrounding lines to make it unique.",
+              "type": "string"
+            },
             "operation": {
-              "description": "The file operation to perform. profile/census are read-only directory evidence operations.",
+              "description": "The file operation to perform. profile/census are read-only directory evidence operations. edit replaces an exact text span in an existing UTF-8 file.",
               "enum": [
                 "list",
                 "read",
                 "write",
+                "edit",
                 "copy",
                 "move",
                 "delete",
@@ -1167,6 +1177,11 @@
             "pattern": {
               "description": "Optional file matching pattern for list/profile/census operations.",
               "type": "string"
+            },
+            "replace_all": {
+              "default": false,
+              "description": "For edit: replace every occurrence of old_text instead of requiring a unique match.",
+              "type": "boolean"
             }
           },
           "required": [
@@ -1467,7 +1482,7 @@
     },
     {
       "function": {
-        "description": "File system operations: list directories, read/write files, profile/census directories, copy/move/delete. Use profile/census for compact directory-wide evidence before making all/every/completed claims. Use write when the user asks to save, export, create, or update a Markdown/text/JSON/CSV artifact instead of pasting content in chat. In task execution, prefer relative output paths so writes land in the current task output directory.",
+        "description": "File system operations: list directories, read/write files, edit part of an existing file, profile/census directories, copy/move/delete. Use edit (exact old_text -> new_text) to change a few lines of an existing text file instead of rewriting the whole file with write. Use profile/census for compact directory-wide evidence before making all/every/completed claims. Use write when the user asks to save, export, create, or update a Markdown/text/JSON/CSV artifact instead of pasting content in chat. In task execution, prefer relative output paths so writes land in the current task output directory.",
         "name": "file_operations",
         "parameters": {
           "properties": {
@@ -1479,12 +1494,21 @@
               "description": "Destination path (only for copy/move operations). Prefer task-relative destinations for final outputs.",
               "type": "string"
             },
+            "new_text": {
+              "description": "Replacement text (required for edit; an empty string deletes old_text).",
+              "type": "string"
+            },
+            "old_text": {
+              "description": "Exact text to replace (required for edit). Must match exactly once unless replace_all is true; include surrounding lines to make it unique.",
+              "type": "string"
+            },
             "operation": {
-              "description": "The file operation to perform. profile/census are read-only directory evidence operations.",
+              "description": "The file operation to perform. profile/census are read-only directory evidence operations. edit replaces an exact text span in an existing UTF-8 file.",
               "enum": [
                 "list",
                 "read",
                 "write",
+                "edit",
                 "copy",
                 "move",
                 "delete",
@@ -1502,6 +1526,11 @@
             "pattern": {
               "description": "Optional file matching pattern for list/profile/census operations.",
               "type": "string"
+            },
+            "replace_all": {
+              "default": false,
+              "description": "For edit: replace every occurrence of old_text instead of requiring a unique match.",
+              "type": "boolean"
             }
           },
           "required": [
@@ -2824,20 +2853,21 @@
     },
     {
       "function": {
-        "description": "Read PDFs and images. A text PDF is read locally for free; a scan is rasterized locally and read by the vision model. Reading is page-bounded, so a long document without page_numbers is refused — pass the pages you actually need. Use for visual OCR, figures, and equations.",
+        "description": "Read PDFs and images. A text PDF is read locally for free; a scan is rasterized locally and read by the vision model. Reading is page-bounded, so a long document without page_numbers is refused — pass the pages you actually need. Use for visual OCR, figures, and equations. Before delivering a generated raster figure (PNG/JPG/TIFF), run qa_figure on it: it returns a strict JSON QA verdict (pass, severity, issues, recommendations) for blank/corrupt output, clipped labels, overlapping text, illegible fonts, missing axes/legend, and broken aspect ratio.",
         "name": "vision_reader",
         "parameters": {
           "properties": {
             "file_path": {
-              "description": "Absolute path to the image or PDF file.",
+              "description": "Path to the image or PDF file (absolute, or task-relative for qa_figure).",
               "type": "string"
             },
             "operation": {
-              "description": "Vision operation type.",
+              "description": "Vision operation type. qa_figure = visual QA of a rendered figure before delivery.",
               "enum": [
                 "read_pdf",
                 "read_image",
-                "ocr_page"
+                "ocr_page",
+                "qa_figure"
               ],
               "type": "string"
             },

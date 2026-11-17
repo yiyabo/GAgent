@@ -300,6 +300,22 @@ def _native_tool_work_dir(tool_name: str, session_id: str) -> str:
         return ""
 
 
+def _run_qa_checked_figures(agent: Any) -> List[str]:
+    """Run-scoped list of figures checked by ``vision_reader`` ``qa_figure``.
+
+    Every native call gets a fresh ``ToolContext``; sharing one list object on
+    the agent lets a later ``deliverable_submit`` see an earlier QA pass.
+    """
+    checked = getattr(agent, "_qa_checked_figures", None)
+    if not isinstance(checked, list):
+        checked = []
+        try:
+            setattr(agent, "_qa_checked_figures", checked)
+        except Exception as exc:  # noqa: BLE001 - tracking is best-effort
+            logger.debug("qa_checked_figures not attachable to agent: %s", exc)
+    return checked
+
+
 async def _execute_native_tool_call(
     agent: "DeepThinkAgent",
     tc: Any,
@@ -337,6 +353,9 @@ async def _execute_native_tool_call(
             "chat_history": list((getattr(agent, "messages", None) or [])[-20:]),
             "paper_mode": bool(agent.request_profile.get("paper_mode", False)),
             "deep_think_enabled": True,
+            # Shared for the whole run: vision_reader qa_figure appends the figures
+            # it checked, deliverable_submit reads them for its soft QA warning.
+            "qa_checked_figures": _run_qa_checked_figures(agent),
         },
     )
 

@@ -127,6 +127,44 @@ def invalid_call(agent,call):
     return policy_for(agent, get_settings())['arguments'] and validate(call.arguments,schema_for(agent,call.name)) is not None
 
 
+def _anchor_produced_paths(agent,context):
+    """Deliverables written this run plus those carried by a continuation."""
+    from app.services.context.request_budget import MAX_ANCHOR_PRODUCED_PATHS
+    continuation=(context or {}).get('execution_continuation') if isinstance(context,dict) else None
+    carried=continuation.get('produced_paths') if isinstance(continuation,dict) else None
+    out=[]
+    for source in (getattr(agent,'_produced_deliverable_paths',None),carried):
+        for item in source if isinstance(source,(list,tuple)) else []:
+            text=str(item or '').strip()
+            if text and text not in out:out.append(text)
+    return out[:MAX_ANCHOR_PRODUCED_PATHS]
+
+
+def _anchor_assumptions(agent,context):
+    """Unconfirmed defaults of the bound plan, from the profile or plan metadata."""
+    from app.services.plan_clarifications import normalize_assumptions
+    profile=getattr(agent,'request_profile',None) or {}
+    candidates=[profile.get('plan_assumptions'),profile.get('assumptions')]
+    if isinstance(context,dict):
+        for key in ('plan_metadata','current_plan_metadata'):
+            meta=context.get(key)
+            if isinstance(meta,dict):candidates.append(meta.get('assumptions'))
+    for raw in candidates:
+        values=normalize_assumptions(raw)
+        if values:return values
+    return []
+
+
+def compaction_anchors(agent,user_query,context,messages,*,output_spec=False):
+    anchors={'request':user_query,'profile':agent.request_profile,'latest_user_turns':[m.get('content') for m in messages if m.get('role')=='user'][-2:]}
+    if output_spec:anchors['output_spec']=str(getattr(agent,'_output_spec',None))
+    produced=_anchor_produced_paths(agent,context)
+    if produced:anchors['produced_paths']=produced
+    assumptions=_anchor_assumptions(agent,context)
+    if assumptions:anchors['assumptions']=assumptions
+    return anchors
+
+
 def request_kwargs(agent,user_query,context,messages,iteration,tools_used):
     if not enabled():
         cap=getattr(agent,'_native_repair_cap',None)
@@ -136,10 +174,10 @@ def request_kwargs(agent,user_query,context,messages,iteration,tools_used):
     schemas=agent._schema_disclosure.effective(iteration=iteration+1,tools_used=tools_used,plan_bound=agent._current_plan_id() is not None)
     from app.services.memory.context_recall import format_recall_context
     return {'component_texts':{'skills':format_skill_context(context),'recall':format_recall_context(context)},'tool_schemas':schemas,'output_reserve_tokens':getattr(agent,'_native_repair_cap',None) or _default_max_tokens(),
-        'anchors':{'request':user_query,'output_spec':str(getattr(agent,'_output_spec',None)),'profile':agent.request_profile,'latest_user_turns':[m.get('content') for m in messages if m.get('role')=='user'][-2:]}}
+        'anchors':compaction_anchors(agent,user_query,context,messages,output_spec=True)}
 
 
-async def compact_strict(agent,messages,user_query):
+async def compact_strict(agent,messages,user_query,context=None):
     if not enabled():return messages
     from app.services.context.context_manager import ContextWindowManager
     from app.services.run_budget import run_work_stage
@@ -150,4 +188,4 @@ async def compact_strict(agent,messages,user_query):
         agent._strict_context_manager=manager
     async def summarize(text):
         return await run_work_stage(agent.llm_client.chat_async(prompt='Summarize execution facts and preserve source references:\n'+text,max_tokens=1200),stage='strict-compaction')
-    return await manager.compact_if_needed(messages,summarizer=summarize,output_reserve_tokens=_default_max_tokens(),anchors={'request':user_query,'profile':agent.request_profile,'latest_user_turns':[m.get('content') for m in messages if m.get('role')=='user'][-2:]})
+    return await manager.compact_if_needed(messages,summarizer=summarize,output_reserve_tokens=_default_max_tokens(),anchors=compaction_anchors(agent,user_query,context,messages))

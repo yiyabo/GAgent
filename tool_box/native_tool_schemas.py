@@ -242,14 +242,14 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
     },
     "file_operations": {
         # 参数键集与 impl 一致；native 描述显著更长（补充任务内相对路径等指引）—— 有意调优（指引文案），保留现状
-        "description": "File system operations: list directories, read/write files, profile/census directories, copy/move/delete. Use profile/census for compact directory-wide evidence before making all/every/completed claims. Use write when the user asks to save, export, create, or update a Markdown/text/JSON/CSV artifact instead of pasting content in chat. In task execution, prefer relative output paths so writes land in the current task output directory.",
+        "description": "File system operations: list directories, read/write files, edit part of an existing file, profile/census directories, copy/move/delete. Use edit (exact old_text -> new_text) to change a few lines of an existing text file instead of rewriting the whole file with write. Use profile/census for compact directory-wide evidence before making all/every/completed claims. Use write when the user asks to save, export, create, or update a Markdown/text/JSON/CSV artifact instead of pasting content in chat. In task execution, prefer relative output paths so writes land in the current task output directory.",
         "parameters": {
             "type": "object",
             "properties": {
                 "operation": {
                     "type": "string",
-                    "enum": ["list", "read", "write", "copy", "move", "delete", "exists", "info", "profile", "census"],
-                    "description": "The file operation to perform. profile/census are read-only directory evidence operations.",
+                    "enum": ["list", "read", "write", "edit", "copy", "move", "delete", "exists", "info", "profile", "census"],
+                    "description": "The file operation to perform. profile/census are read-only directory evidence operations. edit replaces an exact text span in an existing UTF-8 file.",
                 },
                 "path": {
                     "type": "string",
@@ -266,6 +266,19 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
                 "pattern": {
                     "type": "string",
                     "description": "Optional file matching pattern for list/profile/census operations.",
+                },
+                "old_text": {
+                    "type": "string",
+                    "description": "Exact text to replace (required for edit). Must match exactly once unless replace_all is true; include surrounding lines to make it unique.",
+                },
+                "new_text": {
+                    "type": "string",
+                    "description": "Replacement text (required for edit; an empty string deletes old_text).",
+                },
+                "replace_all": {
+                    "type": "boolean",
+                    "description": "For edit: replace every occurrence of old_text instead of requiring a unique match.",
+                    "default": False,
                 },
             },
             "required": ["operation", "path"],
@@ -378,19 +391,22 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
             "Read PDFs and images. A text PDF is read locally for free; a scan is rasterized "
             "locally and read by the vision model. Reading is page-bounded, so a long document "
             "without page_numbers is refused — pass the pages you actually need. Use for visual "
-            "OCR, figures, and equations."
+            "OCR, figures, and equations. Before delivering a generated raster figure "
+            "(PNG/JPG/TIFF), run qa_figure on it: it returns a strict JSON QA verdict "
+            "(pass, severity, issues, recommendations) for blank/corrupt output, clipped labels, "
+            "overlapping text, illegible fonts, missing axes/legend, and broken aspect ratio."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "operation": {
                     "type": "string",
-                    "enum": ["read_pdf", "read_image", "ocr_page"],
-                    "description": "Vision operation type.",
+                    "enum": ["read_pdf", "read_image", "ocr_page", "qa_figure"],
+                    "description": "Vision operation type. qa_figure = visual QA of a rendered figure before delivery.",
                 },
                 "file_path": {
                     "type": "string",
-                    "description": "Absolute path to the image or PDF file.",
+                    "description": "Path to the image or PDF file (absolute, or task-relative for qa_figure).",
                 },
                 "page_numbers": {
                     "type": "array",

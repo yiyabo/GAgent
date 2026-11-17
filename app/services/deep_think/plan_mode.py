@@ -39,6 +39,8 @@ _SCOPED_TOOLS = frozenset(
     }
 )
 
+# Allow-list: every mutating file operation (write, edit, copy, move, delete)
+# stays denied in read-only Plan mode.
 _READ_FILE_OPERATIONS = frozenset(
     {"read", "list", "exists", "info", "profile", "census"}
 )

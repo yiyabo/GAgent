@@ -294,6 +294,33 @@ def _normalize_file_operations_params(
                 details={"error": "missing_params", "tool": tool_name},
             )
         params = {"operation": operation, "path": path, "destination": dest}
+    elif operation == "edit":
+        path = params.get("path")
+        old_text = params.get("old_text")
+        new_text = params.get("new_text")
+        if (
+            not isinstance(path, str)
+            or not path.strip()
+            or not isinstance(old_text, str)
+            or not old_text
+            or not isinstance(new_text, str)
+        ):
+            return AgentStep(
+                action=action,
+                success=False,
+                message=(
+                    "file_operations edit requires `path`, a non-empty `old_text` "
+                    "string, and a `new_text` string."
+                ),
+                details={"error": "missing_params", "tool": tool_name},
+            )
+        params = {
+            "operation": operation,
+            "path": path,
+            "old_text": old_text,
+            "new_text": new_text,
+            "replace_all": params.get("replace_all", False),
+        }
     else:
         return AgentStep(
             action=action,

@@ -103,7 +103,7 @@ def _extract_guard_candidates(agent: "DeepThinkAgent", tool_results: List[Dict[s
         operation = str(payload.get("operation") or "").lower()
         if operation in {"copy", "move"}:
             _push(payload.get("destination"))
-        elif operation == "write":
+        elif operation in {"write", "edit"}:
             _push(payload.get("path"))
         submitted = payload.get("deliverable_submit")
         if isinstance(submitted, dict):
