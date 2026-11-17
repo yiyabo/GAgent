@@ -1192,7 +1192,10 @@ def _cell_result(
     if status == "timeout":
         message = (
             f"Cell timed out after {timeout}s; the session kernel was killed and its "
-            "state was lost. The next execute_code call starts a fresh kernel."
+            "state was lost. The next execute_code call starts a fresh kernel. If this "
+            "work is genuinely needed and just needs more time (e.g. a large download), "
+            "rerun it with a larger timeout_seconds (up to "
+            f"{config.max_cell_timeout_seconds()}s), resuming any partial output."
         )
         result.update(
             success=False,
@@ -1261,6 +1264,7 @@ def run_cell(
     reset: bool,
     tool_context: Optional[object],
     abort_check: Optional[Callable[[], bool]] = None,
+    timeout_seconds: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Run one cell in the (session_id, sorted(allowlist), cwd) kernel."""
     scratch_dir = config.resolve_scratch_dir(work_dir)
@@ -1274,7 +1278,7 @@ def run_cell(
         collect_root = child_cwd
     allowlist = tuple(sorted(set(config.allowed_tools())))
     key = (session_id, allowlist, str(child_cwd))
-    timeout = config.cell_timeout_seconds()
+    timeout = config.resolve_cell_timeout(timeout_seconds)
     exec_start = time.monotonic()
 
     kernel, state_reset = _acquire_kernel(key, reset)

@@ -91,6 +91,17 @@ class UnifiedToolExecutor:
         "scientific_figure_generator": 1200,
     }
 
+    @classmethod
+    def timeout_for(cls, tool_name: str, params: Optional[Dict[str, Any]], default: float) -> float:
+        """Outer cap for one call; execute_code follows the cell limit the agent requested."""
+        timeout = cls.TOOL_TIMEOUTS.get(str(tool_name or ""), default)
+        if str(tool_name or "") == "execute_code" and isinstance(params, dict) and params.get("timeout_seconds") is not None:
+            from tool_box.tools_impl.execute_code import config as code_config
+
+            cell = code_config.resolve_cell_timeout(params.get("timeout_seconds"))
+            timeout = max(float(timeout), float(cell + 120))
+        return timeout
+
     def __init__(self, *, default_timeout: int = DEFAULT_TIMEOUT_SECONDS) -> None:
         self._default_timeout = max(1, int(default_timeout))
         self._deliverable_publisher = get_deliverable_publisher()
@@ -137,7 +148,7 @@ class UnifiedToolExecutor:
             on_progress_loop=progress_loop,
         )
 
-        timeout = int(self.TOOL_TIMEOUTS.get(tool_name, self._default_timeout))
+        timeout = int(self.timeout_for(tool_name, safe_params, self._default_timeout))
         if tool_name == "phagescope":
             act = str(safe_params.get("action") or "").strip().lower()
             if act.startswith("batch_"):

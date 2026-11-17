@@ -55,7 +55,9 @@ BASE_DESCRIPTION = (
     "create are reported back in produced_files (session-relative), images "
     "under results/ are inlined into the final answer automatically, and "
     "deliverable_submit publishes them into Deliverables. "
-    "Limits: 5-minute cell timeout, max 50 tool calls per cell, stdout shown "
+    "Limits: 5-minute default cell timeout — when a long download or computation is "
+    "genuinely needed (e.g. a reference database), pass timeout_seconds (up to 2 hours) "
+    "and let it finish instead of splitting it or giving up; max 50 tool calls per cell, stdout shown "
     "up to 50KB (head/tail; the full text is auto-saved to a file whose path "
     "rides in the result). The kernel cannot see host env secrets by design. "
     "Available functions (from gagent_tools import ...):"
@@ -104,6 +106,7 @@ def build_description(allowed: Optional[List[str]] = None, *, progressive: Optio
 async def execute_code_handler(
     code: str = "",
     reset: bool = False,
+    timeout_seconds: Optional[int] = None,
     tool_context: Optional[ToolContext] = None,
 ) -> Dict[str, Any]:
     """Run one Python cell in the caller's session kernel.
@@ -158,6 +161,7 @@ async def execute_code_handler(
         reset=bool(reset),
         tool_context=tool_context,
         abort_check=abort_check,
+        timeout_seconds=timeout_seconds,
     ))
     try:
         result=await asyncio.shield(cell)
@@ -196,6 +200,16 @@ execute_code_tool = {
                     "start a fresh one before running this cell."
                 ),
                 "default": False,
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "description": (
+                    "Optional longer limit for THIS cell, in seconds (default 300, max 7200). "
+                    "Use it for a long download or computation you have confirmed is needed and "
+                    "can finish in that time; the cell then runs to completion in one go."
+                ),
+                "minimum": 1,
+                "maximum": 7200,
             },
         },
         "required": ["code"],
