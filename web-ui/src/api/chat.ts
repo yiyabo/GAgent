@@ -1,6 +1,6 @@
 import { BaseApi } from './client';
 import type { ResponsePreferences } from '@/types/responseStyle';
-import type { RunInspection, RunInspectionTarget } from '@/types/runInspection';
+import type { ChatRunInspectionTarget, RunInspection } from '@/types/runInspection';
 import type {
   ActionStatusResponse,
   ChatProjectsResponse,
@@ -186,8 +186,12 @@ export class ChatApi extends BaseApi {
     return this.client.get(`/chat/history/${sessionId}`, { params });
   };
 
-  getRunInspection = (sessionId: string, target: RunInspectionTarget): Promise<RunInspection> =>
+  getRunInspection = (sessionId: string, target: ChatRunInspectionTarget): Promise<RunInspection> =>
     this.get(`/chat/sessions/${encodeURIComponent(sessionId)}/run-inspection`, target);
+
+  /** Run Inspector projection of the run that executed a plan task (latest run, or `jobId` when given). */
+  getPlanTaskRunInspection = (planId: number, taskId: number, jobId?: string): Promise<RunInspection> =>
+    this.get(`/plans/${planId}/tasks/${taskId}/run-inspection`, jobId ? { job_id: jobId } : undefined);
 
   getActiveRun = async (sessionId: string) => {
     return this.client.get(
