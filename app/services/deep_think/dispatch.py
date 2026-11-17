@@ -333,6 +333,7 @@ async def _execute_native_tool_call(
         ),
         extra={
             "plan_tree_edit_allowed": agent.request_profile.get("plan_tree_edit_allowed"),
+            "current_task_id": agent.request_profile.get("current_task_id"),
             "chat_history": list((getattr(agent, "messages", None) or [])[-20:]),
             "paper_mode": bool(agent.request_profile.get("paper_mode", False)),
             "deep_think_enabled": True,

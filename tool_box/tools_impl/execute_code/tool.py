@@ -204,12 +204,12 @@ execute_code_tool = {
             "timeout_seconds": {
                 "type": "integer",
                 "description": (
-                    "Optional longer limit for THIS cell, in seconds (default 300, max 7200). "
+                    "Optional longer limit for THIS cell, in seconds (default 300, max 21600). "
                     "Use it for a long download or computation you have confirmed is needed and "
                     "can finish in that time; the cell then runs to completion in one go."
                 ),
                 "minimum": 1,
-                "maximum": 7200,
+                "maximum": 21600,
             },
         },
         "required": ["code"],

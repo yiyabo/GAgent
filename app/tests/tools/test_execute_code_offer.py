@@ -96,7 +96,7 @@ def test_on_execute_code_present_on_every_offer_surface(_code_mode_on):
     params = schema["function"]["parameters"]
     assert params["required"] == ["code"]
     assert set(params["properties"]) == {"code", "reset", "timeout_seconds"}
-    assert params["properties"]["timeout_seconds"]["maximum"] == 7200
+    assert params["properties"]["timeout_seconds"]["maximum"] == 21600
 
     native = _names(tool_schemas.build_tool_schemas(list(ALL_NATIVE_TOOLS)))
     assert "execute_code" in native

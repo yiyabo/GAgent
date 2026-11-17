@@ -246,6 +246,14 @@ def _collect_inline_image_relpaths(agent: "DeepThinkAgent", limit: int = 8) -> L
     return collected
 
 
+def _plan_lane_unbounded(agent: Any) -> bool:
+    profile = getattr(agent, "request_profile", None) or {}
+    if profile.get("execution_lane") != "plan":
+        return False
+    raw = (os.getenv("PLAN_TASK_WALL_CLOCK_LIMIT") or "0").strip().lower()
+    return raw in {"0", "false", "no", "off", ""}
+
+
 def _loop_guard_endgame_armed(agent: "DeepThinkAgent") -> bool:
     # The standalone wall-clock endgame only arms for execute-intent work,
     # where a deliverable is expected; plain chat turns exit via the normal
@@ -339,7 +347,10 @@ def _apply_loop_guards(
         elapsed = time.monotonic() - float(guard_state["started_at"])
         from app.services.run_budget import current_run_budget
         shared_budget = current_run_budget()
-        if shared_budget is None and elapsed >= _dta()._time_budget_break_seconds():
+        # Plan tasks run in background jobs: let them work as long as the work needs
+        # instead of injecting a wall-clock wrap-up (an explicit shared budget still applies).
+        clock_limited = shared_budget is None and not _plan_lane_unbounded(agent)
+        if clock_limited and elapsed >= _dta()._time_budget_break_seconds():
             agent._termination_reason = "wall_clock_limit"
             if missing:
                 guard_state["missing_expectations"] = missing
@@ -349,7 +360,7 @@ def _apply_loop_guards(
                 f"(budget {_dta()._time_budget_break_seconds()}s); wrapping up with "
                 f"{len(verified)} verified deliverable(s)."
             )
-        if shared_budget is None and elapsed >= _dta()._time_budget_nudge_seconds() and not guard_state["time_nudge_sent"]:
+        if clock_limited and elapsed >= _dta()._time_budget_nudge_seconds() and not guard_state["time_nudge_sent"]:
             guard_state["time_nudge_sent"] = True
             if verified:
                 files_list = "\n".join(f"- {p}" for p in verified[:6])

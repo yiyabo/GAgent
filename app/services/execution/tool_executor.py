@@ -53,6 +53,15 @@ class ToolExecutionContext:
     """The loop that owns ``on_progress``; see ``ToolContext.on_progress_loop``."""
 
 
+def _task_edit_mode(context: "ToolExecutionContext") -> Any:
+    """Plan task runs may revise their Plan in a bounded way; other contexts keep the caller's rule."""
+    if context.task_id is not None and context.mode == "task_execution":
+        from app.services.plans.edit_policy import execution_edit_mode
+
+        return execution_edit_mode()
+    return None
+
+
 class UnifiedToolExecutor:
     DEFAULT_TIMEOUT_SECONDS = 60
     TOOL_TIMEOUTS = {
@@ -143,7 +152,7 @@ class UnifiedToolExecutor:
             work_dir=context.work_dir or "",
             model_provider=getattr(context, 'model_provider', None),
             extra={**({"ancestor_chain": list(context.ancestor_chain)} if context.ancestor_chain is not None else {}),
-                   "plan_tree_edit_allowed": False if context.task_id is not None and context.mode == "task_execution" else None},
+                   "plan_tree_edit_allowed": _task_edit_mode(context)},
             on_progress=context.on_progress,
             on_progress_loop=progress_loop,
         )

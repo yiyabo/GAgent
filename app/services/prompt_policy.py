@@ -5,7 +5,7 @@ PLAN_SCOPE_POLICY = """=== USER REQUEST AND PLAN SCOPE ===
 - Create a persistent Plan/task tree only when the user explicitly asks for one. Ordinary multi-step work can use an internal todo-list without creating Plan nodes.
 - get, todo_list and review inspect the existing Plan. A status question or review does not authorize execution, repair, decomposition or optimization; report the findings and let the user decide what to do next.
 - Execute/retry existing Plan tasks only when requested. In chat, submit those tasks to the Plan background job and return its receipt immediately. Ordinary searches, code, file handling and analysis stay in chat; their duration does not turn them into Plan jobs. An inherently asynchronous remote tool may return its own job receipt without creating a Plan.
-- Execution, retry and acceptance repair preserve the original task tree, instructions and output requirements. Structural changes require an explicit user request; an internal checklist is not a persisted task tree.
+- Execution, retry and acceptance repair preserve the original goals and output requirements. Outside a running Plan task, structural changes require an explicit user request; an internal checklist is not a persisted task tree. A running Plan task may revise its unfinished Plan only after real attempts, and never lowers a standard.
 - After creating a Plan, report its actual structure and any incomplete decomposition. Do not automatically review, optimize or execute it unless those actions were also requested.
 """
 

@@ -122,6 +122,60 @@ def _should_run_artifact_preflight(plan_tree: Any) -> bool:
     return isinstance(getattr(plan_tree, "nodes", None), dict)
 
 
+def _running_task_ids(tool_context: Optional[Any]) -> set:
+    """The running task and its ancestors, which an execution revision must not delete."""
+    extra = getattr(tool_context, "extra", None) or {}
+    raw_task = getattr(tool_context, "task_id", None) or extra.get("current_task_id")
+    try:
+        task_id = int(raw_task) if raw_task is not None else None
+    except (TypeError, ValueError):
+        task_id = None
+    if task_id is None:
+        return set()
+    ids = {task_id}
+    plan_id = getattr(tool_context, "plan_id", None)
+    if plan_id is None:
+        return ids
+    try:
+        from app.repository.plan_repository import PlanRepository
+
+        nodes = PlanRepository().get_plan_tree(int(plan_id)).nodes
+    except Exception:  # pragma: no cover - fall back to protecting the task itself
+        return ids
+    current = nodes.get(task_id)
+    while current is not None and current.parent_id is not None and current.parent_id not in ids:
+        ids.add(int(current.parent_id))
+        current = nodes.get(current.parent_id)
+    return ids
+
+
+def _record_execution_revision(plan_id: Optional[int], tool_context: Optional[Any], reason: Any,
+                               result: Dict[str, Any]) -> None:
+    """Keep an auditable trail of Plan changes the executing agent made."""
+    if plan_id is None or not isinstance(result, dict) or not result.get("applied_changes"):
+        return
+    try:
+        from datetime import datetime, timezone
+
+        from app.repository.plan_repository import PlanRepository
+
+        repo = PlanRepository()
+        tree = repo.get_plan_tree(plan_id)
+        history = list(((getattr(tree, "metadata", None) or {}).get("execution_revisions")) or [])[-19:]
+        history.append({
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "task_id": (getattr(tool_context, "task_id", None)
+                        or (getattr(tool_context, "extra", None) or {}).get("current_task_id")),
+            "job_id": getattr(tool_context, "job_id", None),
+            "reason": str(reason or "")[:1500],
+            "applied_count": result.get("applied_changes"),
+            "changes": result.get("generated_changes"),
+        })
+        repo.update_plan_metadata(plan_id, {"execution_revisions": history})
+    except Exception as exc:  # pragma: no cover - the revision itself already succeeded
+        logger.warning("Could not record execution revision for plan %s: %s", plan_id, exc)
+
+
 async def plan_operation_handler(
     operation: str,
     title: Optional[str] = None,
@@ -154,6 +208,7 @@ async def plan_operation_handler(
         session_offer_settings,
     )
     from app.services.plans.edit_policy import (
+        EXECUTION_REVISION,
         PLAN_EDITS,
         blocked_plan_edit,
         tool_plan_edit_allowed,
@@ -192,8 +247,10 @@ async def plan_operation_handler(
 
         return unavailable_result()
 
+    edit_mode = tool_plan_edit_allowed(tool_context)
     if operation in PLAN_EDITS:
-        denied = blocked_plan_edit(operation, tool_plan_edit_allowed(tool_context))
+        denied = blocked_plan_edit(operation, edit_mode, changes=changes, reason=kwargs.get("reason"),
+                                   protected_task_ids=_running_task_ids(tool_context))
         if denied:
             return denied
 
@@ -228,7 +285,10 @@ async def plan_operation_handler(
         elif operation == "review":
             return await _review_plan(plan_id, tool_context=tool_context)
         elif operation == "optimize":
-            return await _optimize_plan(plan_id, changes, tool_context=tool_context)
+            result = await _optimize_plan(plan_id, changes, tool_context=tool_context)
+            if edit_mode == EXECUTION_REVISION:
+                _record_execution_revision(plan_id, tool_context, kwargs.get("reason"), result)
+            return result
         elif operation == "get":
             return await _get_plan(plan_id)
         elif operation == "todo_list":

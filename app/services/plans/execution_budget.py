@@ -86,10 +86,16 @@ def plan_task_scope(plan_id, task_id):
         raise
 
 
+def _execution_edit_mode():
+    from .edit_policy import execution_edit_mode
+
+    return execution_edit_mode()
+
+
 def request_profile(plan_id, task_id, context):
     profile = {"current_plan_id": plan_id, "current_task_id": task_id,
                "intent_type": "execute_task", "execution_lane": "plan",
-               "plan_tree_edit_allowed": False,
+               "plan_tree_edit_allowed": _execution_edit_mode(),
                "session_id": context.get("session_id"), "owner_id": context.get("owner_id")}
     if enabled():
         budget = current_run_budget()

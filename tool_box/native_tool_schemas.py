@@ -1033,7 +1033,7 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
             "Use recompute for explicitly requested updates of stale results after updating changed task instructions. "
             "Use create only for explicitly requested persistent Plans. After creation return its actual structure; do not automatically review, optimize or execute. Review is read-only and does not authorize edits or execution. "
             "Use bind to switch the current session to a different plan (e.g. '切换到 plan X', '绑定 plan X'). "
-            "Use get/todo_list for status, review for requested assessment, and optimize only for explicit edits. Execution/retry preserves the original task tree and output requirements. "
+            "Use get/todo_list for status, review for requested assessment, and optimize only for explicit edits. Execution/retry preserves the original goals and output requirements; a running Plan task may revise its unfinished tasks with optimize (explicit changes plus a reason listing what was tried) only after real attempts, never lowering a standard. "
             "For missing-input/file questions use get and file_operations; review scores Plan structure, not artifact contents. In task input reconciliation, resolve_input confirms an inspected candidate without editing the tree. "
             "Research with web_search first only when latest external evidence materially affects the plan. "
             "For optimize, use concrete change objects such as add_task, update_task, update_description, "
@@ -1149,12 +1149,12 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
                 "timeout_seconds": {
                     "type": "integer",
                     "description": (
-                        "Optional longer limit for THIS cell, in seconds (default 300, max 7200). "
+                        "Optional longer limit for THIS cell, in seconds (default 300, max 21600). "
                         "Use it for a long download or computation you have confirmed is needed and "
                         "can finish in that time; the cell then runs to completion in one go."
                     ),
                     "minimum": 1,
-                    "maximum": 7200,
+                    "maximum": 21600,
                 },
             },
             "required": ["code"],

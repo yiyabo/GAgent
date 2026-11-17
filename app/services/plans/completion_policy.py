@@ -87,8 +87,12 @@ def guidance() -> str:
         "genuinely needed and can finish in reasonable time, give it a longer execute_code timeout_seconds and let it "
         "finish (resume partial files); otherwise reuse shared copies under /data or bio_tools databases, or switch to "
         "a server-side tool. Report BLOCKED_DEPENDENCY only after such alternatives were tried, listing each attempt. "
-        "This permission covers supporting work and a private todo list, not editing, splitting or rerunning the persisted "
-        "Plan tree. Only the user can authorize changes to that tree."
+        "If the task has a quality gate (threshold, recall, validation) and it is not met, keep working with a different "
+        "method; never lower the threshold, shrink the validation set or call a miss a pass. If it is still unmet after "
+        "real attempts, start the report with GATE_FAILED and the measured value. "
+        "This permission covers supporting work and a private todo list. Change the persisted Plan tree only through the "
+        "bounded execution revision (plan_operation optimize with explicit changes and a reason) after real attempts. "
+        "Only the user can authorize any other change to that tree."
     )
 
 
