@@ -101,7 +101,11 @@ def is_blocked_result(result: Any, *, include_repaired: bool = False) -> bool:
 _GATE_RECALL_RE = re.compile(
     r"GATE_FAILED|不放行|未放行|不予放行|未达标|不达标|未通过|没有通过|不满足|未满足|门槛|阈值"
     r"|below (?:the )?(?:threshold|target|gate)|not met|did not meet|does not meet|fails? (?:the )?(?:gate|threshold)"
-    r"|not released|do not release|gate (?:failed|not passed)",
+    r"|not released|do not release|gate (?:failed|not passed)"
+    # A "completed" task whose report says its main execution never succeeded or its
+    # required outputs are missing is the same problem: later tasks would build on nothing.
+    r"|未成功完成|主执行工具未成功|未经验证|未验证|无法验证|未生成|没有生成|缺少必需|缺失.{0,6}产出"
+    r"|main execution tool failed|not (?:been )?verified|unverified|was not produced|were not produced|missing required output",
     re.IGNORECASE,
 )
 
@@ -303,6 +307,8 @@ acceptance criterion was not met (for example recall below the required threshol
 Decide:
 - gate_failed: true only when the task's own instruction or report states a concrete criterion that the produced result
   does NOT meet, so later tasks would build on substandard output. Mentioning thresholds that were met is not a failure.
+  A report saying the main execution did not succeed, results are unverified, or a required output was not produced
+  also counts as gate_failed: the task did not deliver what it promised.
 - target_task_id: the task whose output must be reworked to meet the criterion — the reviewed task itself, or one of the
   listed earlier tasks when the root cause is there (for example a missing family in an earlier panel).
 - brief: what failed and by how much, under 400 characters.

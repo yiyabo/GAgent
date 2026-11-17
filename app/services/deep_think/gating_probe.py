@@ -611,6 +611,11 @@ async def _execute_forced_probe_followthrough(
     )
 
 
+def _plan_lane(agent: Any) -> bool:
+    profile = getattr(agent, "request_profile", None) or {}
+    return isinstance(profile, dict) and profile.get("execution_lane") == "plan"
+
+
 def _build_post_execution_summary_nudge(
     agent: "DeepThinkAgent",
     *,
@@ -629,6 +634,25 @@ def _build_post_execution_summary_nudge(
     can_interpret = any(
         str(tool).strip().lower() == "result_interpreter" for tool in agent.available_tools
     )
+    if _plan_lane(agent):
+        # A plan task is judged by its deliverables. Having run *some* code is not
+        # a reason to wrap up while required outputs are still missing.
+        zh = (
+            f"已经连续 {stage} 轮只做只读观察（目录/文件查看）。不要继续浏览。\n"
+            "先对照任务要求核对：所有必需产出是否都已真实生成并验证？\n"
+            "- 还没有：立即回到真正的执行（`execute_code`、`bio_tools` 等）。上一种方法失败就换一种方法，"
+            "不要降低标准或把缺失的产出写成已完成；\n"
+            "- 都已生成并验证：调用 `submit_final_answer`，列出产出文件和关键结果。"
+        )
+        en = (
+            f"The last {stage} step(s) were read-only probes (listing/reading files). Stop browsing.\n"
+            "Check the task requirements: has every required output really been produced and verified?\n"
+            "- If not: go back to real execution now (`execute_code`, `bio_tools`, ...). If the last method failed, "
+            "switch methods; do not lower the standard or describe a missing output as done.\n"
+            "- If yes: call `submit_final_answer` listing the output files and key results."
+        )
+        base = _dta()._localized_text(language, zh, en)
+        return f"{base}\n{task_hint}" if task_hint else base
     if stage >= 2:
         zh = (
             "任务代码已经执行过，当前进入了连续第 2 次只读观察。\n"

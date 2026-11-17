@@ -146,3 +146,30 @@ def test_a_real_failure_after_verified_work_still_warns():
 def test_events_carry_the_error_code():
     events = _collect_execute_truth_events(DeepThinkAgent, [REFUSED])
     assert events[0]["error_code"] == "invalid_parameter"
+
+
+# --------------------------------------------------------------------------- p69: plan task 17 false "main tool failed"
+
+def test_a_cell_whose_output_sits_one_level_deeper_counts():
+    # Live execute_code payloads wrap the cell result once more: result.result.output.
+    nested = {"success": True, "tool": "execute_code", "result": {"success": True, "result": {"success": True, "output": "tree written"}}}
+    assert _barrier([REFUSED, _step(2, "execute_code", {"code": "..."}, nested)]) == ANSWER
+
+
+def test_a_call_rejected_for_its_argument_names_is_a_refusal():
+    bad_call = {"success": False, "tool": "code_executor", "error": "code_executor_handler() missing 1 required positional argument: 'task'"}
+    events = _collect_execute_truth_events(DeepThinkAgent, [_step(1, "code_executor", {"code": "x"}, bad_call)])
+    assert events[0]["error_code"] == "invalid_parameter"
+
+
+def test_plan_task_probe_nudge_sends_the_model_back_to_execution_not_to_wrap_up():
+    agent = DeepThinkAgent(
+        llm_client=_LoopLLM([]),
+        available_tools=["execute_code", "file_operations"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=1,
+        request_profile={"request_tier": "execute", "intent_type": "execute_task", "execution_lane": "plan"},
+    )
+    nudge = agent._build_post_execution_summary_nudge(task_context=None, user_query="build the trees", stage=2)
+    assert "required output" in nudge and "switch methods" in nudge
+    assert "Do not call `plan_operation`" not in nudge
