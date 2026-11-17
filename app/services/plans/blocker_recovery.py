@@ -39,8 +39,9 @@ _GENERIC_ALTERNATIVES = (
         "shared reference data directory (/data) or bio_tools databases."
     ),
     (
-        "Split long downloads or computations into steps that each finish within the tool time limit and resume "
-        "from partial output (for example `curl -C - --max-time 240` repeated across cells), then verify checksums."
+        "If a long download or computation is genuinely needed and can finish in a reasonable time, run it in one "
+        "execute_code cell with a larger timeout_seconds (up to 2 hours), resuming any partial file (`curl -C -`), "
+        "then verify checksums."
     ),
     (
         "Prefer a server-side tool (bio_tools, native runners) over in-cell work for heavy jobs such as hmmscan "
@@ -164,7 +165,7 @@ Rules:
 - target_task_id is the blocked task itself when the problem is inside it (tooling, timeout, environment),
   or one of the listed earlier tasks when that task left its output incomplete.
 - Do not suggest inventing data, skipping validation or lowering quality gates.
-- Give 2-5 concrete alternatives the rerun should try (resumable or chunked downloads that fit the tool time limit,
+- Give 2-5 concrete alternatives the rerun should try (a longer execute_code timeout_seconds for a needed download,
   existing shared copies under /data or bio_tools databases, server-side tools such as bio_tools hmmer, an
   equivalent documented method). Each alternative under 200 characters.
 

@@ -1179,7 +1179,7 @@ async def _native_no_tool_call_cycle(
                     await agent._safe_callback(current_step)
                 try:
                     from app.services.execution.tool_executor import UnifiedToolExecutor
-                    timeout = UnifiedToolExecutor.TOOL_TIMEOUTS.get(pa_name, agent.tool_timeout)
+                    timeout = UnifiedToolExecutor.timeout_for(pa_name, pa_params, agent.tool_timeout)
                     tool_result = await run_stage(
                         agent.tool_executor(pa_name, pa_params),
                         stage="deepthink-forced-probe", timeout=timeout, cancel_event=agent.cancel_event,
@@ -2093,8 +2093,9 @@ async def _think_prompt_based(  # pyright: ignore[reportGeneralTypeIssues] -- le
                 else:
                     if tool_name not in tools_used:
                         tools_used.append(tool_name)
-                    timeout = UnifiedToolExecutor.TOOL_TIMEOUTS.get(
+                    timeout = UnifiedToolExecutor.timeout_for(
                         str(tool_name),
+                        tool_params if isinstance(tool_params, dict) else None,
                         agent.tool_timeout,
                     )
                     attempt = 0

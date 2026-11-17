@@ -311,7 +311,7 @@ async def _execute_native_tool_call(
     tool_name = str(getattr(tc, "name", "") or "")
     tool_params = getattr(tc, "arguments", {}) or {}
     tool_call_id = str(getattr(tc, "id", "") or f"native_{iteration}_{index}")
-    timeout = UnifiedToolExecutor.TOOL_TIMEOUTS.get(tool_name, agent.tool_timeout)
+    timeout = UnifiedToolExecutor.timeout_for(tool_name, tool_params, agent.tool_timeout)
 
     async def _progress_bridge(data: Dict[str, Any]) -> None:
         if agent.on_tool_progress:

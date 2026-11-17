@@ -14,6 +14,8 @@ from typing import List, Optional
 ENV_ENABLED = "CODE_MODE_ENABLED"
 ENV_ALLOWED_TOOLS = "CODE_MODE_ALLOWED_TOOLS"
 ENV_CELL_TIMEOUT = "CODE_MODE_CELL_TIMEOUT_SECONDS"
+# Upper bound for a per-call ``timeout_seconds`` request (long downloads/jobs the agent judged necessary).
+ENV_MAX_CELL_TIMEOUT = "CODE_MODE_MAX_CELL_TIMEOUT_SECONDS"
 ENV_KILL_GRACE = "CODE_MODE_KILL_GRACE_SECONDS"
 ENV_MAX_TOOL_CALLS = "CODE_MODE_MAX_TOOL_CALLS_PER_CELL"
 ENV_MAX_KERNELS = "CODE_MODE_MAX_KERNELS"
@@ -44,6 +46,7 @@ DEFAULT_ALLOWED_TOOLS = (
 )
 
 DEFAULT_CELL_TIMEOUT_SECONDS = 300
+DEFAULT_MAX_CELL_TIMEOUT_SECONDS = 7200
 DEFAULT_KILL_GRACE_SECONDS = 5.0
 DEFAULT_MAX_TOOL_CALLS_PER_CELL = 50
 DEFAULT_TOOL_CALL_TIMEOUT_SECONDS = 300
@@ -134,6 +137,27 @@ def _float_env(name: str, default: float) -> float:
 
 def cell_timeout_seconds() -> int:
     return _int_env(ENV_CELL_TIMEOUT, DEFAULT_CELL_TIMEOUT_SECONDS)
+
+
+def max_cell_timeout_seconds() -> int:
+    return max(cell_timeout_seconds(), _int_env(ENV_MAX_CELL_TIMEOUT, DEFAULT_MAX_CELL_TIMEOUT_SECONDS))
+
+
+def resolve_cell_timeout(requested: object = None) -> int:
+    """Cell timeout for one call: the default, or a longer one the agent asked for.
+
+    The agent may raise the limit for a long download or computation it has judged
+    necessary; the request is clamped to ``max_cell_timeout_seconds()`` and never
+    goes below the default. Invalid values fall back to the default.
+    """
+    default = cell_timeout_seconds()
+    if requested is None or isinstance(requested, bool):
+        return default
+    try:
+        value = int(float(str(requested).strip()))
+    except (TypeError, ValueError):
+        return default
+    return max(default, min(value, max_cell_timeout_seconds()))
 
 
 def kill_grace_seconds() -> float:
