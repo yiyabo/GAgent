@@ -183,3 +183,19 @@ def test_document_reader_results_relative_path_keeps_repo_root_in_task_context(m
     assert result["file_path"] == str(target.resolve())
     assert "repo scoped artifact" in result["text"]
     assert "task scoped artifact" not in result["text"]
+
+
+def test_session_relative_path_is_not_doubled_under_a_task_work_dir(monkeypatch, tmp_path: Path) -> None:
+    # p69: plan task work_dir is <session>/raw_files/task_1/task_17; the model passed
+    # "raw_files/task_1/task_17/pg_data" and got .../task_17/raw_files/task_1/task_17/pg_data.
+    from app.services import session_paths
+    from tool_box.path_resolution import resolve_tool_path
+
+    session_dir = tmp_path / "runtime" / "session_demo"
+    work_dir = session_dir / "raw_files" / "task_1" / "task_17"
+    (work_dir / "pg_data").mkdir(parents=True)
+    monkeypatch.setattr(session_paths, "get_runtime_session_dir", lambda _sid, **_kw: session_dir)
+    ctx = ToolContext(session_id="session_demo", work_dir=str(work_dir))
+
+    assert resolve_tool_path("raw_files/task_1/task_17/pg_data", tool_context=ctx) == (work_dir / "pg_data").resolve()
+    assert resolve_tool_path("pg_data", tool_context=ctx) == (work_dir / "pg_data").resolve()

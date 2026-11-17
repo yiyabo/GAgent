@@ -280,3 +280,12 @@ def test_gate_review_requires_explicit_llm_failure() -> None:
     no = json.dumps({"gate_failed": False, "target_task_id": 3, "brief": "", "alternatives": []})
     assert blocker_recovery.review_gate(node, "门槛已满足", candidates, chat=lambda _p: no) is None
     assert blocker_recovery.review_gate(node, "未达标", candidates, chat=lambda _p: "garbage") is None
+
+
+def test_a_completed_task_whose_main_execution_failed_is_a_gate_candidate() -> None:
+    # p69: plan_9 task 17 ended "completed" with the truth-barrier text and no trees.
+    unverified = SimpleNamespace(status="completed", metadata={}, content=(
+        "本轮真正的执行工具未成功完成（code_executor 失败）。因此不能把后续分析性表述视为已验证结论。"))
+    assert blocker_recovery.gate_review_candidate(unverified)
+    plain = SimpleNamespace(status="completed", metadata={}, content="四棵域树已生成并通过拓扑检查。")
+    assert not blocker_recovery.gate_review_candidate(plain)

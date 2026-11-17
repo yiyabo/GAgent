@@ -7,6 +7,9 @@ from typing import Optional
 from .context import ToolContext
 
 _REPO_ROOT_RELATIVE_PREFIXES = {"results", "runtime", "data"}
+# Top-level folders of a session runtime dir. A relative path that starts with one
+# of them names a place in the session, not a folder under a task's work_dir.
+_SESSION_ROOT_PREFIXES = {"raw_files", "uploads", "deliverables", "tool_outputs", "artifacts"}
 
 
 def _resolve_task_output_base(tool_context: Optional[ToolContext]) -> Optional[Path]:
@@ -60,6 +63,18 @@ def _session_cwd(tool_context: ToolContext | None) -> Path | None:
     except ValueError:
         return None
     return session_dir
+
+
+def _session_root(tool_context: ToolContext | None) -> Path | None:
+    session_id = str(getattr(tool_context, "session_id", "") or "").strip()
+    if not session_id:
+        return None
+    try:
+        from app.services.session_paths import get_runtime_session_dir
+
+        return get_runtime_session_dir(session_id).resolve(strict=False)
+    except Exception:
+        return None
 
 
 def _resolve_results_path(
@@ -120,6 +135,15 @@ def resolve_tool_path(
         base_dir = session_cwd
     elif tool_context and str(tool_context.work_dir or "").strip():
         base_dir = Path(tool_context.work_dir).expanduser().resolve(strict=False)
+        session_root = _session_root(tool_context) if first in _SESSION_ROOT_PREFIXES else None
+        if session_root is not None and base_dir != session_root:
+            # A plan task's work_dir is <session>/raw_files/task_N/...; the model
+            # often writes session-relative paths (raw_files/task_1/task_17/x),
+            # which must not be doubled under the work_dir.
+            nested = (base_dir / candidate).resolve(strict=False)
+            if not nested.exists():
+                return (session_root / candidate).resolve(strict=False)
+            return nested
     else:
         base_dir = repo_root
     return (base_dir / candidate).resolve(strict=False)

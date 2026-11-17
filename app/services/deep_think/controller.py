@@ -596,6 +596,11 @@ async def _native_probe_only_cycle(
         task_context=task_context,
     )
     probe_limit = 6 if cycle.had_real_execution_tool else 12
+    profile = getattr(agent, "request_profile", None) or {}
+    if isinstance(profile, dict) and profile.get("execution_lane") == "plan":
+        # Plan tasks are long; a few read-only checks between real steps are
+        # normal, so only stop a genuinely stuck observation loop.
+        probe_limit = 12
     if is_probe_only_cycle:
         cycle.probe_only_execution_cycles += 1
         if (

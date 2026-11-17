@@ -52,6 +52,10 @@ _UNSUPPORTED_RETRY_RERUN_RE = re.compile(
 )
 
 
+_CALL_SIGNATURE_ERROR_RE = re.compile(
+    r"missing \d+ required (?:positional|keyword-only) argument|got an unexpected keyword argument"
+)
+
 _REFUSED_BEFORE_RUNNING = frozenset(
     {"invalid_parameter", "missing_required_params", "missing_input_file", "path_not_allowed"}
 )
@@ -127,10 +131,12 @@ def _collect_execute_truth_events(
                 # failed tool call; a failing cell is the model iterating on its own code, not the main
                 # execution tool failing, so it is never the failure the answer gets a warning for.
                 kind = "execution"
+                nested = inner.get("result") if isinstance(inner.get("result"), dict) else {}
                 trusted = success and bool(
-                    str(inner.get("output") or payload.get("output") or "").strip()
+                    str(inner.get("output") or payload.get("output") or nested.get("output") or "").strip()
                     or inner.get("produced_files")
                     or payload.get("produced_files")
+                    or nested.get("produced_files")
                 )
                 counts_as_failure = False
 
@@ -162,6 +168,11 @@ def _collect_execute_truth_events(
                 or payload.get("error")
                 or ""
             ).strip()
+            error_code = str(inner.get("error_code") or payload.get("error_code") or "").strip().lower()
+            if not success and not error_code and _CALL_SIGNATURE_ERROR_RE.search(error_text):
+                # The handler rejected the arguments before doing anything (wrong
+                # parameter names); that is a refused call, not a failed execution.
+                error_code = "invalid_parameter"
 
             events.append(
                 {
@@ -173,7 +184,7 @@ def _collect_execute_truth_events(
                     "success": success,
                     "trusted": trusted,
                     "counts_as_failure": counts_as_failure,
-                    "error_code": str(inner.get("error_code") or payload.get("error_code") or "").strip().lower(),
+                    "error_code": error_code,
                     "summary_text": summary_text,
                     "error": error_text,
                 }
