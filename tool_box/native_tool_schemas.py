@@ -15,11 +15,13 @@ base dict and stays next to the generator (app layer) by design.
 
 from __future__ import annotations
 
+import copy
 from typing import Any, Dict
 from app.services.plans.execution_contract import PLAN_EXECUTION_GUIDANCE, execution_target_ids_schema
 from app.services.plan_clarifications import ASK_USER_GUIDANCE, ask_user_questions_schema, assumptions_schema
 
 from .phagescope_gateway_contract import extend_schema as _extend_gateway_schema
+from .tools_impl.memory_operation import memory_operation_tool
 from .tools_impl.lightrag_query import (
     DESCRIPTION as _LIGHTRAG_DESC,
     PARAMETERS_SCHEMA as _LIGHTRAG_PARAMS,
@@ -1297,6 +1299,11 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
     "lightrag_query": {
         "description": _LIGHTRAG_DESC,
         "parameters": _LIGHTRAG_PARAMS,
+    },
+    # Single source shared with tools_impl so the schema cannot drift from the handler.
+    "memory_operation": {
+        "description": memory_operation_tool["description"],
+        "parameters": copy.deepcopy(memory_operation_tool["parameters_schema"]),
     },
 }
 

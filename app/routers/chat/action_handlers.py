@@ -244,7 +244,7 @@ def _extract_explicit_plan_tasks_from_goal(goal: Any) -> List[Dict[str, Any]]:
 _PHAGESCOPE_RESEARCH_ACTIONS = {"audit", "research_plan", "prepare_metadata_table"}
 # Tools with no per-tool parameter normalizer: their advertised parameters are
 # already the handler contract, so they fall through to the generic execution path.
-_GENERIC_EXECUTION_TOOLS = frozenset({"execute_code", "delegate_task", "load_skill"})
+_GENERIC_EXECUTION_TOOLS = frozenset({"execute_code", "delegate_task", "load_skill", "memory_operation"})
 _artifact_preflight_service = ArtifactPreflightService()
 
 

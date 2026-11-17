@@ -1151,6 +1151,13 @@ def _save_chat_message(
                 from ...services.memory.chat_memory_middleware import get_chat_memory_middleware
 
                 middleware = get_chat_memory_middleware()
+                memory_owner_id = owner_id
+                if not memory_owner_id:
+                    owner_row = cursor.execute(
+                        "SELECT owner_id FROM chat_sessions WHERE id = ?", (session_id,)
+                    ).fetchone()
+                    if owner_row and owner_row[0]:
+                        memory_owner_id = str(owner_row[0])
                 # Run async middleware in background (fire and forget)
                 asyncio.create_task(
                     middleware.process_message(
@@ -1158,7 +1165,7 @@ def _save_chat_message(
                         role=role,
                         session_id=session_id,
                         model_provider=model_provider,
-                        owner_id=owner_id,
+                        owner_id=memory_owner_id,
                     )
                 )
             except Exception as mem_err:

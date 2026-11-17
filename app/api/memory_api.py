@@ -4,28 +4,35 @@ Memory MCP API Endpoints
 Provides MCP-compatible memory management endpoints integrated with the main system
 """
 
-import logging
-from typing import Any, Dict
+from __future__ import annotations
 
-from fastapi import APIRouter, Body, HTTPException, Request
+import logging
+from typing import Any
+
+from fastapi import APIRouter, Body, HTTPException, Query, Request
 
 from ..models_memory import (
+    ImportanceLevel,
+    MemoryType,
     MemoryStats,
     QueryMemoryRequest,
-    QueryMemoryResponse,
     SaveMemoryRequest,
-    SaveMemoryResponse,
 )
+from ..routers import register_router
+from ..services.memory.chat_memory_middleware import get_chat_memory_middleware
+from ..services.memory.memory_hooks import get_memory_hooks
 from ..services.memory.memory_service import (
     get_memory_service,
-    resolve_owner_id_for_session,
 )
 from ..services.request_principal import get_request_owner_id
-from ..services.memory.memory_hooks import get_memory_hooks
-from ..services.memory.chat_memory_middleware import get_chat_memory_middleware
-from ..routers import register_router
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_session_access(session_id: str | None, owner_id: str) -> None:
+    """Reject writes that target another user's session."""
+    if session_id and not get_memory_service().session_belongs_to_owner(session_id, owner_id):
+        raise HTTPException(status_code=404, detail="Session not found")
 
 # Create memory API router
 memory_router = APIRouter(prefix="/mcp", tags=["memory"])
@@ -40,7 +47,7 @@ register_router(
 )
 
 
-@memory_router.post("/save_memory", response_model=Dict[str, Any])
+@memory_router.post("/save_memory", response_model=dict[str, Any])
 async def save_memory_endpoint(request: SaveMemoryRequest, raw_request: Request):
     """
     Save memory to the system
@@ -74,14 +81,14 @@ async def save_memory_endpoint(request: SaveMemoryRequest, raw_request: Request)
     except ValueError as e:
         logger.warning(f"Validation error in save_memory: {e}")
         raise HTTPException(
-        status_code=400, detail=f"Data validation error: {str(e)}")
+        status_code=400, detail=f"Data validation error: {str(e)}") from e
     except Exception as e:
         logger.error(f"Error in save_memory: {e}")
         raise HTTPException(
-        status_code=500, detail=f"Internal server error: {str(e)}")
+        status_code=500, detail=f"Internal server error: {str(e)}") from e
 
 
-@memory_router.post("/query_memory", response_model=Dict[str, Any])
+@memory_router.post("/query_memory", response_model=dict[str, Any])
 async def query_memory_endpoint(request: QueryMemoryRequest, raw_request: Request):
     """
     Query memory
@@ -118,23 +125,24 @@ async def query_memory_endpoint(request: QueryMemoryRequest, raw_request: Reques
     except ValueError as e:
         logger.warning(f"Validation error in query_memory: {e}")
         raise HTTPException(
-        status_code=400, detail=f"Data validation error: {str(e)}")
+        status_code=400, detail=f"Data validation error: {str(e)}") from e
     except Exception as e:
         logger.error(f"Error in query_memory: {e}")
         raise HTTPException(
-        status_code=500, detail=f"Internal server error: {str(e)}")
+        status_code=500, detail=f"Internal server error: {str(e)}") from e
 
 
 @memory_router.get("/memory/stats", response_model=MemoryStats)
-async def get_memory_stats():
-    """Get memory system statistics"""
+async def get_memory_stats(request: Request):
+    """Get memory statistics for the requesting owner."""
     try:
+        owner_id = get_request_owner_id(request)
         memory_service = get_memory_service()
-        return await memory_service.get_memory_stats()
+        return await memory_service.get_memory_stats(owner_id=owner_id)
     except Exception as e:
         logger.error(f"Error getting memory stats: {e}")
         raise HTTPException(
-        status_code=500, detail=f"Failed to get statistics: {str(e)}")
+        status_code=500, detail=f"Failed to get statistics: {str(e)}") from e
 
 
 @memory_router.get("/tools")
@@ -191,7 +199,7 @@ async def list_mcp_tools():
 
 
 @memory_router.post("/memory/auto_save_task")
-async def auto_save_task_memory(task_data: Dict[str, Any] = Body(...)):
+async def auto_save_task_memory(request: Request, task_data: dict[str, Any] = Body(...)):
     """
     Auto-save task related memory
 
@@ -199,7 +207,6 @@ async def auto_save_task_memory(task_data: Dict[str, Any] = Body(...)):
     """
     try:
         task_id = task_data.get("task_id")
-        task_name = task_data.get("task_name", "")
         task_content = task_data.get("content", "")
         session_id = task_data.get("session_id")
 
@@ -207,15 +214,18 @@ async def auto_save_task_memory(task_data: Dict[str, Any] = Body(...)):
             raise HTTPException(
         status_code=400, detail="task_id and content are required")
 
+        owner_id = get_request_owner_id(request)
+        _ensure_session_access(session_id, owner_id)
+
         # Create save request
         save_request = SaveMemoryRequest(
             content=task_content,
-            memory_type="experience",  # Task output as experience memory
-            importance="medium",
+            memory_type=MemoryType.EXPERIENCE,  # Task output as experience memory
+            importance=ImportanceLevel.MEDIUM,
             tags=["task_output", "auto_generated"],
             related_task_id=task_id,
             session_id=session_id,  # support session
-            owner_id=resolve_owner_id_for_session(session_id),
+            owner_id=owner_id,
         )
 
         memory_service = get_memory_service()
@@ -225,9 +235,11 @@ async def auto_save_task_memory(task_data: Dict[str, Any] = Body(...)):
 
         return {"success": True, "memory_id": response.memory_id, "message": f"Task {task_id} output has been auto-saved as memory"}
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to auto-save task memory: {e}")
-        raise HTTPException(status_code=500, detail=f"Auto-save failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Auto-save failed: {str(e)}") from e
 
 
 @memory_router.get("/memory/hooks/stats")
@@ -239,7 +251,7 @@ async def get_hooks_stats():
     except Exception as e:
         logger.error(f"Error getting hooks stats: {e}")
         raise HTTPException(
-        status_code=500, detail=f"Failed to get hooks statistics: {str(e)}")
+        status_code=500, detail=f"Failed to get hooks statistics: {str(e)}") from e
 
 
 @memory_router.post("/memory/hooks/enable")
@@ -252,7 +264,7 @@ async def enable_hooks():
     except Exception as e:
         logger.error(f"Error enabling hooks: {e}")
         raise HTTPException(
-        status_code=500, detail=f"Failed to enable hooks: {str(e)}")
+        status_code=500, detail=f"Failed to enable hooks: {str(e)}") from e
 
 
 @memory_router.post("/memory/hooks/disable")
@@ -265,11 +277,11 @@ async def disable_hooks():
     except Exception as e:
         logger.error(f"Error disabling hooks: {e}")
         raise HTTPException(
-        status_code=500, detail=f"Failed to disable hooks: {str(e)}")
+        status_code=500, detail=f"Failed to disable hooks: {str(e)}") from e
 
 
 @memory_router.post("/memory/chat/save")
-async def save_chat_message(message_data: Dict[str, Any] = Body(...)):
+async def save_chat_message(request: Request, message_data: dict[str, Any] = Body(...)):
     """
     Save chat message as memory
 
@@ -284,12 +296,16 @@ async def save_chat_message(message_data: Dict[str, Any] = Body(...)):
         if not content:
             raise HTTPException(status_code=400, detail="content is required")
 
+        owner_id = get_request_owner_id(request)
+        _ensure_session_access(session_id, owner_id)
+
         middleware = get_chat_memory_middleware()
         memory_id = await middleware.process_message(
             content=content,
             role=role,
             session_id=session_id,
             force_save=force_save,
+            owner_id=owner_id,
         )
 
         if memory_id:
@@ -304,6 +320,76 @@ async def save_chat_message(message_data: Dict[str, Any] = Body(...)):
                 "message": "Message did not meet save threshold"
             }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to save chat message: {e}")
-        raise HTTPException(status_code=500, detail=f"Save failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Save failed: {str(e)}") from e
+
+
+@memory_router.get("/memory/entries")
+async def list_memory_entries(
+    request: Request,
+    search: str | None = Query(None, max_length=500),
+    memory_type: str | None = Query(None),
+    importance: str | None = Query(None),
+    session_id: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> dict[str, Any]:
+    """List the requesting owner's memories (paginated)."""
+    owner_id = get_request_owner_id(request)
+    return get_memory_service().list_memories(
+        owner_id,
+        search=search,
+        memory_type=memory_type,
+        importance=importance,
+        session_id=session_id,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@memory_router.patch("/memory/entries/{memory_id}")
+async def update_memory_entry(
+    memory_id: str,
+    request: Request,
+    payload: dict[str, Any] = Body(...),
+) -> dict[str, Any]:
+    """Edit one of the requesting owner's memories."""
+    owner_id = get_request_owner_id(request)
+    tags = payload.get("tags")
+    keywords = payload.get("keywords")
+    for name, value in (("tags", tags), ("keywords", keywords)):
+        if value is not None and not isinstance(value, list):
+            raise HTTPException(status_code=422, detail=f"{name} must be a list")
+    try:
+        item = await get_memory_service().update_memory(
+            memory_id,
+            owner_id,
+            content=payload.get("content"),
+            importance=payload.get("importance"),
+            memory_type=payload.get("memory_type"),
+            tags=_as_str_list(tags),
+            keywords=_as_str_list(keywords),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if item is None:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return {"success": True, "item": item}
+
+
+@memory_router.delete("/memory/entries/{memory_id}")
+async def delete_memory_entry(memory_id: str, request: Request) -> dict[str, Any]:
+    """Delete one of the requesting owner's memories."""
+    owner_id = get_request_owner_id(request)
+    if not get_memory_service().delete_memory(memory_id, owner_id):
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return {"success": True, "deleted_id": memory_id}
+
+
+def _as_str_list(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    return [str(v) for v in value]

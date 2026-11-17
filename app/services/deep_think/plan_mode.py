@@ -36,8 +36,11 @@ _SCOPED_TOOLS = frozenset(
         "phagescope_data",
         "phagescope",
         "phagescope_research",
+        "memory_operation",
     }
 )
+
+_READ_MEMORY_OPERATIONS = frozenset({"search", "list"})
 
 _READ_FILE_OPERATIONS = frozenset(
     {"read", "list", "exists", "info", "profile", "census"}
@@ -112,6 +115,8 @@ def plan_mode_tool_allowed(
         return _operation(values, key="action") in _READ_PHAGESCOPE_ACTIONS
     if name == "phagescope_research":
         return _operation(values, key="action") in _READ_RESEARCH_ACTIONS
+    if name == "memory_operation":
+        return _operation(values) in _READ_MEMORY_OPERATIONS
     return False
 
 

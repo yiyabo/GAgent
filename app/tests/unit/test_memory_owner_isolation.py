@@ -111,7 +111,11 @@ async def test_delete_memories_for_session_cascades(service) -> None:
         _save_request("user_a", tags=["conversation", "user", "session:sess_del"])
     )
     kept = await svc.save_memory(
-        _save_request("user_a", tags=["conversation", "user", "session:sess_keep"])
+        _save_request(
+            "user_a",
+            content="ERCP 另一条保留的会话记忆",
+            tags=["conversation", "user", "session:sess_keep"],
+        )
     )
     conn.execute(
         "INSERT INTO memory_embeddings (memory_id, embedding_vector) VALUES (?, ?)",
