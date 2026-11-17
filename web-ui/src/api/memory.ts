@@ -5,6 +5,12 @@ import type {
   SaveMemoryRequest,
   QueryMemoryRequest,
   QueryMemoryResponse,
+  MemoryEntry,
+  ListMemoriesParams,
+  ListMemoriesResponse,
+  UpdateMemoryRequest,
+  UpdateMemoryResponse,
+  DeleteMemoryResponse,
 } from '@/types';
 
 class MemoryApi extends BaseApi {
@@ -73,6 +79,63 @@ class MemoryApi extends BaseApi {
   content,
   });
   }
+
+  /**
+  * List stored memories for the governance drawer, newest first, with search and filters.
+  * Empty filters are left out so the backend applies no constraint for them.
+  */
+  async listMemories(params: ListMemoriesParams = {}): Promise<ListMemoriesResponse> {
+  const query: Record<string, string | number> = {
+  limit: params.limit ?? 50,
+  offset: params.offset ?? 0,
+  };
+  const search = params.search?.trim();
+  if (search) query.search = search;
+  if (params.memory_type) query.memory_type = params.memory_type;
+  if (params.importance) query.importance = params.importance;
+
+  const response = await this.get<any>('/mcp/memory/entries', query);
+  const items: MemoryEntry[] = Array.isArray(response?.items) ? response.items.map(normalizeEntry) : [];
+  return {
+  items,
+  total: typeof response?.total === 'number' ? response.total : items.length,
+  limit: typeof response?.limit === 'number' ? response.limit : Number(query.limit),
+  offset: typeof response?.offset === 'number' ? response.offset : Number(query.offset),
+  };
+  }
+
+  /**
+  * Edit one memory: content, importance, type and/or tags.
+  */
+  async updateMemory(id: string, updates: UpdateMemoryRequest): Promise<UpdateMemoryResponse> {
+  const response = await this.patch<any>(`/mcp/memory/entries/${encodeURIComponent(id)}`, updates);
+  return { success: Boolean(response?.success), item: normalizeEntry(response?.item ?? {}) };
+  }
+
+  /**
+  * Delete one memory permanently.
+  */
+  async deleteMemory(id: string): Promise<DeleteMemoryResponse> {
+  const response = await this.delete<any>(`/mcp/memory/entries/${encodeURIComponent(id)}`);
+  return { success: Boolean(response?.success), deleted_id: String(response?.deleted_id ?? id) };
+  }
+}
+
+/** Fill the list fields the backend may omit so the UI never has to guard them. */
+function normalizeEntry(raw: any): MemoryEntry {
+  return {
+  id: String(raw?.id ?? ''),
+  content: String(raw?.content ?? ''),
+  memory_type: raw?.memory_type ?? 'knowledge',
+  importance: raw?.importance ?? 'medium',
+  keywords: Array.isArray(raw?.keywords) ? raw.keywords : [],
+  tags: Array.isArray(raw?.tags) ? raw.tags : [],
+  context: String(raw?.context ?? ''),
+  created_at: raw?.created_at ?? null,
+  last_accessed: raw?.last_accessed ?? null,
+  retrieval_count: Number(raw?.retrieval_count) || 0,
+  embedding_generated: Boolean(raw?.embedding_generated),
+  };
 }
 
 export const memoryApi = new MemoryApi();
