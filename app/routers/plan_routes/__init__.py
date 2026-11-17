@@ -1453,3 +1453,40 @@ def execute_artifact_recompute(plan_id:int,request:Request,payload:Dict[str,Any]
     _load_authorized_plan_tree(plan_id,request)
     from app.services.plans.artifact_recompute import enqueue
     return enqueue(_plan_repo,plan_id,payload,get_request_owner_id(request))
+
+
+@plan_router.get(
+    "/{plan_id}/tasks/{task_id}/run-inspection",
+    summary="Read-only Run Inspector projection of one plan task's execution",
+)
+async def inspect_plan_task_run(
+    plan_id: int,
+    task_id: int,
+    request: Request,
+    job_id: Optional[str] = Query(None, description="plan_execute job to inspect"),
+) -> Dict[str, Any]:
+    """Project a plan task's execution (job logs, stored result, usage) without re-running it."""
+    from app.repository.run_inspection import load_plan_task_inspection_inputs
+    from app.services.run_inspector import build_plan_task_inspection
+
+    _ensure_plan_access(plan_id, request)
+    inputs = await asyncio.to_thread(load_plan_task_inspection_inputs, plan_id, task_id, job_id)
+    if inputs is None:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found in plan {plan_id}")
+    task = inputs["task"]
+    never_ran = (
+        str(task.get("status") or "pending").strip().lower() == "pending"
+        and not inputs["logs"]
+        and not task.get("execution_result")
+        and not inputs["usage_rows"]
+    )
+    if never_ran or (job_id and inputs["job"] is None):
+        raise HTTPException(status_code=404, detail=f"Task {task_id} has no execution to inspect")
+    return build_plan_task_inspection(
+        plan_id=plan_id,
+        task=task,
+        job=inputs["job"],
+        logs=inputs["logs"],
+        log_counts=inputs["log_counts"],
+        usage_rows=inputs["usage_rows"],
+    )

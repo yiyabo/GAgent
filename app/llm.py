@@ -1713,14 +1713,6 @@ class LLMClient(LLMProvider):
                     if isinstance(usage, dict):
                         _last_usage = usage
                         _record_attempt_context(logical_call_id, 1, usage=usage)
-                        _log_usage(
-                            provider=self.provider,
-                            model=model or self.model,
-                            prompt_tokens=usage.get("prompt_tokens", 0),
-                            completion_tokens=usage.get("completion_tokens", 0),
-                            total_tokens=usage.get("total_tokens", 0),
-                            call_status="ok",
-                        )
 
                     # Extract reasoning_content delta if present
                     choices = obj.get("choices")
@@ -1742,6 +1734,19 @@ class LLMClient(LLMProvider):
                         if _ttft_ms is None:
                             _ttft_ms = (time.perf_counter() - _t0) * 1000
                         yield content_delta
+                if isinstance(_last_usage, dict):
+                    # One ledger row per call, logged once the stream ends:
+                    # providers that repeat ``usage`` in every chunk used to
+                    # write one row per chunk (mirrors sync ``stream_chat``).
+                    _log_usage(
+                        provider=self.provider,
+                        model=model or self.model,
+                        prompt_tokens=_last_usage.get("prompt_tokens", 0),
+                        completion_tokens=_last_usage.get("completion_tokens", 0),
+                        total_tokens=_last_usage.get("total_tokens", 0),
+                        call_status="ok",
+                        duration_ms=(time.perf_counter() - _t0) * 1000,
+                    )
         except GeneratorExit:
             _stream_status = "abandoned"
             raise
@@ -1942,6 +1947,7 @@ class LLMClient(LLMProvider):
 
         timeout = _make_request_timeout(self.stream_timeout)
         client = _get_shared_async_client()
+        _t0 = time.perf_counter()
         for _stream_attempt in range(2):
             await _outbound_limiter.acquire_async()
             _record_attempt_context(logical_call_id, 1, request_metadata=_request_metadata(payload))
@@ -1988,14 +1994,6 @@ class LLMClient(LLMProvider):
                     if isinstance(usage, dict):
                         result.usage = usage
                         _record_attempt_context(logical_call_id, 1, usage=usage)
-                        _log_usage(
-                            provider=self.provider,
-                            model=model or self.model,
-                            prompt_tokens=usage.get("prompt_tokens", 0),
-                            completion_tokens=usage.get("completion_tokens", 0),
-                            total_tokens=usage.get("total_tokens", 0),
-                            call_status="ok",
-                        )
 
                     choices = obj.get("choices")
                     if not isinstance(choices, list) or not choices:
@@ -2039,6 +2037,19 @@ class LLMClient(LLMProvider):
                     # Tool call deltas
                     _accumulate_native_tool_call_deltas(tc_accum, delta.get("tool_calls"))
             break
+
+        if isinstance(result.usage, dict):
+            # One ledger row per streamed call, written after the stream ends so
+            # providers repeating ``usage`` in every chunk do not multiply rows.
+            _log_usage(
+                provider=self.provider,
+                model=model or self.model,
+                prompt_tokens=result.usage.get("prompt_tokens", 0),
+                completion_tokens=result.usage.get("completion_tokens", 0),
+                total_tokens=result.usage.get("total_tokens", 0),
+                call_status="ok",
+                duration_ms=(time.perf_counter() - _t0) * 1000,
+            )
 
         # Parse accumulated tool calls
         result.tool_calls.extend(_parse_native_tool_calls(tc_accum))
@@ -2102,6 +2113,7 @@ class LLMClient(LLMProvider):
         headers.update(_billing_request_headers(logical_call_id, 2))
         timeout = _make_request_timeout(self.stream_timeout)
         client = _get_shared_async_client()
+        _t0 = time.perf_counter()
         try:
             await _outbound_limiter.acquire_async()
             _record_attempt_context(logical_call_id, 2, request_metadata=_request_metadata(body))
@@ -2136,6 +2148,7 @@ class LLMClient(LLMProvider):
                 completion_tokens=usage.get("completion_tokens", 0),
                 total_tokens=usage.get("total_tokens", 0),
                 call_status="ok",
+                duration_ms=(time.perf_counter() - _t0) * 1000,
             )
         choices = data.get("choices")
         first_choice: dict[str, Any] = {}
@@ -2150,7 +2163,11 @@ class LLMClient(LLMProvider):
 
         return ToolCallRepair(
             calls,
-            {"content": message.get("content") or "", "finish_reason": first_choice.get("finish_reason"), "usage": usage},
+            {
+                "content": message.get("content") or "",
+                "finish_reason": first_choice.get("finish_reason"),
+                "usage": usage,
+            },
         )
 
     def _extract_stream_delta(self, payload: dict[str, Any]) -> str | None:

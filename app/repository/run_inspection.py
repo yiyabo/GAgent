@@ -116,3 +116,160 @@ def fetch_run_usage(run_id: str) -> list[dict[str, Any]]:
             return []
         raise
     return [dict(row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Plan task inspection (read-only; plan shard + main usage ledger)
+# ---------------------------------------------------------------------------
+
+def _missing_schema(exc: sqlite3.OperationalError) -> bool:
+    text = str(exc).lower()
+    return "no such table" in text or "no such column" in text
+
+
+def _job_dict(row: Any) -> dict[str, Any]:
+    job = dict(row)
+    for key in ("stats_json", "metadata_json"):
+        raw = job.pop(key, None)
+        try:
+            decoded = json.loads(raw) if raw else None
+        except (TypeError, ValueError):
+            decoded = None
+        job[key[: -len("_json")]] = decoded if isinstance(decoded, dict) else {}
+    return job
+
+
+def _find_plan_task_job(
+    conn: sqlite3.Connection, task_id: int, job_id: str | None
+) -> dict[str, Any] | None:
+    if job_id:
+        row = conn.execute(
+            """
+            SELECT job_id, job_type, mode, target_task_id, session_id, status, error,
+               stats_json, metadata_json, created_at, started_at, finished_at
+            FROM decomposition_jobs
+            WHERE job_id = ? AND job_type = 'plan_execute'
+            """,
+            (job_id,),
+        ).fetchone()
+        return _job_dict(row) if row else None
+    # Latest plan_execute job that logged this task, else one that targeted it,
+    # else one whose stats/metadata reference it.
+    row = conn.execute(
+        """
+        SELECT job_id, job_type, mode, target_task_id, session_id, status, error,
+               stats_json, metadata_json, created_at, started_at, finished_at
+        FROM decomposition_jobs
+        WHERE job_type = 'plan_execute'
+          AND (
+            job_id IN (
+              SELECT job_id FROM decomposition_job_logs
+              WHERE json_extract(metadata_json, '$.task_id') = ?
+            )
+            OR target_task_id = ?
+            OR json_extract(metadata_json, '$.task_id') = ?
+            OR json_extract(stats_json, '$.task_id') = ?
+          )
+        ORDER BY COALESCE(started_at, created_at) DESC, created_at DESC
+        LIMIT 1
+        """,
+        (task_id, task_id, task_id, task_id),
+    ).fetchone()
+    return _job_dict(row) if row else None
+
+
+def _decode_meta(raw: Any) -> dict[str, Any] | None:
+    try:
+        value = json.loads(raw) if raw else None
+    except (TypeError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def load_plan_task_inspection_inputs(
+    plan_id: int, task_id: int, job_id: str | None = None
+) -> dict[str, Any] | None:
+    """Gather the rows ``build_plan_task_inspection`` needs, or None if no task.
+
+    Returns ``{"task", "job", "logs", "log_counts", "usage_rows"}``. Streaming
+    ``thinking_delta`` rows are counted in SQL and never loaded.
+    """
+    from app.database import plan_db_connection
+    from app.repository.plan_storage import get_plan_db_path
+    from app.services.run_inspector import plan_task_run_id
+
+    path = get_plan_db_path(plan_id)
+    if not path.exists():
+        return None
+    with plan_db_connection(path) as conn:
+        task_row = conn.execute(
+            """
+            SELECT id, name, status, instruction, execution_result, created_at, updated_at
+            FROM tasks WHERE id = ?
+            """,
+            (task_id,),
+        ).fetchone()
+        if task_row is None:
+            return None
+        task = dict(task_row)
+        try:
+            job = _find_plan_task_job(conn, task_id, job_id)
+        except sqlite3.OperationalError as exc:
+            if not _missing_schema(exc):
+                raise
+            job = None
+        logs: list[tuple[int, str, dict[str, Any]]] = []
+        log_counts: dict[str, int] = {}
+        if job is not None:
+            params = (job["job_id"], task_id)
+            rows = conn.execute(
+                """
+                SELECT id, timestamp, level, message, metadata_json
+                FROM decomposition_job_logs
+                WHERE job_id = ?
+                  AND json_extract(metadata_json, '$.task_id') = ?
+                  AND COALESCE(json_extract(metadata_json, '$.sub_type'), '') != 'thinking_delta'
+                ORDER BY id ASC
+                """,
+                params,
+            ).fetchall()
+            logs = [
+                (
+                    int(row["id"]),
+                    str(row["timestamp"] or ""),
+                    {"level": row["level"], "message": row["message"], "metadata": _decode_meta(row["metadata_json"])},
+                )
+                for row in rows
+            ]
+            count_rows = conn.execute(
+                """
+                SELECT COALESCE(json_extract(metadata_json, '$.sub_type'), level) AS kind, COUNT(*) AS n
+                FROM decomposition_job_logs
+                WHERE job_id = ? AND json_extract(metadata_json, '$.task_id') = ?
+                GROUP BY kind
+                """,
+                params,
+            ).fetchall()
+            log_counts = {str(row["kind"]): int(row["n"]) for row in count_rows}
+
+    run_id = plan_task_run_id(plan_id, task_id)
+    usage_rows: list[dict[str, Any]] = []
+    try:
+        with get_db() as conn:
+            usage_rows = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT phase, call_purpose, tool_name, call_status, model,
+                           prompt_tokens, completion_tokens, total_tokens,
+                           cache_read_tokens, duration_ms, estimated_cost, cost_currency
+                    FROM llm_usage_log
+                    WHERE run_id = ? OR run_id LIKE ? || ':%'
+                    """,
+                    (run_id, run_id),
+                ).fetchall()
+            ]
+    except sqlite3.OperationalError as exc:
+        if not _missing_schema(exc):
+            raise
+    return {"task": task, "job": job, "logs": logs, "log_counts": log_counts, "usage_rows": usage_rows}
