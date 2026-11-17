@@ -242,6 +242,31 @@ class _SubmitPayloadMethods:
                 conflict_strategy=conflict_strategy,
                 trusted=trusted,
             )
+            if item is None and reason and "not an allowed" in reason:
+                # The agent picked the wrong module (e.g. a .newick tree under
+                # "code").  Publish it where the policy would have put it.
+                fallback = self._classify_module(resolved)
+                if fallback and fallback != str(module_hint).strip().lower():
+                    item, retry_reason = self._copy_resolved_file_to_deliverables_with_reason(
+                        file_path=resolved,
+                        module=fallback,
+                        latest_root=latest_root,
+                        session_dir=session_dir,
+                        raw_result=raw_result,
+                        publish_status=publish_status,
+                        now=now,
+                        previous_manifest=previous_manifest,
+                        from_explicit_submit=True,
+                        conflict_strategy=conflict_strategy,
+                        trusted=trusted,
+                    )
+                    if item is not None:
+                        warnings.append(
+                            f"artifact[{idx}] published under '{fallback}' instead of "
+                            f"'{module_hint}': {reason}"
+                        )
+                    else:
+                        reason = retry_reason or reason
             if item is not None:
                 out.append(item)
                 continue

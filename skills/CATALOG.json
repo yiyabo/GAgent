@@ -76,7 +76,7 @@
         "scanner": "passed",
         "scanner_version": 1,
         "reviewed_by": "claude (AI), full text read",
-        "reviewed_at": "2026-10-18",
+        "reviewed_at": "2026-11-17",
         "human_signoff": false,
         "notes": "Written in-house; commit is the one that added the skill to this repository. Not a third-party import."
       }

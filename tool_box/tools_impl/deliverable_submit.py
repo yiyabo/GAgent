@@ -7,15 +7,36 @@ Used when DELIVERABLES_INGEST_MODE=explicit (see app.config.deliverable_config).
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _absolute_if_found(path_text: str, tool_context: Any) -> str:
+    """Resolve a relative artifact path the same way file tools do.
+
+    The model usually writes files relative to its working directory (a plan
+    task's output dir or the chat session cwd).  The publisher only knows the
+    session root, so resolve here and hand it an absolute path when the file
+    exists; otherwise keep the text so the publisher can try its own bases.
+    """
+    if tool_context is None or Path(path_text).expanduser().is_absolute():
+        return path_text
+    try:
+        from tool_box.path_resolution import resolve_tool_path
+
+        resolved = resolve_tool_path(path_text, tool_context=tool_context)
+    except Exception:  # noqa: BLE001 - fall back to the publisher's resolution
+        return path_text
+    return str(resolved) if resolved.is_file() else path_text
 
 
 async def deliverable_submit_handler(
     *,
     publish: bool = True,
     artifacts: Optional[List[Dict[str, Any]]] = None,
+    tool_context: Any = None,
 ) -> Dict[str, Any]:
     """
     Return a structured payload consumed by DeliverablePublisher.publish_from_tool_result.
@@ -30,7 +51,10 @@ async def deliverable_submit_handler(
         path_val = row.get("path")
         mod_val = row.get("module")
         if isinstance(path_val, str) and path_val.strip() and isinstance(mod_val, str) and mod_val.strip():
-            entry: Dict[str, Any] = {"path": path_val.strip(), "module": mod_val.strip().lower()}
+            entry: Dict[str, Any] = {
+                "path": _absolute_if_found(path_val.strip(), tool_context),
+                "module": mod_val.strip().lower(),
+            }
             reason = row.get("reason")
             if isinstance(reason, str) and reason.strip():
                 entry["reason"] = reason.strip()
