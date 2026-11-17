@@ -592,6 +592,11 @@ async def execute_chat_run(run_id: str) -> None:
             except RunDeadlineExceeded:
                 logger.warning("chat_run deadline closeout time exhausted run=%s", run_id)
             return
+        if hub.is_shutting_down() and not cancel_ev.is_set():
+            # Process shutdown (deploy/restart), not a user cancel: leave the run
+            # open so the next process reaps it as interrupted and resumes it.
+            logger.info("chat_run left resumable at shutdown run=%s", run_id)
+            raise
         if not lease_lost.is_set():
             hub.request_cancel(run_id)
             await run_stage(emit_run_event({"type": "error", "message": "Run cancelled."}), stage="cancel-closeout", closeout=True)

@@ -552,6 +552,29 @@ def reap_expired_chat_runs(*, ttl_seconds: int = DEFAULT_LEASE_TTL_SECONDS) -> i
     return n
 
 
+RESTART_INTERRUPTED_ERRORS = ("server restarted; run interrupted", _STALE_RUN_ERROR)
+
+
+def list_restart_interrupted_runs(*, window_hours: float = 12.0, limit: int = 50) -> List[Dict[str, Any]]:
+    """Failed runs that a restart or lost worker interrupted, newest first."""
+    hours = max(0.1, float(window_hours))
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT run_id, session_id, owner_id, status, user_message_id, assistant_message_id,
+                   idempotency_key, error, request_json, created_at, started_at,
+                   finished_at, last_event_seq
+            FROM chat_runs
+            WHERE status = 'failed' AND error IN (?, ?)
+              AND COALESCE(finished_at, created_at) >= datetime('now', '-{hours} hours')
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (*RESTART_INTERRUPTED_ERRORS, max(1, min(int(limit), 200))),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def fix_stale_chat_runs_on_startup() -> int:
     """Startup wrapper around the lease-aware reaper (kept for main.py compat)."""
     return reap_expired_chat_runs()

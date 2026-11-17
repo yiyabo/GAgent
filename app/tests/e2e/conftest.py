@@ -122,6 +122,8 @@ def e2e_app_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[
     monkeypatch.setattr(app_main, "initialize_toolbox", _noop_initialize_toolbox)
     monkeypatch.setattr(app_main, "fix_stale_jobs_on_startup", lambda: 0)
     monkeypatch.setattr(plan_storage, "get_running_phagescope_trackings", lambda: [])
+    monkeypatch.setattr(plan_storage, "list_interrupted_plan_jobs", lambda: [])
+    monkeypatch.setenv("CHAT_RUN_AUTO_RESUME_ENABLED", "0")
 
     # --- Create the app with real LLM config ------------------------------
     _reset_all_singletons()

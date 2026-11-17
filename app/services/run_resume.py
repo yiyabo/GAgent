@@ -42,6 +42,13 @@ def resume_info(row: dict) -> dict:
               "reason": "任务尚未结束，请先等待或停止任务。"}
     if row["status"] not in {"failed", "cancelled"}:
         return result
+    from app.repository.chat_runs import get_chat_run_by_idempotency_key
+
+    continuation = get_chat_run_by_idempotency_key(row["session_id"], f"resume:{row['run_id']}")
+    if continuation is not None:
+        # Already continued (e.g. automatically after a restart): resuming again
+        # attaches to that continuation instead of starting another one.
+        result["resumed_run_id"] = continuation["run_id"]
     try:
         payload = json.loads(row.get("request_json") or "{}")
         message = payload.get("message")

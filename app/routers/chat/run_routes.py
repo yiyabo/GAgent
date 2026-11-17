@@ -420,6 +420,13 @@ async def resume_run(
             existing_source = None
         if existing_source != run_id:
             raise HTTPException(status_code=409, detail="This client_message_id belongs to another request")
+    # The server may already have continued this run after a restart; attach the
+    # caller to that continuation instead of starting a second one.
+    auto_child = get_chat_run_by_idempotency_key(row["session_id"], f"resume:{run_id}")
+    if auto_child is not None:
+        child_id = auto_child["run_id"]
+        return {"run_id": child_id, "session_id": row["session_id"], "resume_from_run_id": run_id,
+                "events_stream_url": f"/chat/runs/{child_id}/events"}
     resumed_request = bind_chat_request_to_principal(request, resumed_request)
     child = start_background_chat_run(
         resumed_request, session_id=row["session_id"], owner_id=get_request_owner_id(request),
