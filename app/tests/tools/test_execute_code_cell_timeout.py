@@ -31,7 +31,7 @@ def _clean_env(monkeypatch):
         (60, 300),  # never shorter than the default
         (1800, 1800),
         ("3600", 3600),
-        (99999, 7200),  # clamped to the maximum
+        (99999, 21600),  # clamped to the maximum
     ],
 )
 def test_resolve_cell_timeout(requested, expected):
@@ -49,7 +49,7 @@ def test_max_cell_timeout_is_operator_configurable(monkeypatch):
 def test_outer_tool_timeout_follows_requested_cell_limit():
     assert UnifiedToolExecutor.timeout_for("execute_code", {"code": "x"}, 60) == 420
     assert UnifiedToolExecutor.timeout_for("execute_code", {"code": "x", "timeout_seconds": 3600}, 60) == 3720
-    assert UnifiedToolExecutor.timeout_for("execute_code", {"timeout_seconds": 99999}, 60) == 7320
+    assert UnifiedToolExecutor.timeout_for("execute_code", {"timeout_seconds": 99999}, 60) == 21720
     assert UnifiedToolExecutor.timeout_for("web_search", {"timeout_seconds": 9999}, 60) == 600
     assert UnifiedToolExecutor.timeout_for("unknown_tool", None, 42) == 42
 

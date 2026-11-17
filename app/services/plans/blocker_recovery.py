@@ -10,10 +10,16 @@ at the 5-minute cell limit). Here the job layer gets one bounded repair round:
    deterministic fallback when the model is unavailable;
 2. rerun that task with a repair brief describing the failure and the
    alternatives to try;
-3. rerun the blocked task once.
+3. rerun the blocked task.
 
-Only dependency-blocked results are handled. Ordinary failures already went
-through PlanExecutor's own bounded repair, so they are not retried again here.
+A task that finished but reports that its own quality gate was not met (for
+example "recall 92% < 95%, do not release P2") is reworked the same way: the
+text is only a recall signal, and one LLM review decides whether a gate really
+failed and which task must be reworked. Standards are never relaxed; the job
+retries with a different method for several bounded rounds, then stops.
+
+Ordinary failures already went through PlanExecutor's own bounded repair, so
+they are not retried again here.
 """
 from __future__ import annotations
 
@@ -59,15 +65,28 @@ def enabled() -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
-def max_rounds_per_job() -> int:
+def _int_env(name: str, default: int, low: int, high: int) -> int:
     try:
-        value = int(os.getenv("PLAN_BLOCKER_RECOVERY_MAX_ROUNDS") or 2)
+        value = int(os.getenv(name) or default)
     except ValueError:
-        value = 2
-    return max(0, min(5, value))
+        value = default
+    return max(low, min(high, value))
 
 
-def is_blocked_result(result: Any) -> bool:
+def max_rounds_per_job() -> int:
+    return _int_env("PLAN_BLOCKER_RECOVERY_MAX_ROUNDS", 8, 0, 30)
+
+
+def max_rounds_per_task() -> int:
+    return _int_env("PLAN_BLOCKER_RECOVERY_MAX_TASK_ROUNDS", 3, 1, 10)
+
+
+def gate_review_enabled() -> bool:
+    raw = (os.getenv("PLAN_GATE_REWORK_ENABLED") or "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def is_blocked_result(result: Any, *, include_repaired: bool = False) -> bool:
     if result is None or str(getattr(result, "status", "") or "").strip().lower() not in {"skipped", "blocked"}:
         return False
     metadata = getattr(result, "metadata", None)
@@ -75,7 +94,28 @@ def is_blocked_result(result: Any) -> bool:
         return False
     if metadata.get("termination_reason") in {"cancelled", "run_deadline_exceeded", "llm_unavailable"}:
         return False
-    return not metadata.get(SELF_REPAIR_CONTEXT_KEY)
+    return include_repaired or not metadata.get(SELF_REPAIR_CONTEXT_KEY)
+
+
+# Recall only: these phrases make a finished task worth one LLM gate review.
+_GATE_RECALL_RE = re.compile(
+    r"GATE_FAILED|不放行|未放行|不予放行|未达标|不达标|未通过|没有通过|不满足|未满足|门槛|阈值"
+    r"|below (?:the )?(?:threshold|target|gate)|not met|did not meet|does not meet|fails? (?:the )?(?:gate|threshold)"
+    r"|not released|do not release|gate (?:failed|not passed)",
+    re.IGNORECASE,
+)
+
+
+def gate_review_candidate(result: Any) -> bool:
+    if not gate_review_enabled() or result is None:
+        return False
+    if str(getattr(result, "status", "") or "").strip().lower() != "completed":
+        return False
+    metadata = getattr(result, "metadata", None)
+    if isinstance(metadata, dict) and (metadata.get("reused") or metadata.get("termination_reason") in {
+            "cancelled", "run_deadline_exceeded", "llm_unavailable"}):
+        return False
+    return bool(_GATE_RECALL_RE.search(str(getattr(result, "content", "") or "")))
 
 
 @dataclass
@@ -84,6 +124,7 @@ class RepairDiagnosis:
     brief: str
     alternatives: list[str] = field(default_factory=list)
     source: str = "heuristic"
+    kind: str = "blocked"
 
 
 @dataclass
@@ -203,8 +244,29 @@ def _parse(raw: str, allowed: Sequence[int]) -> RepairDiagnosis | None:
     return RepairDiagnosis(target_task_id=target, brief=brief, alternatives=alternatives, source="llm")
 
 
+def _history_lines(history: Sequence[dict[str, Any]] | None) -> list[str]:
+    if not history:
+        return []
+    lines = ["", "Earlier repair rounds for this task (do not repeat them):"]
+    for index, item in enumerate(history, start=1):
+        lines.append(f"- Round {index}: reworked #{item.get('target_task_id')} — {_clip(item.get('brief'), 400)}; "
+                     f"result: upstream={item.get('upstream_status', 'n/a')}, retry={item.get('retry_status', 'n/a')}")
+    return lines
+
+
+def _ask(prompt: str, chat: Callable[[str], str] | None, purpose: str) -> str:
+    if chat is not None:
+        return chat(prompt)
+    from app.llm import usage_context_override
+    from app.services.llm.llm_service import get_llm_service
+
+    with usage_context_override(phase="plan_repair", call_purpose=purpose):
+        return get_llm_service().chat(prompt, max_tokens=900, timeout=60, retry_attempts=1)
+
+
 def diagnose(blocked: Any, detail: str, candidates: Sequence[Any],
-             chat: Callable[[str], str] | None = None) -> RepairDiagnosis:
+             chat: Callable[[str], str] | None = None,
+             history: Sequence[dict[str, Any]] | None = None) -> RepairDiagnosis:
     fallback = _heuristic(blocked, detail, candidates)
     lines = [
         _SYSTEM_PROMPT,
@@ -212,6 +274,7 @@ def diagnose(blocked: Any, detail: str, candidates: Sequence[Any],
         f"Blocked task #{blocked.id}: {blocked.display_name()}",
         f"Instruction: {_clip(getattr(blocked, 'instruction', ''), 800)}",
         f"Blocker report: {_clip(detail, 1500)}",
+        *_history_lines(history),
         "",
         "Earlier completed tasks (most recent first):",
     ]
@@ -219,14 +282,7 @@ def diagnose(blocked: Any, detail: str, candidates: Sequence[Any],
         lines.append(f"- #{candidate.id} {candidate.display_name()}: {_clip(_task_text(candidate), 900)}")
     prompt = "\n".join(lines)
     try:
-        if chat is None:
-            from app.llm import usage_context_override
-            from app.services.llm.llm_service import get_llm_service
-
-            with usage_context_override(phase="plan_repair", call_purpose="plan_blocker_diagnosis"):
-                raw = get_llm_service().chat(prompt, max_tokens=700, timeout=45, retry_attempts=1)
-        else:
-            raw = chat(prompt)
+        raw = _ask(prompt, chat, "plan_blocker_diagnosis")
     except RunDeadlineExceeded:
         raise
     except Exception as exc:  # fail soft: a heuristic diagnosis still allows the repair round
@@ -241,15 +297,78 @@ def diagnose(blocked: Any, detail: str, candidates: Sequence[Any],
     return parsed
 
 
+_GATE_PROMPT = """You review one finished task of a research plan. Its report may say that a quality gate or
+acceptance criterion was not met (for example recall below the required threshold, "do not release the next stage").
+
+Decide:
+- gate_failed: true only when the task's own instruction or report states a concrete criterion that the produced result
+  does NOT meet, so later tasks would build on substandard output. Mentioning thresholds that were met is not a failure.
+- target_task_id: the task whose output must be reworked to meet the criterion — the reviewed task itself, or one of the
+  listed earlier tasks when the root cause is there (for example a missing family in an earlier panel).
+- brief: what failed and by how much, under 400 characters.
+- alternatives: 2-5 concrete different methods to reach the SAME criterion. Never propose lowering the threshold,
+  shrinking the validation set or relabelling failures as passes.
+
+Return STRICT JSON only:
+{"gate_failed": <true|false>, "target_task_id": <int>, "brief": "...", "alternatives": ["...", "..."]}"""
+
+
+def review_gate(node: Any, content: str, candidates: Sequence[Any],
+                chat: Callable[[str], str] | None = None,
+                history: Sequence[dict[str, Any]] | None = None) -> RepairDiagnosis | None:
+    """Return a rework diagnosis when an LLM confirms a failed quality gate; ``None`` otherwise (fail open)."""
+    lines = [
+        _GATE_PROMPT,
+        "",
+        f"Reviewed task #{node.id}: {node.display_name()}",
+        f"Instruction: {_clip(getattr(node, 'instruction', ''), 1200)}",
+        f"Report: {_clip(content, 2500)}",
+        *_history_lines(history),
+        "",
+        "Earlier completed tasks (most recent first):",
+    ]
+    for candidate in candidates:
+        lines.append(f"- #{candidate.id} {candidate.display_name()}: {_clip(_task_text(candidate), 600)}")
+    try:
+        raw = _ask("\n".join(lines), chat, "plan_gate_review")
+    except RunDeadlineExceeded:
+        raise
+    except Exception as exc:  # fail open: an unavailable reviewer keeps the task's own status
+        logger.warning("Gate review LLM call failed for task %s: %s", node.id, exc)
+        return None
+    text = str(raw or "")
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        data = json.loads(text[start:end + 1])
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or data.get("gate_failed") is not True:
+        return None
+    parsed = _parse(text[start:end + 1], [node.id] + [c.id for c in candidates])
+    if parsed is None:
+        return None
+    parsed.kind = "gate"
+    if not parsed.alternatives:
+        parsed.alternatives = list(_GENERIC_ALTERNATIVES)
+    return parsed
+
+
 def repair_context(base: dict[str, Any] | None, *, diagnosis: RepairDiagnosis, blocked_task_id: int,
-                   role: str) -> dict[str, Any]:
+                   role: str, history: Sequence[dict[str, Any]] | None = None) -> dict[str, Any]:
     context = dict(base or {})
     context[SELF_REPAIR_CONTEXT_KEY] = {
         "role": role,
+        "kind": diagnosis.kind,
         "blocked_task_id": blocked_task_id,
         "target_task_id": diagnosis.target_task_id,
         "brief": diagnosis.brief,
         "alternatives": list(diagnosis.alternatives),
+        "previous_rounds": [
+            {"target_task_id": item.get("target_task_id"), "brief": _clip(item.get("brief"), 300)}
+            for item in (history or [])
+        ],
     }
     return context
 
@@ -259,17 +378,27 @@ def prompt_lines(session_context: dict[str, Any] | None) -> list[str]:
     if not isinstance(info, dict):
         return []
     alternatives = "\n".join(f"  - {item}" for item in info.get("alternatives") or [])
+    gate = info.get("kind") == "gate"
     if info.get("role") == "upstream_repair":
-        head = (f"SELF-REPAIR RUN: task #{info.get('blocked_task_id')} is blocked by this task's output. "
-                "The previous attempt of this task did not remove the blocker:")
+        head = (f"SELF-REPAIR RUN: task #{info.get('blocked_task_id')} "
+                + ("did not pass its quality gate because of this task's output:" if gate
+                   else "is blocked by this task's output. The previous attempt of this task did not remove the blocker:"))
+    elif gate:
+        head = "QUALITY-GATE REWORK: the previous attempt of this task did not meet its own acceptance criterion:"
     else:
         head = "SELF-REPAIR RETRY: the previous attempt of this task stopped as blocked:"
+    previous = "".join(
+        f"\n  - round {index}: reworked #{item.get('target_task_id')}: {item.get('brief')}"
+        for index, item in enumerate(info.get("previous_rounds") or [], start=1)
+    )
     line = (
         f"{head} {info.get('brief')}\n"
         "Do not repeat the same approach. Try these alternatives in order and keep provenance of what changed:\n"
         f"{alternatives}\n"
-        "Reuse valid partial outputs. Report BLOCKED_DEPENDENCY again only after these alternatives were actually "
-        "tried, and state each attempt and why it failed."
+        + (f"Earlier rounds already tried (use a different method):{previous}\n" if previous else "")
+        + "Keep the original standard: never lower a threshold, shrink a validation set or relabel a failure as a "
+        "pass. Reuse valid partial outputs. Report BLOCKED_DEPENDENCY or GATE_FAILED again only after these "
+        "alternatives were actually tried, and state each attempt and why it failed."
     )
     return [line]
 
@@ -280,31 +409,55 @@ def _execute(executor: Any, plan_id: int, task_id: int, config_factory: Callable
                                                                         force_rerun=True))
 
 
-def attempt(*, executor: Any, plan_id: int, task_id: int, result: Any, task_order: Sequence[int],
-            session_context: dict[str, Any] | None, config_factory: Callable[..., Any],
-            log: Callable[..., Any], chat: Callable[[str], str] | None = None) -> RecoveryOutcome | None:
-    """Run one repair round for a blocked task; return ``None`` when not applicable."""
-    if not enabled() or not is_blocked_result(result):
+def plan_round(*, executor: Any, plan_id: int, task_id: int, result: Any, task_order: Sequence[int],
+               chat: Callable[[str], str] | None = None,
+               history: Sequence[dict[str, Any]] | None = None) -> RepairDiagnosis | None:
+    """Decide whether ``result`` needs a repair round and diagnose it; ``None`` means keep the result."""
+    if not enabled():
+        return None
+    blocked_result = is_blocked_result(result, include_repaired=bool(history))
+    if not blocked_result and not gate_review_candidate(result):
         return None
     tree = executor._repo.get_plan_tree(plan_id)
-    blocked = getattr(tree, "nodes", {}).get(task_id)
-    if blocked is None:
+    node = getattr(tree, "nodes", {}).get(task_id)
+    if node is None:
         return None
-    metadata = getattr(result, "metadata", None) or {}
-    detail = str(metadata.get("blocked_dependency_detail") or getattr(result, "content", "") or "")
     candidates = _candidates(tree, task_id, task_order)
-    diagnosis = diagnose(blocked, detail, candidates, chat=chat)
-    log("info", "Self-repair: diagnosing blocked task.", {
+    if blocked_result:
+        metadata = getattr(result, "metadata", None) or {}
+        detail = str(metadata.get("blocked_dependency_detail") or getattr(result, "content", "") or "")
+        diagnosis = diagnose(node, detail, candidates, chat=chat, history=history)
+        if metadata.get("quality_gate_failed"):
+            diagnosis.kind = "gate"
+        return diagnosis
+    return review_gate(node, str(getattr(result, "content", "") or ""), candidates, chat=chat, history=history)
+
+
+def attempt(*, executor: Any, plan_id: int, task_id: int, result: Any, task_order: Sequence[int],
+            session_context: dict[str, Any] | None, config_factory: Callable[..., Any],
+            log: Callable[..., Any], chat: Callable[[str], str] | None = None,
+            diagnosis: RepairDiagnosis | None = None,
+            history: Sequence[dict[str, Any]] | None = None) -> RecoveryOutcome | None:
+    """Run one repair round for a blocked or gate-failed task; return ``None`` when not applicable."""
+    if diagnosis is None:
+        diagnosis = plan_round(executor=executor, plan_id=plan_id, task_id=task_id, result=result,
+                               task_order=task_order, chat=chat, history=history)
+    if diagnosis is None:
+        return None
+    log("info", "Self-repair: quality gate not met; reworking." if diagnosis.kind == "gate"
+        else "Self-repair: diagnosing blocked task.", {
         "sub_type": "self_repair", "task_id": task_id, "target_task_id": diagnosis.target_task_id,
-        "source": diagnosis.source, "brief": diagnosis.brief,
+        "source": diagnosis.source, "brief": diagnosis.brief, "kind": diagnosis.kind,
+        "round": len(history or []) + 1,
     })
     summary: dict[str, Any] = {"blocked_task_id": task_id, "target_task_id": diagnosis.target_task_id,
-                               "diagnosis_source": diagnosis.source, "brief": diagnosis.brief}
+                               "diagnosis_source": diagnosis.source, "brief": diagnosis.brief,
+                               "kind": diagnosis.kind}
     repair_status = "not_needed"
     if diagnosis.target_task_id != task_id:
         upstream = _execute(executor, plan_id, diagnosis.target_task_id, config_factory,
                             repair_context(session_context, diagnosis=diagnosis, blocked_task_id=task_id,
-                                           role="upstream_repair"))
+                                           role="upstream_repair", history=history))
         repair_status = str(getattr(upstream, "status", "") or "unknown")
         summary["upstream_status"] = repair_status
         log("info" if repair_status == "completed" else "warning", "Self-repair: upstream task rerun finished.", {
@@ -316,7 +469,7 @@ def attempt(*, executor: Any, plan_id: int, task_id: int, result: Any, task_orde
             return RecoveryOutcome(result=result, diagnosis=diagnosis, repair_status=repair_status, summary=summary)
     retried = _execute(executor, plan_id, task_id, config_factory,
                        repair_context(session_context, diagnosis=diagnosis, blocked_task_id=task_id,
-                                      role="blocked_retry"))
+                                      role="blocked_retry", history=history))
     retried_meta = getattr(retried, "metadata", None)
     if isinstance(retried_meta, dict):
         retried_meta.setdefault(SELF_REPAIR_CONTEXT_KEY, summary)
@@ -334,8 +487,12 @@ __all__ = [
     "attempt",
     "diagnose",
     "enabled",
+    "gate_review_candidate",
     "is_blocked_result",
     "max_rounds_per_job",
+    "max_rounds_per_task",
+    "plan_round",
+    "review_gate",
     "prompt_lines",
     "repair_context",
 ]

@@ -1,6 +1,7 @@
 """Keep edits to a persisted task tree separate from execution checklists."""
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
 
@@ -40,7 +41,67 @@ def agent_plan_edit_allowed(agent: Any) -> bool | None:
     return user_requested_plan_edit(message)
 
 
-def blocked_plan_edit(operation: str, allowed: bool | None) -> dict | None:
+# A running Plan task may revise unfinished parts of its own Plan, but only
+# through explicit optimize changes with a reason (never a generated rewrite,
+# a new Plan or a status override), and never by removing the running task.
+EXECUTION_REVISION = "execution_revision"
+EXECUTION_REVISION_GUIDANCE = (
+    "PLAN REVISION DURING EXECUTION: the Plan was drafted before the work started and may turn out to be wrong. "
+    "First try hard to complete this task as written: change methods, tools, data sources or parameters, and give "
+    "long downloads or computations the time they need. If, after real attempts, the task structure itself cannot "
+    "reach the goal (a step is impossible, a needed step is missing, or the order is wrong), revise the unfinished "
+    "part of the Plan with plan_operation optimize: an explicit changes list (add_task / update_task / delete_task "
+    "/ reorder_task) and a reason that lists what you tried. A revision may change how a goal is reached, never "
+    "the bar: keep every threshold, validation set and acceptance criterion at least as strict, and never relabel "
+    "a failure as a pass. Do not delete the running task or its parents; new tasks run later in the same job."
+)
+_REVISION_ACTIONS = frozenset({"add_task", "update_task", "delete_task", "reorder_task", "update_description"})
+
+
+def execution_edit_mode() -> bool | str:
+    """Edit permission for Plan task execution: revision by default, ``False`` when disabled."""
+    raw = (os.getenv("PLAN_EXECUTION_REVISION_ENABLED") or "1").strip().lower()
+    return False if raw in {"0", "false", "no", "off"} else EXECUTION_REVISION
+
+
+def _revision_denied(operation: str, error: str) -> dict:
+    return {"success": False, "operation": operation, "executed": False,
+            "error_code": "plan_revision_not_allowed", "error": error}
+
+
+def blocked_execution_revision(operation: str, *, changes: Any, reason: Any,
+                               protected_task_ids: set[int] | None = None) -> dict | None:
+    if operation != "optimize":
+        return _revision_denied(operation, "While executing a Plan task you may revise unfinished tasks only with "
+            "plan_operation optimize and an explicit changes list. Do not create or bind another Plan or set task "
+            "status by hand; status follows execution.")
+    if not isinstance(changes, list) or not changes:
+        return _revision_denied(operation, "Provide an explicit changes list; a generated rewrite of the Plan is "
+            "not allowed during execution.")
+    if not str(reason or "").strip():
+        return _revision_denied(operation, "Provide reason: which methods were already tried, why the current "
+            "task structure cannot meet the goal, and how the revision keeps the original goals and thresholds.")
+    protected = protected_task_ids or set()
+    for change in changes:
+        action = str((change or {}).get("action") or "") if isinstance(change, dict) else ""
+        if action not in _REVISION_ACTIONS:
+            return _revision_denied(operation, f"Unsupported revision action: {action or '<missing>'}.")
+        if action == "delete_task":
+            try:
+                target = int(change.get("task_id"))
+            except (TypeError, ValueError):
+                target = None
+            if target in protected:
+                return _revision_denied(operation, "Do not delete the running task or its parent stages; finish "
+                    "or report this task instead.")
+    return None
+
+
+def blocked_plan_edit(operation: str, allowed: bool | str | None, *, changes: Any = None, reason: Any = None,
+                      protected_task_ids: set[int] | None = None) -> dict | None:
+    if allowed == EXECUTION_REVISION:
+        return blocked_execution_revision(operation, changes=changes, reason=reason,
+                                          protected_task_ids=protected_task_ids)
     if allowed is not False:
         return None
     return {"success": False, "operation": operation, "executed": False,
@@ -48,5 +109,5 @@ def blocked_plan_edit(operation: str, allowed: bool | None) -> dict | None:
         "error": "The user has not requested creating or editing a persistent Plan/task tree. Answer their current chat request using ordinary tools or an internal todo-list. If executing an existing task, preserve its original instructions and output requirements. Do not create, split, delete or rewrite Plan tasks, and do not announce a blocked plan operation that the user never requested."}
 
 
-def tool_plan_edit_allowed(tool_context: Any) -> bool | None:
+def tool_plan_edit_allowed(tool_context: Any) -> bool | str | None:
     return (getattr(tool_context, "extra", None) or {}).get("plan_tree_edit_allowed")

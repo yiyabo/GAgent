@@ -128,7 +128,11 @@ def _build_structured_plan_requirement_block(agent: DeepThinkAgent) -> str:
         rounds_left = agent.request_profile.get("plan_clarification_rounds_left")
         if isinstance(rounds_left, int):
             requirement_lines.append(plan_mode_question_guidance(rounds_left))
-    if agent.request_profile.get("plan_tree_edit_allowed") is False:
+    if agent.request_profile.get("plan_tree_edit_allowed") == "execution_revision" and plan_id is not None:
+        from app.services.plans.edit_policy import EXECUTION_REVISION_GUIDANCE
+
+        requirement_lines.append(EXECUTION_REVISION_GUIDANCE)
+    elif agent.request_profile.get("plan_tree_edit_allowed") is False:
         requirement_lines.append(
             "No persistent Plan has been requested in this chat. A topic selection or request to explain a subject "
              "is not permission to create a research project. Answer the current question in chat; do not create "

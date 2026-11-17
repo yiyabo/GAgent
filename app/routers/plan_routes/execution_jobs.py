@@ -21,6 +21,7 @@ from .dependency_plan import (
     _build_dependency_block_details,
     _dependency_warning_step,
     _persist_dependency_block,
+    _topological_task_order,
 )
 from .state import logger
 
@@ -147,12 +148,20 @@ def _self_repair_blocked(
     enforce_dependencies: bool,
     rounds_used: List[int],
 ) -> tuple[Any, Optional[Dict[str, Any]]]:
-    """Give a dependency-blocked task one bounded repair round instead of stopping the job."""
+    """Rework a blocked or gate-failed task in bounded rounds instead of stopping or building on it.
+
+    Each round diagnoses the cause (this task or an earlier one), reruns that
+    task with a brief listing what to try differently, then reruns this task.
+    Rounds stop when the task passes, or when the per-task / per-job round
+    limits are reached. A quality gate that is still unmet afterwards is
+    reported as such; the job never continues on substandard output.
+    """
     from app.services.plans import blocker_recovery
 
-    if not blocker_recovery.is_blocked_result(result) or len(rounds_used) >= blocker_recovery.max_rounds_per_job():
+    if not blocker_recovery.enabled():
         return result, None
-    rounds_used.append(task_id)
+    if not (blocker_recovery.is_blocked_result(result) or blocker_recovery.gate_review_candidate(result)):
+        return result, None
 
     def _config(*, session_context: Dict[str, Any], force_rerun: bool) -> ExecutionConfig:
         return ExecutionConfig(
@@ -162,27 +171,124 @@ def _self_repair_blocked(
             force_rerun=force_rerun,
         )
 
+    executor = _facade()._plan_executor
+    history: List[Dict[str, Any]] = []
+    unresolved: Any = None
     try:
-        outcome = blocker_recovery.attempt(
-            executor=_facade()._plan_executor,
-            plan_id=plan_id,
-            task_id=task_id,
-            result=result,
-            task_order=task_order,
-            session_context=session_ctx,
-            config_factory=_config,
-            log=_facade().log_job_event,
-        )
+        while True:
+            exhausted = (len(history) >= blocker_recovery.max_rounds_per_task()
+                         or len(rounds_used) >= blocker_recovery.max_rounds_per_job())
+            if exhausted and not blocker_recovery.gate_review_candidate(result):
+                # A still-blocked result needs no further diagnosis once the rounds are spent.
+                break
+            diagnosis = blocker_recovery.plan_round(executor=executor, plan_id=plan_id, task_id=task_id,
+                                                    result=result, task_order=task_order, history=history)
+            if diagnosis is None:
+                break
+            if exhausted:
+                unresolved = diagnosis
+                break
+            rounds_used.append(task_id)
+            outcome = blocker_recovery.attempt(
+                executor=executor, plan_id=plan_id, task_id=task_id, result=result, task_order=task_order,
+                session_context=session_ctx, config_factory=_config, log=_facade().log_job_event,
+                diagnosis=diagnosis, history=history,
+            )
+            if outcome is None:
+                break
+            history.append(dict(outcome.summary, round=len(history) + 1))
+            result = outcome.result
     except (RunDeadlineExceeded, asyncio.CancelledError):
         raise
     except Exception as exc:  # pragma: no cover - repair must never hide the original blocker
         logger.warning("Self-repair for task %s failed: %s", task_id, exc)
-        _facade().log_job_event("warning", "Self-repair failed; keeping the original blocker.",
+        _facade().log_job_event("warning", "Self-repair failed; keeping the latest result.",
                                 {"sub_type": "self_repair", "task_id": task_id, "error": str(exc)})
-        return result, {"blocked_task_id": task_id, "error": str(exc)}
-    if outcome is None:
+        return result, {"blocked_task_id": task_id, "error": str(exc), "rounds": history}
+    if not history and unresolved is None:
         return result, None
-    return outcome.result, outcome.summary
+    summary: Dict[str, Any] = dict(history[-1]) if history else {"blocked_task_id": task_id}
+    summary["rounds"] = history
+    if unresolved is not None and getattr(unresolved, "kind", "") == "gate":
+        result = _mark_gate_unmet(plan_id, task_id, result, unresolved.brief, len(history))
+        summary["quality_gate_unmet"] = unresolved.brief
+    return result, summary
+
+
+def _mark_gate_unmet(plan_id: int, task_id: int, result: Any, brief: str, rounds: int) -> Any:
+    """Keep a task whose quality gate is still unmet from feeding later tasks."""
+    metadata = dict(getattr(result, "metadata", None) or {})
+    metadata.update({"quality_gate_failed": True, "blocked_by_dependencies": True,
+                     "blocked_dependency_detail": brief, "rework_rounds": rounds})
+    try:
+        setattr(result, "metadata", metadata)
+        setattr(result, "status", "skipped")
+    except AttributeError:  # pragma: no cover - immutable result objects keep their status
+        return result
+    try:
+        _facade()._plan_repo.update_task(plan_id, task_id, status="failed")
+    except Exception as exc:  # pragma: no cover - status sync must not hide the gate result
+        logger.warning("Could not mark task %s as gate-failed: %s", task_id, exc)
+    _facade().log_job_event("warning", "Quality gate still unmet after rework; stopping before later tasks.",
+                            {"sub_type": "self_repair", "task_id": task_id, "brief": brief, "rounds": rounds})
+    return result
+
+
+def _stop_reason(task_id: int, result: Any, default: str) -> str:
+    metadata = getattr(result, "metadata", None) or {}
+    if isinstance(metadata, dict) and metadata.get("quality_gate_failed"):
+        return (f"Task #{task_id} did not meet its quality gate after {metadata.get('rework_rounds', 0)} rework "
+                "round(s); stopping so later tasks do not build on substandard output.")
+    return default
+
+
+def _plan_node_ids(plan_id: int) -> set:
+    try:
+        return set(_facade()._plan_repo.get_plan_tree(plan_id).nodes)
+    except Exception:  # pragma: no cover - a missing tree leaves the order unchanged
+        return set()
+
+
+def _absorb_plan_revisions(plan_id: int, task_order: List[int], next_index: int, known_ids: set, *,
+                           whole_plan: bool) -> bool:
+    """Fold tasks the executing agent added or deleted into the rest of ``task_order``.
+
+    Only the unexecuted tail (from ``next_index``) changes. A new task joins when
+    its parent is in this job's scope, when a remaining task depends on it, or
+    (for whole-plan jobs) when it sits directly under the root. The tail is then
+    re-sorted by dependencies. Returns ``True`` when the order changed.
+    """
+    try:
+        tree = _facade()._plan_repo.get_plan_tree(plan_id)
+    except Exception:  # pragma: no cover - keep the original order when the tree is unreadable
+        return False
+    current = set(tree.nodes)
+    added = current - known_ids
+    removed = known_ids - current
+    known_ids.clear()
+    known_ids.update(current)
+    if not added and not removed:
+        return False
+    done = task_order[:next_index]
+    tail = [task_id for task_id in task_order[next_index:] if task_id in current]
+    scope = set(task_order)
+    needed = {dep for task_id in tail for dep in (tree.nodes[task_id].dependencies or [])}
+    for task_id in sorted(added):
+        parent = tree.nodes[task_id].parent_id
+        parent_node = tree.nodes.get(parent) if parent is not None else None
+        under_root = parent is None or (parent_node is not None and parent_node.parent_id is None)
+        if parent in scope or task_id in needed or (whole_plan and under_root):
+            tail.append(task_id)
+    ordered, _cycle = _topological_task_order(tree, tail)
+    tail = ordered or tail
+    if done + tail == task_order:
+        return False
+    task_order[next_index:] = tail
+    _facade().log_job_event("info", "Plan revised during execution; updated the remaining order.", {
+        "sub_type": "plan_revision", "plan_id": plan_id, "added_task_ids": sorted(added),
+        "removed_task_ids": sorted(removed), "remaining_order": list(tail),
+    })
+    return True
 
 
 @bounded_plan_job(lambda: _facade().plan_decomposition_jobs)
@@ -293,8 +399,15 @@ def _run_task_chain_job(
         if owner_id:
             session_ctx["owner_id"] = owner_id
 
+        task_order = list(task_order)
+        known_ids = _plan_node_ids(plan_id)
         for idx, task_id in enumerate(task_order, start=1):
             check_run_active()
+            if idx > 1 and _absorb_plan_revisions(plan_id, task_order, idx - 1, known_ids, whole_plan=False):
+                total_steps = len(task_order)
+                if idx > len(task_order):
+                    break
+                task_id = task_order[idx - 1]
             _facade().log_job_event(
                 "info",
                 "Executing chain step.",
@@ -375,8 +488,9 @@ def _run_task_chain_job(
             if result.status == "skipped":
                 skipped.append(task_id)
                 _publish_progress(current_step=idx, current_task_id=task_id)
-                error = (
-                    f"Task #{task_id} was skipped (likely blocked by dependencies); stopping the chain."
+                error = _stop_reason(
+                    task_id, result,
+                    f"Task #{task_id} was skipped (likely blocked by dependencies); stopping the chain.",
                 )
                 _facade().log_job_event(
                     "warning",
@@ -604,8 +718,16 @@ def _run_full_plan_job(
             "paper_mode": bool(paper_mode),
         }
 
+        task_order = list(task_order)
+        known_ids = _plan_node_ids(plan_id)
         for idx, task_id in enumerate(task_order, start=1):
             check_run_active()
+            if idx > 1 and _absorb_plan_revisions(plan_id, task_order, idx - 1, known_ids, whole_plan=True):
+                total_steps = len(task_order)
+                overall_steps = max(overall_steps, baseline_completed_steps + total_steps)
+                if idx > len(task_order):
+                    break
+                task_id = task_order[idx - 1]
             _facade().log_job_event(
                 "info",
                 "Executing plan step.",
@@ -1027,7 +1149,7 @@ def _run_full_plan_job(
                 skipped.append(task_id)
                 _publish_progress(current_step=idx, current_task_id=task_id)
                 if stop_on_failure:
-                    error = f"Task #{task_id} was {final_status}; stopping chain."
+                    error = _stop_reason(task_id, result, f"Task #{task_id} was {final_status}; stopping chain.")
                     _facade().log_job_event("warning", "Plan step skipped; stopping.", {"task_id": task_id, "reason": result.content})
                     _facade().plan_decomposition_jobs.mark_failure(
                         job_id, error,
