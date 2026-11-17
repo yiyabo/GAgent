@@ -895,6 +895,61 @@ def cleanup_decomposition_job_logs(
                 )
 
 
+RESUMABLE_PLAN_JOB_MODES = ("task_chain", "full_plan")
+
+
+def list_interrupted_plan_jobs() -> List[Dict[str, Any]]:
+    """Plan execution jobs a previous process left running or queued (read-only).
+
+    Called before ``fix_stale_jobs_on_startup`` marks them failed, so startup can
+    re-launch them. Only chain and full-plan jobs carry everything needed to
+    restart them (task order, params, owner and session).
+    """
+    found: List[Dict[str, Any]] = []
+    plan_store_dir = get_database_config().get_plan_store_dir()
+    if not plan_store_dir.exists():
+        return found
+    placeholders = ",".join("?" for _ in RESUMABLE_PLAN_JOB_MODES)
+    for plan_db in sorted(plan_store_dir.glob("plan_*.sqlite")):
+        try:
+            plan_id = int(plan_db.stem.split("_", 1)[1])
+        except (IndexError, ValueError):
+            continue
+        try:
+            with plan_db_connection(plan_db) as conn:
+                _ensure_decomposition_tables(conn)
+                rows = conn.execute(
+                    f"""
+                    SELECT job_id, mode, target_task_id, owner_id, session_id, status,
+                           params_json, metadata_json, created_at
+                    FROM decomposition_jobs
+                    WHERE status IN ('running', 'queued') AND job_type = 'plan_execute'
+                      AND mode IN ({placeholders})
+                    ORDER BY created_at
+                    """,
+                    RESUMABLE_PLAN_JOB_MODES,
+                ).fetchall()
+        except Exception as exc:
+            logger.warning("Failed to scan interrupted jobs in %s: %s", plan_db, exc)
+            continue
+        for row in rows:
+            found.append(
+                {
+                    "plan_id": plan_id,
+                    "job_id": row["job_id"],
+                    "mode": row["mode"],
+                    "target_task_id": row["target_task_id"],
+                    "owner_id": row["owner_id"],
+                    "session_id": row["session_id"],
+                    "status": row["status"],
+                    "params": _json_load(row["params_json"]) or {},
+                    "metadata": _json_load(row["metadata_json"]) or {},
+                    "created_at": row["created_at"],
+                }
+            )
+    return found
+
+
 def fix_stale_jobs_on_startup() -> int:
     """
     job. 

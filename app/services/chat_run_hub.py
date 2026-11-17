@@ -47,6 +47,19 @@ def cancel_token(run_id: str) -> Optional[CancelToken]:
     return _cancel_tokens.get(run_id)
 
 
+_shutting_down = False
+
+
+def mark_shutting_down(value: bool = True) -> None:
+    """Record that the process is stopping (deploy/restart), not a user cancel."""
+    global _shutting_down
+    _shutting_down = bool(value)
+
+
+def is_shutting_down() -> bool:
+    return _shutting_down
+
+
 def register_worker_task(run_id: str, task: asyncio.Task[None]) -> None:
     _tasks[run_id] = task
 

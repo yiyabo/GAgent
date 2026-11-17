@@ -151,6 +151,8 @@ def app_client_factory(
     monkeypatch.setattr(app_main, "initialize_toolbox", _noop_initialize_toolbox)
     monkeypatch.setattr(app_main, "fix_stale_jobs_on_startup", lambda: 0)
     monkeypatch.setattr(plan_storage, "get_running_phagescope_trackings", lambda: [])
+    monkeypatch.setattr(plan_storage, "list_interrupted_plan_jobs", lambda: [])
+    monkeypatch.setenv("CHAT_RUN_AUTO_RESUME_ENABLED", "0")
 
     @contextmanager
     def _build_client(

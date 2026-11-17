@@ -124,6 +124,23 @@ async def lifespan(_fastapi_app: FastAPI):
     except Exception as e:
         logging.getLogger("app.main").warning("Moderation engine pre-warm failed: %s", e)
 
+    try:  # a fresh process (or test app) is not shutting down
+        from .services import chat_run_hub as _hub_state
+
+        _hub_state.mark_shutting_down(False)
+    except Exception:  # pragma: no cover
+        pass
+
+    # Remember interrupted Plan execution jobs before the stale sweep marks them
+    # failed, so they can be re-launched once task statuses are reconciled.
+    interrupted_plan_jobs: list = []
+    try:
+        from .repository import plan_storage as _plan_storage
+
+        interrupted_plan_jobs = _plan_storage.list_interrupted_plan_jobs()
+    except Exception as e:
+        logging.getLogger("app.main").warning("Failed to list interrupted plan jobs: %s", e)
+
     # Fix any stale jobs from previous server runs
     try:
         fixed_count = fix_stale_jobs_on_startup()
@@ -162,6 +179,15 @@ async def lifespan(_fastapi_app: FastAPI):
 
     chat_run_sweeper_stop = asyncio.Event()
     chat_run_sweeper_task = asyncio.create_task(run_lease_sweeper(chat_run_sweeper_stop))
+    # Continue chat runs the previous process was running (deploy/restart):
+    # after the old leases lapse, each safe run gets one continuation.
+    chat_resume_task = None
+    try:
+        from .services.chat_restart_resume import resume_after_restart
+
+        chat_resume_task = asyncio.create_task(resume_after_restart(chat_run_sweeper_stop))
+    except Exception as e:
+        logging.getLogger("app.main").warning("Failed to schedule chat run auto-resume: %s", e)
 
     try:
         task_fixed = fix_stale_plan_task_statuses_on_startup()
@@ -172,6 +198,16 @@ async def lifespan(_fastapi_app: FastAPI):
             )
     except Exception as e:
         logging.getLogger("app.main").warning("Failed to fix stale plan task statuses: %s", e)
+
+    # Re-launch Plan jobs a restart interrupted; completed tasks are reused.
+    if interrupted_plan_jobs:
+        try:
+            from .services.plans.restart_resume import resume_interrupted_plan_jobs
+
+            outcomes = resume_interrupted_plan_jobs(interrupted_plan_jobs)
+            logging.getLogger("app.main").info("Plan jobs after restart: %s", outcomes)
+        except Exception as e:
+            logging.getLogger("app.main").warning("Failed to resume interrupted plan jobs: %s", e)
 
     # Resume any PhageScope tracking threads that were running before restart
     try:
@@ -294,6 +330,14 @@ async def lifespan(_fastapi_app: FastAPI):
     try:
         yield
     finally:
+        # Running chat workers are about to be cancelled by the shutdown; mark it
+        # so they stay resumable instead of closing as user cancels.
+        try:
+            from .services import chat_run_hub as _hub
+
+            _hub.mark_shutting_down()
+        except Exception:  # pragma: no cover
+            pass
         # 先摘除 Consul 注册再关下游资源，避免关闭窗口内网关把请求路由到半死实例
         stop_consul_registration()
         try:
@@ -307,6 +351,8 @@ async def lifespan(_fastapi_app: FastAPI):
             logging.getLogger("app.main").warning("MCP mounts failed to shut down: %s", e)
         chat_run_sweeper_stop.set()
         chat_run_sweeper_task.cancel()
+        if chat_resume_task is not None:
+            chat_resume_task.cancel()
         try:
             await chat_run_sweeper_task
         except (asyncio.CancelledError, Exception):
