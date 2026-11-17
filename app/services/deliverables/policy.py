@@ -118,6 +118,7 @@ DOC_ALLOWED_STEMS = {
     "reference",
     "references",
     "report",
+    "readme",
     "analysis",
     "evidence_coverage",
     "release_summary",

@@ -2016,5 +2016,135 @@
                 "notes": "Run on contigs already known to be phage"
             }
         }
+    },
+    "phylo": {
+        "image": "",
+        "native_only": true,
+        "description": "Phylogenetics - MAFFT multiple alignment, trimAl trimming, FastTree and IQ-TREE tree inference (host-installed, no Docker image)",
+        "category": "phylogenetics",
+        "native": {
+            "conda_env": "phylo",
+            "cpus": 4,
+            "mem_mb": 16384,
+            "time_limit_seconds": 43200
+        },
+        "notes": "Typical protein tree: mafft_align -> trimal (optional) -> fasttree (fast, WAG/LG) or iqtree (ModelFinder + UFBoot). Inputs are absolute FASTA paths.",
+        "operations": {
+            "mafft_align": {
+                "command": "mafft --auto --thread {threads} {input} > /work/{output}",
+                "description": "Multiple sequence alignment with MAFFT --auto (FASTA in, aligned FASTA out)",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": {
+                    "output": {
+                        "type": "string",
+                        "required": true,
+                        "description": "Output aligned FASTA filename, e.g. family.aln.faa"
+                    },
+                    "threads": {
+                        "type": "integer",
+                        "required": false,
+                        "description": "Number of threads, default 4"
+                    }
+                }
+            },
+            "mafft_linsi": {
+                "command": "mafft --localpair --maxiterate 1000 --thread {threads} {input} > /work/{output}",
+                "description": "Accurate MAFFT L-INS-i alignment for up to ~200 sequences with one alignable domain",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": {
+                    "output": {
+                        "type": "string",
+                        "required": true,
+                        "description": "Output aligned FASTA filename, e.g. family.linsi.faa"
+                    },
+                    "threads": {
+                        "type": "integer",
+                        "required": false,
+                        "description": "Number of threads, default 4"
+                    }
+                }
+            },
+            "trimal": {
+                "command": "trimal -in {input} -out /work/{output} -{method}",
+                "description": "Trim poorly aligned columns from an alignment with trimAl",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": {
+                    "output": {
+                        "type": "string",
+                        "required": true,
+                        "description": "Output trimmed alignment filename, e.g. family.trim.faa"
+                    },
+                    "method": {
+                        "type": "string",
+                        "required": false,
+                        "default": "automated1",
+                        "enum": [
+                            "automated1",
+                            "gappyout",
+                            "strict",
+                            "strictplus"
+                        ],
+                        "description": "trimAl heuristic, default automated1"
+                    }
+                }
+            },
+            "fasttree": {
+                "command": "FastTree {model} {input} > /work/{output}",
+                "description": "Approximate maximum-likelihood tree with FastTree from an alignment (Newick out)",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": {
+                    "output": {
+                        "type": "string",
+                        "required": true,
+                        "description": "Output Newick filename, e.g. family.fasttree.nwk"
+                    },
+                    "model": {
+                        "type": "string",
+                        "required": false,
+                        "default": "-wag",
+                        "enum": [
+                            "-wag",
+                            "-lg",
+                            "-nt"
+                        ],
+                        "description": "Substitution model flag: -wag (protein, default), -lg (protein) or -nt (nucleotide)"
+                    }
+                }
+            },
+            "iqtree": {
+                "command": "iqtree3 -s {input} -m {model} -B {bootstrap} -T {threads} --prefix /work/{output_prefix}",
+                "description": "Maximum-likelihood tree with IQ-TREE 3 (ModelFinder by default) and ultrafast bootstrap; writes <prefix>.treefile",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": {
+                    "output_prefix": {
+                        "type": "string",
+                        "required": true,
+                        "description": "Output prefix, e.g. family_iqtree (tree is <prefix>.treefile)"
+                    },
+                    "model": {
+                        "type": "string",
+                        "required": false,
+                        "default": "MFP",
+                        "description": "Substitution model, default MFP (ModelFinder Plus); e.g. WAG+G4, LG+G4"
+                    },
+                    "bootstrap": {
+                        "type": "integer",
+                        "required": false,
+                        "default": 1000,
+                        "description": "Ultrafast bootstrap replicates (at least 1000), default 1000"
+                    },
+                    "threads": {
+                        "type": "integer",
+                        "required": false,
+                        "description": "Number of threads, default 4"
+                    }
+                }
+            }
+        }
     }
 }

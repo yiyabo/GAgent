@@ -750,7 +750,7 @@ def test_the_schema_and_prompt_catalogs_follow_native_mode() -> None:
         "'dorado' in p._BIO_TOOLS_CATALOG_TEXT, 'genomad' in t._BIO_TOOL_NAMES)\n"
     )
     root = str(BIO_DIR.parents[1])
-    for mode, expected in (("native", "30 30 False False True"), ("", "32 32 True True True"), ("native_first", "33 33 True True True")):
+    for mode, expected in (("native", "31 31 False False True"), ("", "32 32 True True True"), ("native_first", "34 34 True True True")):
         done = subprocess.run([sys.executable, "-c", code], cwd=root, capture_output=True, text=True,
                               env={**os.environ, "BIO_TOOLS_EXECUTION_MODE": mode})
         assert done.stdout.strip().splitlines()[-1] == expected, done.stderr[-500:]
@@ -937,3 +937,19 @@ def test_an_index_of_a_file_in_a_writable_directory_stays_beside_it(dirs, tmp_pa
     assert done.returncode == 0, done.stderr
     assert set(expected) <= {p.name for p in previous.iterdir()}
     assert list(dirs["work"].iterdir()) == []
+
+
+def test_phylo_tools_render_mafft_fasttree_and_iqtree(dirs) -> None:
+    """p70: the host 'phylo' conda env (mafft, trimAl, FastTree, IQ-TREE) runs real alignments and trees."""
+    assert REAL_CONFIG["phylo"]["native_only"] is True
+    assert native_exec.native_spec(REAL_CONFIG, "phylo")["conda_env"] == "phylo"
+    align = _job(dirs, "phylo", "mafft_align", input_file=str(dirs["query"]), params={"output": "fam.aln.faa"})
+    assert align["command"].startswith("mafft --auto --thread ")
+    assert align["command"].endswith("> %s/fam.aln.faa" % os.path.realpath(dirs["work"]))
+    tree = _job(dirs, "phylo", "fasttree", input_file=str(dirs["query"]), params={"output": "fam.nwk"})
+    assert tree["command"].startswith("FastTree -wag ")
+    iq = _job(dirs, "phylo", "iqtree", input_file=str(dirs["query"]), params={"output_prefix": "fam", "model": "WAG+G4"})
+    assert "iqtree3 -s " in iq["command"] and "-m WAG+G4 -B 1000" in iq["command"]
+    assert "--prefix %s/fam" % os.path.realpath(dirs["work"]) in iq["command"]
+    trim = _job(dirs, "phylo", "trimal", input_file=str(dirs["query"]), params={"output": "fam.trim.faa"})
+    assert "-automated1" in trim["command"]

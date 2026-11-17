@@ -23,6 +23,9 @@ On a server running `BIO_TOOLS_EXECUTION_MODE=native`, `bio_tools(operation="lis
 - Phage work: `genomad end_to_end` (virus/plasmid calls and taxonomy), `checkv end_to_end` (quality),
   `virsorter2 run`, `vibrant run`, `bakta annotate`, `prodigal` for genes; `checkm` is for bacterial bins, so a
   phage genome scores 0% there by design.
+- Alignments and trees: `phylo mafft_align` (or `mafft_linsi`) → optional `phylo trimal` → `phylo fasttree`
+  (`-wag`/`-lg`) or `phylo iqtree` (ModelFinder + UFBoot, tree at `<output_prefix>.treefile`). Use these real tools
+  instead of hand-written distance/NJ code when a task asks for MAFFT, FastTree or ML trees.
 
 ## Input strategy
 - Pass local absolute paths for `input_file` and path-like params.
