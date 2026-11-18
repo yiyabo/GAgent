@@ -63,4 +63,3 @@ def anchor_text(anchors):
     if rest:
         lines.append(json.dumps(rest, ensure_ascii=False, sort_keys=True, default=str))
     return "\n".join(lines) if len(lines) > 1 else ""
-
