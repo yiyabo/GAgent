@@ -96,6 +96,7 @@ def request_profile(plan_id, task_id, context):
     profile = {"current_plan_id": plan_id, "current_task_id": task_id,
                "intent_type": "execute_task", "execution_lane": "plan",
                "plan_tree_edit_allowed": _execution_edit_mode(),
+               "memory_enabled": context.get("memory_enabled") is not False,
                "session_id": context.get("session_id"), "owner_id": context.get("owner_id")}
     if enabled():
         budget = current_run_budget()

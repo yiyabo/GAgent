@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.routers.chat.models import ChatRequest
+from app.services.chat_run_emitter import ChatRunEmitter
 from app.services.chat_run_worker import (
     _run_explicit_task_execution,
     execute_chat_run,
@@ -11,12 +12,14 @@ from app.services.chat_run_worker import (
 from app.services.plans.plan_models import PlanNode, PlanTree
 
 
-class _FakeEmitter:
+class _FakeEmitter(ChatRunEmitter):
     def __init__(self) -> None:
+        super().__init__("test-run")
         self.events = []
 
-    async def emit(self, payload):
+    async def emit(self, payload) -> bool:
         self.events.append(payload)
+        return True
 
 
 def test_run_explicit_task_execution_emits_standard_final_payload_and_persists_message(
@@ -36,7 +39,8 @@ def test_run_explicit_task_execution_emits_standard_final_payload_and_persists_m
     emitter = _FakeEmitter()
     saved_messages = []
 
-    def _fake_save_chat_message(session_id, role, content, metadata=None, *, owner_id=None):
+    def _fake_save_chat_message(session_id, role, content, metadata=None, *, owner_id=None, memory_enabled):
+        assert memory_enabled is True
         saved_messages.append(
             {
                 "session_id": session_id,
@@ -270,7 +274,8 @@ def test_explicit_resume_prepares_inside_scope_and_attributes_parent_after_build
 
     async def prepare(run_id, context):
         assert current_run_budget() is not None
-        assert chat_run_claim.get()[0] == run_id
+        claim = chat_run_claim.get()
+        assert claim is not None and claim[0] == run_id
         assert context["resume_from_run_id"] == "source-run"
         order.append("prepare")
 
