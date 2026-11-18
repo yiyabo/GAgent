@@ -22,6 +22,7 @@ import {
   ReloadOutlined,
   MenuFoldOutlined,
   SwapOutlined,
+  DatabaseOutlined,
 } from '@ant-design/icons';
 import { useChatStore } from '@store/chat';
 import { useLayoutStore } from '@store/layout';
@@ -30,6 +31,7 @@ import { chatApi } from '@api/chat';
 import { ChatProjectItem, ChatSession } from '@/types';
 import { shallow } from 'zustand/shallow';
 import { useT, type TFn } from '@/i18n/useT';
+import MemoryGovernanceDrawer from '@components/memory/MemoryGovernanceDrawer';
 
 const { Text } = Typography;
 
@@ -83,6 +85,7 @@ export const ChatSidebar: React.FC<{ onSessionSelected?: () => void; onCollapse?
   const { toggleChatList } = useLayoutStore();
   const { projectLabel } = useAuthStore();
 
+  const [memoryDrawerOpen, setMemoryDrawerOpen] = useState(false);
   const [searchVisible, setSearchVisible] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [renameModalOpen, setRenameModalOpen] = useState(false);
@@ -429,6 +432,16 @@ export const ChatSidebar: React.FC<{ onSessionSelected?: () => void; onCollapse?
           <span>{t('sidebar.researchChats')}</span>
         </div>
         <div className="biomni-section-actions">
+          <Tooltip title={t('memory.governance.open')}>
+            <Button
+              type="text"
+              size="small"
+              icon={<DatabaseOutlined />}
+              className="biomni-action-icon-btn"
+              aria-label={t('memory.governance.open')}
+              onClick={() => setMemoryDrawerOpen(true)}
+            />
+          </Tooltip>
           <Tooltip title={t('sidebar.search')}>
             <Button
               type="text"
@@ -559,6 +572,8 @@ export const ChatSidebar: React.FC<{ onSessionSelected?: () => void; onCollapse?
           </div>
         </Spin>
       </Modal>
+
+      <MemoryGovernanceDrawer open={memoryDrawerOpen} onClose={() => setMemoryDrawerOpen(false)} />
     </div>
   );
 };

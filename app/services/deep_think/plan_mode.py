@@ -37,10 +37,17 @@ _SCOPED_TOOLS = frozenset(
         "phagescope",
         "phagescope_research",
         "delegate_task",
+        "memory_operation",
     }
 )
 
-_READ_FILE_OPERATIONS = frozenset({"read", "list", "exists", "info", "profile", "census"})
+_READ_MEMORY_OPERATIONS = frozenset({"search", "list"})
+
+# Allow-list: every mutating file operation (write, edit, copy, move, delete)
+# stays denied in read-only Plan mode.
+_READ_FILE_OPERATIONS = frozenset(
+    {"read", "list", "exists", "info", "profile", "census"}
+)
 _PLAN_OPERATIONS = frozenset(
     {
         "create",
@@ -127,6 +134,8 @@ def plan_mode_tool_allowed(tool_name: str, params: Mapping[str, Any] | None = No
         # Read-only parallel recon is part of planning; any other role executes work.
         # Only the native backend enforces the scout clamp, so the CLI lane stays closed.
         return _delegate_backend_native() and all(role == "scout" for role in _delegate_roles(values))
+    if name == "memory_operation":
+        return _operation(values) in _READ_MEMORY_OPERATIONS
     return False
 
 

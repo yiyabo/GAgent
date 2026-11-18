@@ -6,7 +6,8 @@ import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from collections.abc import Awaitable, Callable
+from typing import Any, Dict, Optional
 
 from app.services import cancellation
 from app.services.run_budget import RunDeadlineExceeded, current_run_budget, run_stage
@@ -17,7 +18,7 @@ from app.services.deliverables import (
 
 logger = logging.getLogger(__name__)
 _READ_ONLY_FILE_OPERATIONS = {"read", "list", "exists", "info", "profile", "census"}
-_MUTATING_FILE_OPERATIONS = {"write", "copy", "move", "delete"}
+_MUTATING_FILE_OPERATIONS = {"write", "edit", "copy", "move", "delete"}
 _DELIVERABLE_PUBLISH_TOOLS = frozenset({
     "deliverable_submit",
     "manuscript_writer",
@@ -33,7 +34,7 @@ class ToolExecutionContext:
     task_name: Optional[str] = None
     task_instruction: Optional[str] = None
     session_id: Optional[str] = None
-    ancestor_chain: Optional[List[int]] = None
+    ancestor_chain: list[int] | None = None
     delegation_depth: int = 0
     owner_id: Optional[str] = None
     current_job_id: Optional[str] = None
@@ -52,6 +53,24 @@ class ToolExecutionContext:
     """
     on_progress_loop: Optional[asyncio.AbstractEventLoop] = None
     """The loop that owns ``on_progress``; see ``ToolContext.on_progress_loop``."""
+    memory_enabled: bool = True
+
+
+def _incoming_qa_checked_figures(params: Any) -> list[Any] | None:
+    """The caller's run-scoped ``qa_checked_figures`` list, when it passed one.
+
+    ``execute`` builds a fresh ``ToolContext``; reusing the caller's list object
+    keeps vision_reader ``qa_figure`` results visible to a later
+    ``deliverable_submit`` in the same run.
+    """
+    if not isinstance(params, dict):
+        return None
+    incoming = params.get("tool_context")
+    extra = getattr(incoming, "extra", None)
+    if not isinstance(extra, dict):
+        return None
+    checked = extra.get("qa_checked_figures")
+    return checked if isinstance(checked, list) else None
 
 
 def _task_edit_mode(context: "ToolExecutionContext") -> Any:
@@ -127,6 +146,7 @@ class UnifiedToolExecutor:
     ) -> Dict[str, Any]:
         context = context or ToolExecutionContext()
         tool_name = str(tool_name or "").strip()
+        qa_checked_figures = _incoming_qa_checked_figures(params)
         safe_params = self._normalize_params(tool_name, params or {}, context)
 
         if on_tool_start:
@@ -150,12 +170,15 @@ class UnifiedToolExecutor:
             task_name=context.task_name,
             job_id=context.current_job_id,
             owner_id=context.owner_id,
+            memory_enabled=context.memory_enabled,
             work_dir=context.work_dir or "",
             model_provider=getattr(context, 'model_provider', None),
             extra={
                 **({"ancestor_chain": list(context.ancestor_chain)} if context.ancestor_chain is not None else {}),
                 **({"delegation_depth": int(context.delegation_depth)} if getattr(context, "delegation_depth", 0) else {}),
                 "plan_tree_edit_allowed": _task_edit_mode(context),
+                # Keep the caller's run-scoped figure-QA ledger (same list object).
+                **({"qa_checked_figures": qa_checked_figures} if qa_checked_figures is not None else {}),
             },
             on_progress=context.on_progress,
             on_progress_loop=progress_loop,

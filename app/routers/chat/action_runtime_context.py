@@ -47,7 +47,7 @@ _RUNTIME_CONTEXT_KEYS = (
     "last_subject_action_class",
     "recent_image_artifacts",
 )
-_MUTATING_FILE_OPERATIONS = {"write", "copy", "move", "delete"}
+_MUTATING_FILE_OPERATIONS = {"write", "edit", "copy", "move", "delete"}
 _LOCAL_SUBJECT_TOOLS = {
     "file_operations",
     "document_reader",
@@ -299,10 +299,10 @@ def _update_runtime_context_from_tool(
     extra_context = getattr(agent, "extra_context", {}) or {}
     current_turn = _current_user_turn(agent)
     subject_params = params
-    if (tool_name == "file_operations" and params.get("operation") == "write"
+    if (tool_name == "file_operations" and params.get("operation") in {"write", "edit"}
             and sanitized.get("success") is not False
             and isinstance(sanitized.get("path"), str) and sanitized["path"].strip()):
-        # A write may be redirected into the trusted session directory. The
+        # A write or edit may be redirected into the trusted session directory. The
         # receipt's actual path is authoritative; retain the requested alias so
         # this successful correction can clear the earlier same-file failure.
         subject_params = {**params, "path": sanitized["path"]}

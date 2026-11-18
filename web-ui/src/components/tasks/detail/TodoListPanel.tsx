@@ -24,6 +24,7 @@ import {
 } from '@ant-design/icons';
 import { planTreeApi } from '@api/planTree';
 import JobLogPanel from '@/components/chat/JobLogPanel';
+import InspectTaskRunButton from '@/components/chat/runInspector/InspectTaskRunButton';
 import type { TodoItemResponse, TodoListResponse, TodoPhaseResponse } from '@/types';
 import { translate, useT } from '@/i18n/useT';
 import type { TFn } from '@/i18n/useT';
@@ -74,9 +75,10 @@ const taskStatusColor: Record<string, string> = {
 
 const TodoTaskItem: React.FC<{
   item: TodoItemResponse;
+  planId: number | null;
   onTaskClick?: (taskId: number) => void;
   showPhaseTag?: boolean;
-}> = ({ item, onTaskClick, showPhaseTag = false }) => {
+}> = ({ item, planId, onTaskClick, showPhaseTag = false }) => {
   const t = useT();
   const displayStatus = item.effective_status || item.status;
   const incomplete = item.incomplete_dependencies ?? [];
@@ -115,6 +117,14 @@ const TodoTaskItem: React.FC<{
           >
             #{item.task_id} {item.name}
           </Button>
+          <InspectTaskRunButton
+            type="link"
+            planId={planId}
+            taskId={item.task_id}
+            taskName={item.name}
+            status={item.status}
+            style={{ padding: 0, height: 'auto' }}
+          />
         </Space>
         {blocked && incomplete.length > 0 && (
           <div style={{ marginTop: 2 }}>
@@ -146,8 +156,9 @@ const TodoTaskItem: React.FC<{
 
 const TodoPhaseCard: React.FC<{
   phase: TodoPhaseResponse;
+  planId: number | null;
   onTaskClick?: (taskId: number) => void;
-}> = ({ phase, onTaskClick }) => {
+}> = ({ phase, planId, onTaskClick }) => {
   const t = useT();
   const pct = phase.total > 0 ? Math.round((phase.completed / phase.total) * 100) : 0;
   const phaseColor = phaseStatusColor[phase.status] ?? phaseStatusColor.pending;
@@ -195,7 +206,7 @@ const TodoPhaseCard: React.FC<{
 
           <Space direction="vertical" size={4} style={{ width: '100%', marginTop: 8 }}>
             {phase.items.map((item) => (
-              <TodoTaskItem key={item.task_id} item={item} onTaskClick={onTaskClick} />
+              <TodoTaskItem key={item.task_id} item={item} planId={planId} onTaskClick={onTaskClick} />
             ))}
           </Space>
         </>
@@ -370,7 +381,7 @@ const TodoListPanel: React.FC<TodoListPanelProps> = ({
               />
             )}
             {todoList.phases.map((phase) => (
-              <TodoPhaseCard key={phase.phase_id} phase={phase} onTaskClick={onTaskClick} />
+              <TodoPhaseCard key={phase.phase_id} phase={phase} planId={planId} onTaskClick={onTaskClick} />
             ))}
           </Space>
 

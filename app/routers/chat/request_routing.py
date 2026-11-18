@@ -970,6 +970,7 @@ ALL_TOOLS: List[str] = [
     "graph_rag",
     "literature_pipeline",
     "load_skill",
+    "memory_operation",
     "review_pack_writer",
     "manuscript_writer",
     "sequence_fetch",

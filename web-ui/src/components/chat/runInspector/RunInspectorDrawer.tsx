@@ -10,7 +10,9 @@ import {
   exportFileName,
   filterSteps,
   formatDuration,
+  formatStepCounts,
   formatTokens,
+  isPlanTaskTarget,
   stepTone,
   type StepFilter,
 } from './model';
@@ -19,6 +21,7 @@ const { Text, Paragraph } = Typography;
 
 interface RunInspectorDrawerProps {
   open: boolean;
+  /** Required for chat targets only; plan-task targets are resolved without a session. */
   sessionId: string | null;
   target: RunInspectionTarget | null;
   onClose: () => void;
@@ -102,16 +105,33 @@ const RunInspectorDrawer: React.FC<RunInspectorDrawerProps> = ({ open, sessionId
   const t = useT();
   const [filter, setFilter] = useState<StepFilter>('all');
   const [tool, setTool] = useState<string | null>(null);
-  const enabled = open && Boolean(sessionId) && Boolean(target);
+  const planTask = isPlanTaskTarget(target) ? target : null;
+  const chatTarget = target && !isPlanTaskTarget(target) ? target : null;
+  const enabled = open && (planTask !== null || (chatTarget !== null && Boolean(sessionId)));
   const query = useQuery({
-    queryKey: ['run-inspection', sessionId, target?.run_id ?? null, target?.message_id ?? null],
-    queryFn: () => chatApi.getRunInspection(sessionId as string, target as RunInspectionTarget),
+    queryKey: planTask
+      ? ['run-inspection', 'plan-task', planTask.planId, planTask.taskId, planTask.jobId ?? null]
+      : ['run-inspection', sessionId, chatTarget?.run_id ?? null, chatTarget?.message_id ?? null],
+    queryFn: () => {
+      if (planTask) return chatApi.getPlanTaskRunInspection(planTask.planId, planTask.taskId, planTask.jobId);
+      if (!chatTarget || !sessionId) return Promise.reject(new Error(t('runInspector.noRun')));
+      return chatApi.getRunInspection(sessionId, chatTarget);
+    },
     enabled,
     staleTime: 5_000,
     retry: false,
   });
   const inspection = query.data;
+  const usageAllAttempts = inspection?.usage.scope === 'plan_task_all_attempts';
   const steps = useMemo(() => (inspection ? filterSteps(inspection.steps, filter, tool) : []), [inspection, filter, tool]);
+
+  const taskId = inspection?.run.task_id ?? planTask?.taskId ?? null;
+  const taskName = inspection?.run.task_name || planTask?.taskName || null;
+  const heading = taskId == null
+    ? null
+    : taskName
+      ? t('runInspector.taskHeading', { id: taskId, name: taskName })
+      : t('runInspector.taskHeadingId', { id: taskId });
 
   const download = () => {
     if (!inspection) return;
@@ -125,7 +145,14 @@ const RunInspectorDrawer: React.FC<RunInspectorDrawerProps> = ({ open, sessionId
 
   return (
     <Drawer
-      title={t('runInspector.title')}
+      title={heading ? (
+        <Space direction="vertical" size={0} style={{ minWidth: 0 }}>
+          <span>{t('runInspector.title')}</span>
+          <Text type="secondary" ellipsis={{ tooltip: heading }} style={{ fontSize: 12, fontWeight: 'normal', maxWidth: 420 }}>
+            {heading}
+          </Text>
+        </Space>
+      ) : t('runInspector.title')}
       placement="right"
       width="min(760px, 96vw)"
       open={open}
@@ -158,7 +185,7 @@ const RunInspectorDrawer: React.FC<RunInspectorDrawerProps> = ({ open, sessionId
             </Descriptions.Item>
             <Descriptions.Item label={t('runInspector.duration')}>{formatDuration(inspection.run.duration_ms)}</Descriptions.Item>
             <Descriptions.Item label={t('runInspector.steps')}>
-              {t('runInspector.stepCounts', { steps: inspection.summary.steps, tools: inspection.summary.tool_steps })}
+              {formatStepCounts(t, inspection.summary.steps, inspection.summary.tool_steps)}
             </Descriptions.Item>
             <Descriptions.Item label={t('runInspector.toolFailures')}>
               <Text type={inspection.summary.tool_failures ? 'danger' : undefined}>{inspection.summary.tool_failures}</Text>
@@ -169,6 +196,7 @@ const RunInspectorDrawer: React.FC<RunInspectorDrawerProps> = ({ open, sessionId
                 cached: formatTokens(inspection.usage.cache_read_tokens),
                 calls: inspection.usage.calls,
               })}
+              {usageAllAttempts && <Text type="secondary"> · {t('runInspector.usageAllAttempts')}</Text>}
             </Descriptions.Item>
             <Descriptions.Item label={t('runInspector.artifacts')}>{inspection.summary.artifacts}</Descriptions.Item>
             <Descriptions.Item label={t('runInspector.runId')} span={2}>
@@ -261,6 +289,7 @@ const RunInspectorDrawer: React.FC<RunInspectorDrawerProps> = ({ open, sessionId
           {inspection.usage.by_purpose.length > 0 && (
             <div>
               <Text strong>{t('runInspector.usage')}</Text>
+              {usageAllAttempts && <Text type="secondary"> · {t('runInspector.usageAllAttempts')}</Text>}
               <ul style={{ paddingLeft: 18, marginTop: 8 }}>
                 {inspection.usage.by_purpose.map((group) => (
                   <li key={`${group.phase}:${group.purpose}`}>

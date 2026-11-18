@@ -393,6 +393,10 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
             "evidence_scope",
             "completeness_status",
             "summary",
+            "replacements",
+            "occurrences",
+            "match_lines",
+            "diff",
         ):
             if key in raw_result:
                 sanitized[key] = raw_result.get(key)

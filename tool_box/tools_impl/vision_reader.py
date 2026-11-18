@@ -691,16 +691,234 @@ async def _read_pdf_with_qwen_long(
         return result
 
 
+
+# Rendered figure formats the multimodal model reads directly. Vector or
+# document formats (PDF/SVG/EPS) must be rendered to a raster image first.
+QA_FIGURE_RASTER_SUFFIXES = frozenset(
+    {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp", ".gif"}
+)
+QA_FIGURE_SEVERITIES = ("none", "low", "medium", "high")
+QA_CHECKED_FIGURES_KEY = "qa_checked_figures"
+
+QA_FIGURE_PROMPT = (
+    "You are a strict visual QA reviewer for scientific figures that will be "
+    "delivered to a researcher. Inspect this rendered figure and check for:\n"
+    "1. blank_or_corrupt: blank, all one color, truncated, or corrupt rendering.\n"
+    "2. clipped: axis labels, tick labels, titles, legends, or annotations cut off "
+    "by the canvas edge or insufficient margins.\n"
+    "3. overlapping_text: labels, ticks, legend entries, or annotations that "
+    "overlap each other or the data so they cannot be read.\n"
+    "4. illegible_font: text too small to read at normal viewing size.\n"
+    "5. missing_axes_or_legend: missing axis labels/units, or a legend missing "
+    "when several series or colors need one.\n"
+    "6. aspect_ratio: squashed, stretched, or otherwise broken aspect ratio.\n\n"
+    "Respond with ONLY one JSON object, no prose and no code fence, exactly in "
+    "this shape:\n"
+    '{"pass": true, "severity": "none|low|medium|high", '
+    '"issues": [{"type": "<one of the check names above>", "detail": "<what and '
+    'where>", "severity": "low|medium|high"}], '
+    '"recommendations": ["<concrete fix>"], "summary": "<one sentence>"}\n'
+    '"pass" is false when any issue has severity medium or high. "severity" is '
+    "the highest issue severity, or \"none\" when there are no issues."
+)
+
+
+def _qa_error(code: str, error: str, path_text: str, **extra: Any) -> Dict[str, Any]:
+    return {
+        "tool": "vision_reader",
+        "success": False,
+        "operation": "qa_figure",
+        "image_path": path_text,
+        "error": error,
+        "code": code,
+        **extra,
+    }
+
+
+def _resolve_qa_figure_path(target_path: str, tool_context: Optional[Any]) -> Path:
+    """Resolve a figure path the way deliverable_submit resolves artifacts."""
+    candidate = Path(str(target_path)).expanduser()
+    if tool_context is not None and not candidate.is_absolute():
+        try:
+            from tool_box.path_resolution import resolve_tool_path
+
+            resolved = resolve_tool_path(str(target_path), tool_context=tool_context)
+        except Exception as exc:
+            logger.debug("qa_figure path resolution fell back to cwd: %s", exc)
+        else:
+            if resolved.is_file():
+                return Path(resolved).resolve()
+    return candidate.resolve()
+
+
+def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
+    """Parse a JSON object from a model reply, tolerating fences and prose."""
+    cleaned = (text or "").strip()
+    candidates = [cleaned]
+    fence_start = cleaned.find("```")
+    if fence_start >= 0:
+        body = cleaned[fence_start + 3:]
+        if body[:4].lower() == "json":
+            body = body[4:]
+        fence_end = body.find("```")
+        candidates.append(body[:fence_end] if fence_end >= 0 else body)
+    first, last = cleaned.find("{"), cleaned.rfind("}")
+    if 0 <= first < last:
+        candidates.append(cleaned[first:last + 1])
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate.strip())
+        except (TypeError, ValueError):
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _normalize_severity(value: Any, default: str = "medium") -> str:
+    text = str(value or "").strip().lower()
+    return text if text in QA_FIGURE_SEVERITIES else default
+
+
+def _normalize_qa_verdict(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Coerce a model verdict into the documented strict shape."""
+    issues: List[Dict[str, str]] = []
+    for item in raw.get("issues") or []:
+        if isinstance(item, dict):
+            issue_severity = _normalize_severity(item.get("severity"))
+            if issue_severity == "none":
+                continue
+            issues.append({
+                "type": str(item.get("type") or "other").strip() or "other",
+                "detail": str(item.get("detail") or "").strip(),
+                "severity": issue_severity,
+            })
+        elif str(item or "").strip():
+            issues.append({"type": "other", "detail": str(item).strip(), "severity": "medium"})
+    rank = {name: index for index, name in enumerate(QA_FIGURE_SEVERITIES)}
+    worst_issue = max((issue["severity"] for issue in issues), key=rank.__getitem__, default="none")
+    severity = _normalize_severity(raw.get("severity"), default=worst_issue)
+    if rank[worst_issue] > rank[severity]:
+        severity = worst_issue
+    raw_pass = raw.get("pass")
+    if isinstance(raw_pass, bool):
+        passed = raw_pass
+    else:
+        passed = rank[severity] < rank["medium"]
+    # A blocking issue overrides an optimistic pass from the model.
+    if rank[severity] >= rank["medium"]:
+        passed = False
+    recommendations = [
+        str(item).strip()
+        for item in (raw.get("recommendations") or [])
+        if str(item or "").strip()
+    ]
+    return {
+        "pass": passed,
+        "severity": severity,
+        "issues": issues,
+        "recommendations": recommendations,
+        "summary": str(raw.get("summary") or "").strip(),
+    }
+
+
+def _record_qa_checked_figure(tool_context: Optional[Any], path: Path) -> None:
+    """Remember a QA'd figure so deliverable_submit can skip its soft warning."""
+    if tool_context is None:
+        return
+    extra = getattr(tool_context, "extra", None)
+    if not isinstance(extra, dict):
+        return
+    checked = extra.get(QA_CHECKED_FIGURES_KEY)
+    if not isinstance(checked, list):
+        checked = []
+        extra[QA_CHECKED_FIGURES_KEY] = checked
+    resolved = str(path)
+    if resolved not in checked:
+        checked.append(resolved)
+
+
+async def _qa_figure(
+    target_path: str,
+    *,
+    question: Optional[str] = None,
+    tool_context: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Run a strict visual QA pass on one rendered raster figure."""
+    abs_path = _resolve_qa_figure_path(target_path, tool_context)
+    path_text = str(abs_path)
+    if not abs_path.is_file():
+        return _qa_error("file_not_found", f"File does not exist: {target_path}", path_text)
+    if abs_path.stat().st_size == 0:
+        # Fast fail: an empty file is a broken figure; no model call needed.
+        return _qa_error(
+            "empty_figure",
+            f"Figure file is empty (0 bytes): {target_path}",
+            path_text,
+            qa={
+                "pass": False,
+                "severity": "high",
+                "issues": [{
+                    "type": "blank_or_corrupt",
+                    "detail": "The figure file is empty (0 bytes).",
+                    "severity": "high",
+                }],
+                "recommendations": ["Regenerate the figure and save it again before delivery."],
+                "summary": "The figure file is empty.",
+            },
+        )
+    if abs_path.suffix.lower() not in QA_FIGURE_RASTER_SUFFIXES:
+        return _qa_error(
+            "unsupported_figure_format",
+            (
+                f"qa_figure checks rendered raster figures ({', '.join(sorted(QA_FIGURE_RASTER_SUFFIXES))}); "
+                f"render {abs_path.suffix or 'this file'} to PNG first."
+            ),
+            path_text,
+        )
+
+    prompt = QA_FIGURE_PROMPT
+    if question:
+        prompt += "\n\nAdditional context from the caller: " + str(question)
+    try:
+        reply = await _call_qwen_vision_api(prompt, path_text)
+    except Exception as exc:
+        logger.error("vision_reader qa_figure failed: %s", exc)
+        return _qa_error("vision_error", str(exc), path_text)
+
+    parsed = _extract_json_object(reply)
+    if parsed is None:
+        return _qa_error(
+            "qa_parse_error",
+            "The vision model did not return a JSON QA verdict.",
+            path_text,
+            raw_response=str(reply or "")[:2000],
+        )
+    verdict = _normalize_qa_verdict(parsed)
+    if verdict["pass"]:
+        _record_qa_checked_figure(tool_context, abs_path)
+    return {
+        "tool": "vision_reader",
+        "success": True,
+        "operation": "qa_figure",
+        "image_path": path_text,
+        "qa": verdict,
+        "pass": verdict["pass"],
+        "severity": verdict["severity"],
+        "text": json.dumps(verdict, ensure_ascii=False),
+    }
+
 async def vision_reader_handler(
     operation: str,
-    file_path: str = None,
-    image_path: str = None,  # Alias for backward compatibility
+    file_path: str | None = None,
+    image_path: str | None = None,  # Alias for backward compatibility
     page_numbers: Optional[list[int]] = None,
     page_number: Optional[int] = None,
     region: Optional[Dict[str, float]] = None,
     question: Optional[str] = None,
     language: str = "en",
     max_pages: Optional[int] = None,
+    tool_context: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Vision reader tool handler - reads documents and images using vision model.
 
@@ -711,7 +929,9 @@ async def vision_reader_handler(
     reader when the local reader finds no text, so a page count is a charge.
 
     Args:
-        operation: One of "read_pdf", "read_image", "ocr_page", "read_equation_image", "describe_figure", "extract_table".
+        operation: One of "read_pdf", "read_image", "ocr_page", "read_equation_image", "describe_figure", "extract_table", "qa_figure".
+            ``qa_figure`` runs a strict visual QA pass on a rendered raster figure
+            and returns a structured verdict (pass/severity/issues/recommendations).
         file_path: Path to the file (PDF or image) on disk.
         image_path: Alias for file_path (backward compatibility).
         page_numbers: Optional list of specific pages to read (1-indexed, for PDFs).
@@ -723,6 +943,9 @@ async def vision_reader_handler(
             ``VISION_READER_PDF_MAX_PAGES`` (50). It bounds both the rendered pages
             and a paid parse: a document above the budget is refused until the
             caller names the pages it needs.
+        tool_context: Runtime tool context (injected by the executor). ``qa_figure``
+            resolves task-relative paths through it and records the checked figure
+            in ``tool_context.extra["qa_checked_figures"]``.
     """
 
     op = (operation or "").strip().lower()
@@ -743,6 +966,9 @@ async def vision_reader_handler(
             "error": "file_path or image_path is required.",
             "code": "missing_path",
         }
+
+    if op == "qa_figure":
+        return await _qa_figure(target_path, question=question, tool_context=tool_context)
 
     abs_path = Path(target_path).resolve()
     if not abs_path.exists():
@@ -1013,7 +1239,10 @@ vision_reader_tool: Dict[str, Any] = {
         "rasterized locally (pypdfium2) and read by the multimodal model. Reading is "
         "page-bounded, so pass page_numbers for the pages you actually need — a "
         "whole-document read above the per-read budget is refused. Use for visual OCR, "
-        "figures, and equations, not for DOCX."
+        "figures, and equations, not for DOCX. Use qa_figure on a rendered raster "
+        "figure (PNG/JPG/TIFF) before delivering it: it returns a strict JSON QA verdict "
+        "(blank/corrupt, clipped labels, overlapping text, tiny fonts, missing axes or "
+        "legend, broken aspect ratio)."
     ),
     "category": "vision",
     "parameters_schema": {
@@ -1028,8 +1257,9 @@ vision_reader_tool: Dict[str, Any] = {
                     "read_equation_image",
                     "describe_figure",
                     "extract_table",
+                    "qa_figure",
                 ],
-                "description": "Type of vision task: read_pdf (PDF documents), read_image (general images), ocr_page (OCR text), read_equation_image (math formulas), describe_figure (chart/graph), extract_table (table data).",
+                "description": "Type of vision task: read_pdf (PDF documents), read_image (general images), ocr_page (OCR text), read_equation_image (math formulas), describe_figure (chart/graph), extract_table (table data), qa_figure (strict visual QA verdict for a rendered raster figure before delivery).",
             },
             "file_path": {
                 "type": "string",
@@ -1085,5 +1315,6 @@ vision_reader_tool: Dict[str, Any] = {
         "Describe an image: operation='read_image', file_path='/path/to/figure.png'",
         "OCR a scanned page: operation='ocr_page', file_path='/path/to/scan.jpg'",
         "Read equations: operation='read_equation_image', file_path='/path/to/eq.png'",
+        "QA a rendered figure before delivery: operation='qa_figure', file_path='figures/volcano.png'",
     ],
 }

@@ -2876,6 +2876,7 @@ class StructuredChatAgent:
                         "owner_id": str(
                             self.extra_context.get("owner_id") or ""
                         ).strip() or None,
+                        "memory_enabled": self.extra_context.get("memory_enabled") is not False,
                         **_plan_clarification_profile(
                             self.extra_context,
                             session_id=self.session_id,
@@ -3243,6 +3244,7 @@ class StructuredChatAgent:
                     display_text,
                     metadata=save_meta,
                     model_provider=(self.extra_context or {}).get("model_provider"),
+                    memory_enabled=(self.extra_context or {}).get("memory_enabled") is not False,
                 )
             except Exception as save_err:
                 logger.warning("[SIMPLE_CHAT] Failed to save response: %s", save_err)
@@ -3455,6 +3457,7 @@ class StructuredChatAgent:
                         "execution_summary": summary.to_dict(),
                     },
                     model_provider=(self.extra_context or {}).get("model_provider"),
+                    memory_enabled=(self.extra_context or {}).get("memory_enabled") is not False,
                 )
         except Exception as save_err:
             logger.warning("[CHAT][FULL_PLAN_EXECUTOR] Failed to save summary: %s", save_err)

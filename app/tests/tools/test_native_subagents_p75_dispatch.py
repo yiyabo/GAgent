@@ -279,7 +279,7 @@ async def test_process_wide_limit_spans_concurrent_delegate_calls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("DELEGATE_TASK_MAX_CONCURRENCY", "2")
-    monkeypatch.setattr(ns, "_LOOP_LIMITERS", ns.weakref.WeakKeyDictionary())
+    monkeypatch.setattr(ns, "_PROCESS_LIMITERS", {})
     active = 0
     peak = 0
 

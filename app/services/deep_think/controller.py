@@ -2002,7 +2002,7 @@ async def _think_prompt_based(  # pyright: ignore[reportGeneralTypeIssues] -- le
                 )
 
             from .native_validation import compact_strict
-            messages=await compact_strict(agent,messages,user_query)
+            messages=await compact_strict(agent,messages,user_query,context)
             logger.info("[DEEP_THINK] Using streaming LLM call")
             async for delta in iterate_work_stage(observed_stream(agent, agent.llm_client.stream_chat_async(
                 prompt="", messages=messages,

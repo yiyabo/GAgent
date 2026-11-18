@@ -244,7 +244,7 @@ def _extract_explicit_plan_tasks_from_goal(goal: Any) -> List[Dict[str, Any]]:
 _PHAGESCOPE_RESEARCH_ACTIONS = {"audit", "research_plan", "prepare_metadata_table"}
 # Tools with no per-tool parameter normalizer: their advertised parameters are
 # already the handler contract, so they fall through to the generic execution path.
-_GENERIC_EXECUTION_TOOLS = frozenset({"execute_code", "delegate_task", "load_skill"})
+_GENERIC_EXECUTION_TOOLS = frozenset({"execute_code", "delegate_task", "load_skill", "memory_operation"})
 _artifact_preflight_service = ArtifactPreflightService()
 
 
@@ -312,11 +312,7 @@ def _align_manuscript_writer_params_with_bound_task(agent: Any, params: Dict[str
     metadata = node.metadata if isinstance(getattr(node, "metadata", None), dict) else {}
     paper_meta = node.paper_metadata() if hasattr(node, "paper_metadata") else None
     acceptance = metadata.get("acceptance_criteria") if isinstance(metadata, dict) else None
-    acceptance_category = (
-        str(acceptance.get("category") or "").strip().lower()
-        if isinstance(acceptance, dict)
-        else ""
-    )
+    acceptance_category = str(acceptance.get("category") or "").strip().lower() if isinstance(acceptance, dict) else ""
     paper_mode = bool(
         metadata.get("paper_mode")
         or getattr(paper_meta, "paper_section", None)
@@ -376,17 +372,16 @@ def _align_manuscript_writer_params_with_bound_task(agent: Any, params: Dict[str
             canonical_output = f"manuscript/{canonical_output}"
         aligned["output_path"] = canonical_output
 
-    paper_section = str(
-        getattr(paper_meta, "paper_section", None) or metadata.get("paper_section") or ""
-    ).strip().lower()
+    paper_section = (
+        str(getattr(paper_meta, "paper_section", None) or metadata.get("paper_section") or "").strip().lower()
+    )
     if paper_section and not aligned.get("sections"):
         aligned["sections"] = [paper_section]
 
     task_text = str(aligned.get("task") or "").strip()
     if not task_text:
         fallback_task = (
-            str(getattr(node, "instruction", "") or "").strip()
-            or str(getattr(node, "name", "") or "").strip()
+            str(getattr(node, "instruction", "") or "").strip() or str(getattr(node, "name", "") or "").strip()
         )
         if fallback_task:
             aligned["task"] = fallback_task
@@ -400,25 +395,15 @@ def _align_manuscript_writer_params_with_bound_task(agent: Any, params: Dict[str
             "Do not substitute alternative algorithms or generic defaults."
         )
     if merged_context_paths:
-        evidence_names = [
-            Path(str(item)).name
-            for item in merged_context_paths
-            if Path(str(item)).name
-        ][:6]
+        evidence_names = [Path(str(item)).name for item in merged_context_paths if Path(str(item)).name][:6]
         if evidence_names:
             grounding_requirements.append(
-                "Ground the draft in these evidence files when relevant: "
-                + ", ".join(evidence_names)
-                + "."
+                "Ground the draft in these evidence files when relevant: " + ", ".join(evidence_names) + "."
             )
     if len(expected_outputs) == 1 and aligned.get("output_path"):
-        grounding_requirements.append(
-            f"Write the final deliverable to exactly: {aligned['output_path']}."
-        )
+        grounding_requirements.append(f"Write the final deliverable to exactly: {aligned['output_path']}.")
     if task_text and grounding_requirements:
-        aligned["task"] = task_text + "\n\nBound task requirements:\n- " + "\n- ".join(
-            grounding_requirements
-        )
+        aligned["task"] = task_text + "\n\nBound task requirements:\n- " + "\n- ".join(grounding_requirements)
 
     return aligned
 
@@ -606,6 +591,7 @@ def _bind_chat_tool_progress(callback: Optional[Any], tool_name: str) -> Optiona
 
 def _build_chat_tool_context(agent: Any, tool_name: str) -> Optional[Any]:
     from app.services.plans.edit_policy import agent_plan_edit_allowed
+
     session_id = getattr(agent, "session_id", None)
     if not isinstance(session_id, str) or not session_id.strip():
         return None
@@ -632,7 +618,11 @@ def _build_chat_tool_context(agent: Any, tool_name: str) -> Optional[Any]:
             task_id = None
 
     task_name: Optional[str] = None
-    if task_id is not None and getattr(getattr(agent, "plan_session", None), "repo", None) is not None and plan_id is not None:
+    if (
+        task_id is not None
+        and getattr(getattr(agent, "plan_session", None), "repo", None) is not None
+        and plan_id is not None
+    ):
         try:
             tree = agent.plan_session.repo.get_plan_tree(plan_id)
             if tree.has_node(task_id):
@@ -649,7 +639,15 @@ def _build_chat_tool_context(agent: Any, tool_name: str) -> Optional[Any]:
         work_dir = session_dir
     else:
         work_dir = session_dir / "raw_files" / "chat_tools" / tool_name
-    owner_id = (getattr(agent, "extra_context", {}) or {}).get("owner_id")
+    agent_context = getattr(agent, "extra_context", {}) or {}
+    owner_id = agent_context.get("owner_id")
+    qa_checked_figures = getattr(agent, "_qa_checked_figures", None)
+    if not isinstance(qa_checked_figures, list):
+        qa_checked_figures = []
+        try:
+            agent._qa_checked_figures = qa_checked_figures
+        except Exception:
+            qa_checked_figures = []
     on_progress, on_progress_loop = _chat_tool_progress_channel(agent)
     return ToolContext(
         session_id=session_id.strip(),
@@ -658,10 +656,14 @@ def _build_chat_tool_context(agent: Any, tool_name: str) -> Optional[Any]:
         task_name=task_name,
         job_id=get_current_job(),
         owner_id=str(owner_id).strip() if owner_id is not None and str(owner_id).strip() else None,
+        memory_enabled=agent_context.get("memory_enabled") is not False,
         work_dir=str(work_dir),
         on_progress=_bind_chat_tool_progress(on_progress, tool_name),
         on_progress_loop=on_progress_loop,
-        extra={"plan_tree_edit_allowed": agent_plan_edit_allowed(agent)},
+        extra={
+            "plan_tree_edit_allowed": agent_plan_edit_allowed(agent),
+            "qa_checked_figures": qa_checked_figures,
+        },
     )
 
 
@@ -704,6 +706,7 @@ def _enforce_capability_guard(
 # ---------------------------------------------------------------------------
 # handle_tool_action
 # ---------------------------------------------------------------------------
+
 
 async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
     tool_name = (action.name or "").strip()
@@ -906,9 +909,7 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
                     details={"error": "missing_session_id", "tool": tool_name},
                 )
             try:
-                ensure_result = await execute_tool(
-                    "terminal_session", operation="ensure", session_id=ensure_sid
-                )
+                ensure_result = await execute_tool("terminal_session", operation="ensure", session_id=ensure_sid)
                 if isinstance(ensure_result, dict) and ensure_result.get("terminal_id"):
                     clean_params["terminal_id"] = ensure_result["terminal_id"]
             except Exception:
@@ -957,6 +958,11 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
             message=f"Tool {tool_name} is not supported yet.",
             details={"error": "unsupported_tool", "tool": tool_name},
         )
+
+    if tool_name in {"vision_reader", "deliverable_submit"} and "tool_context" not in params:
+        tool_context = _build_chat_tool_context(agent, tool_name)
+        if tool_context is not None:
+            params["tool_context"] = tool_context
 
     pre_terminal_mutation_snapshot: Optional[Dict[str, Any]] = None
     mutation_marker_id: Optional[int] = None
@@ -1058,9 +1064,7 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
                                     if not isinstance(name, str) or not name.strip():
                                         continue
                                     status_raw = (
-                                        item.get("module_satus")
-                                        or item.get("module_status")
-                                        or item.get("status")
+                                        item.get("module_satus") or item.get("module_status") or item.get("status")
                                     )
                                     status_upper = _module_status_upper(status_raw) or "UNKNOWN"
                                     is_done: Optional[bool] = None
@@ -1178,9 +1182,7 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
     # For optional local file reads, keep failure semantics but annotate the
     # result so callers can decide whether to continue.
     try:
-        is_optional = (
-            isinstance(action.metadata, dict) and bool(action.metadata.get("optional"))
-        )
+        is_optional = isinstance(action.metadata, dict) and bool(action.metadata.get("optional"))
         if (
             tool_name == "file_operations"
             and is_optional
@@ -1225,8 +1227,7 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
             and raw_result.get("no_claude_fallback") is True
         ):
             blocked_summary = str(
-                raw_result.get("error")
-                or "sequence_fetch failed and code_executor fallback is blocked."
+                raw_result.get("error") or "sequence_fetch failed and code_executor fallback is blocked."
             ).strip()
             agent.extra_context[_SEQUENCE_FETCH_NO_CLAUDE_FALLBACK_KEY] = {
                 "summary": blocked_summary,
@@ -1246,8 +1247,7 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
             and raw_result.get("no_claude_fallback") is True
         ):
             blocked_summary = str(
-                raw_result.get("error")
-                or "bio_tools input preparation failed; code_executor fallback is blocked."
+                raw_result.get("error") or "bio_tools input preparation failed; code_executor fallback is blocked."
             ).strip()
             agent.extra_context[_BIO_TOOLS_NO_CLAUDE_FALLBACK_KEY] = {
                 "summary": blocked_summary,
@@ -1482,6 +1482,7 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
     if tool_name == "code_executor":
         try:
             from app.services.amem_client import get_amem_client
+
             amem_client = get_amem_client()
 
             if amem_client.enabled:
@@ -1492,7 +1493,7 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
                         result=sanitized,
                         session_id=agent.session_id,
                         plan_id=agent.plan_session.plan_id,
-                        key_findings=summary  # Use summary as key findings.
+                        key_findings=summary,  # Use summary as key findings.
                     )
                 )
                 logger.info("[AMEM] Scheduled execution result save")
@@ -1536,6 +1537,7 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
 # handle_context_request
 # ---------------------------------------------------------------------------
 
+
 def handle_context_request(agent: Any, action: LLMAction) -> AgentStep:
     if action.name != "request_subgraph":
         return handle_unknown_action(agent, action)
@@ -1544,11 +1546,7 @@ def handle_context_request(agent: Any, action: LLMAction) -> AgentStep:
     node_id_value = params.get("logical_id") or params.get("task_id")
     node_id = agent._coerce_int(node_id_value, "task_id")
     max_depth_raw = params.get("max_depth")
-    max_depth = (
-        agent._coerce_int(max_depth_raw, "max_depth")
-        if max_depth_raw is not None
-        else 2
-    )
+    max_depth = agent._coerce_int(max_depth_raw, "max_depth") if max_depth_raw is not None else 2
     agent._refresh_plan_tree(force_reload=False)
     graph_tree = agent.plan_tree or agent.plan_session.ensure()
     try:
@@ -1571,6 +1569,7 @@ def handle_context_request(agent: Any, action: LLMAction) -> AgentStep:
 # handle_system_action
 # ---------------------------------------------------------------------------
 
+
 def handle_system_action(agent: Any, action: LLMAction) -> AgentStep:
     if action.name == "help":
         message = (
@@ -1584,6 +1583,7 @@ def handle_system_action(agent: Any, action: LLMAction) -> AgentStep:
 # ---------------------------------------------------------------------------
 # handle_unknown_action
 # ---------------------------------------------------------------------------
+
 
 def handle_unknown_action(agent: Any, action: LLMAction) -> AgentStep:
     message = f"Unrecognized action kind or name: {action.kind}/{action.name}."

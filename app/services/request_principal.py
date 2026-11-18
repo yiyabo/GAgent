@@ -101,12 +101,24 @@ def _quality_analytics_admin_ids() -> set[str]:
     return {item.strip() for item in raw.split(",") if item.strip()}
 
 
+def is_admin_principal(principal: RequestPrincipal) -> bool:
+    """True for authenticated operators: role ``admin`` or a configured admin id."""
+    return principal.is_authenticated and (
+        principal.role == "admin" or principal.user_id in _quality_analytics_admin_ids()
+    )
+
+
+def require_admin_principal(request: Request, *, detail: str = "Administrator access required") -> RequestPrincipal:
+    """Require an authenticated administrator; 401 when anonymous, 403 otherwise."""
+    principal = require_authenticated_principal(request)
+    if is_admin_principal(principal):
+        return principal
+    raise HTTPException(status_code=403, detail=detail)
+
+
 def require_quality_analytics_access(request: Request) -> RequestPrincipal:
     """Require an authenticated internal operator for conversation analytics."""
-    principal = require_authenticated_principal(request)
-    if principal.role == "admin" or principal.user_id in _quality_analytics_admin_ids():
-        return principal
-    raise HTTPException(status_code=403, detail="Conversation quality analytics access is restricted")
+    return require_admin_principal(request, detail="Conversation quality analytics access is restricted")
 
 
 def ensure_owner_access(

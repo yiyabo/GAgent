@@ -30,6 +30,7 @@ from .terminal_session import terminal_session_tool
 from .execute_code import execute_code_tool
 from .delegate_task import delegate_task_tool
 from .load_skill import load_skill_tool
+from .memory_operation import memory_operation_tool
 
 
 def _rebind_cached_submodules() -> None:
@@ -98,4 +99,5 @@ __all__ = [
     "execute_code_tool",
     "delegate_task_tool",
     "load_skill_tool",
+    "memory_operation_tool",
 ]

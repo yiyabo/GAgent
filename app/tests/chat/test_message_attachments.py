@@ -52,7 +52,8 @@ def test_history_keeps_where_earlier_files_are():
 def test_run_user_message_is_saved_with_its_attachments(monkeypatch):
     saved = []
 
-    def _save(session_id, role, content, metadata=None, *, owner_id=None):
+    def _save(session_id, role, content, metadata=None, *, owner_id=None, memory_enabled):
+        assert memory_enabled is False
         saved.append((session_id, role, content, metadata, owner_id))
         return None
 
@@ -61,7 +62,7 @@ def test_run_user_message_is_saved_with_its_attachments(monkeypatch):
         message="比较这两个噬菌体",
         session_id="sess",
         client_message_id="c1",
-        context={"attachments": [LAMBDA, T7, {"bad": True}]},
+        context={"attachments": [LAMBDA, T7, {"bad": True}], "memory_enabled": False},
     )
     run_routes._save_run_user_message(request, run_id="r1", session_id="sess", owner_id="alice")
     assert saved == [(

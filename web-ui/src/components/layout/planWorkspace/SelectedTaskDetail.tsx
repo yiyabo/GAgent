@@ -8,6 +8,7 @@ import TaskExecuteModal from '@components/tasks/detail/TaskExecuteModal';
 import { ExecutionResult } from '@components/tasks/detail/TaskDetailSections';
 import { useCallbackScope } from '@components/tasks/detail/useCallbackScope';
 import JobLogPanel from '@components/chat/JobLogPanel';
+import InspectTaskRunButton from '@components/chat/runInspector/InspectTaskRunButton';
 import PlanTaskArtifacts from '../planArtifacts/PlanTaskArtifacts';
 import type { BackgroundTaskItem, PlanSyncEventDetail, PlanTaskNode } from '@/types';
 import { isActiveJob, selectTaskJob, taskStatus } from './model';
@@ -84,6 +85,8 @@ const SelectedTaskDetail: React.FC<Props> = ({ planId, sessionId, artifactSessio
         <span className={`pw-status-label pw-status-${taskStatus(task)}`}><TaskStatusIcon status={taskStatus(task)} />{planStatusLabel(t, taskStatus(task))}</span>
         <Space size={6}>
           <Button size="small" icon={<ExportOutlined />} disabled={executionBlocked} title={executionBlocked ? t('planWorkspace.openSourceFirst') : undefined} onClick={openDetails}>{t('planWorkspace.fullDetails')}</Button>
+          <InspectTaskRunButton planId={planId} taskId={task.id} taskName={task.short_name || task.name}
+            status={task.status} executionResult={task.execution_result} />
           {needsDecomposition && <Button size="small" icon={<NodeIndexOutlined />} loading={decomposing}
             disabled={running || decomposing || executionBlocked} onClick={() => void continueDecomposition()}>{t('planWorkspace.continueDecompose')}</Button>}
           <Button size="small" type="primary" icon={<PlayCircleOutlined />} disabled={running || decomposing || executionBlocked}

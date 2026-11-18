@@ -19,12 +19,58 @@ implementation (they surface in user-visible submit summaries).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.config.deliverable_config import DeliverableConflictStrategy
 
 from .file_ops import _KeepFirstConflict
 from .policy import DELIVERABLE_SUBMIT_KEY
+
+
+# Rendered figures that vision_reader ``qa_figure`` can check. Kept in sync with
+# ``tool_box.tools_impl.vision_reader.QA_FIGURE_RASTER_SUFFIXES``.
+_QA_RASTER_FIGURE_SUFFIXES = frozenset(
+    {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp", ".gif"}
+)
+
+
+def _normalized_path_text(value: Any) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return str(Path(text).expanduser().resolve())
+    except (OSError, RuntimeError, ValueError):
+        return text
+
+
+def _qa_checked_figure_set(payload: Dict[str, Any], tool_context: Any) -> Optional[Set[str]]:
+    """Resolved paths already checked by ``qa_figure``; ``None`` when untracked.
+
+    The live tool context wins; otherwise the list the deliverable_submit
+    handler copied into the payload. A lane that tracks neither gets no figure
+    QA warning at all.
+    """
+    extra = getattr(tool_context, "extra", None)
+    source = extra.get("qa_checked_figures") if isinstance(extra, dict) else None
+    if not isinstance(source, list):
+        source = payload.get("qa_checked_figures")
+    if not isinstance(source, list):
+        return None
+    return {
+        normalized
+        for normalized in (_normalized_path_text(item) for item in source)
+        if normalized
+    }
+
+
+def _needs_figure_qa_warning(item: Dict[str, Any], resolved: Path, qa_checked: Set[str]) -> bool:
+    """A published raster ``image_tabular`` figure that never went through QA."""
+    if str(item.get("module") or "").strip().lower() != "image_tabular":
+        return False
+    if resolved.suffix.lower() not in _QA_RASTER_FIGURE_SUFFIXES:
+        return False
+    return _normalized_path_text(resolved) not in qa_checked
 
 
 class _SubmitPayloadMethods:
@@ -171,10 +217,13 @@ class _SubmitPayloadMethods:
         publish_status: str,
         now: str,
         previous_manifest: Dict[str, Any],
+        tool_context: Any = None,
     ) -> Dict[str, Any]:
         artifacts = payload.get("artifacts")
         requested_count = len(artifacts) if isinstance(artifacts, list) else 0
         warnings: List[str] = []
+        qa_checked = _qa_checked_figure_set(payload, tool_context)
+        unchecked_figures: List[str] = []
         if not payload.get("publish", True):
             return {"items": [], "requested_count": requested_count, "warnings": warnings}
         if not isinstance(artifacts, list):
@@ -269,10 +318,20 @@ class _SubmitPayloadMethods:
                         reason = retry_reason or reason
             if item is not None:
                 out.append(item)
+                if qa_checked is not None and _needs_figure_qa_warning(item, resolved, qa_checked):
+                    unchecked_figures.append(self._to_project_relative(resolved))
                 continue
             warnings.append(
                 f"artifact[{idx}] skipped: {reason or 'artifact was not publishable'} "
                 f"({self._to_project_relative(resolved)})"
+            )
+        if unchecked_figures:
+            # Soft and non-blocking: the figures are already published.
+            warnings.append(
+                "figure QA not run: "
+                + ", ".join(unchecked_figures)
+                + " published without vision_reader operation='qa_figure'; run it to "
+                "catch clipped labels, overlapping text, or blank renders"
             )
         return {"items": out, "requested_count": requested_count, "warnings": warnings}
 

@@ -8,6 +8,7 @@ import logging
 import time
 from contextlib import contextmanager
 from functools import wraps
+from typing import Any
 
 from app.services.cancellation import CancelToken, current_cancel_token, set_cancel_token, reset_cancel_token
 from app.services.foundation.settings import get_settings
@@ -17,7 +18,9 @@ from app.services.run_budget import (
 )
 
 logger = logging.getLogger(__name__)
-_task_deadlines = contextvars.ContextVar("plan_task_deadlines", default=None)
+_task_deadlines: contextvars.ContextVar[dict[Any, Any] | None] = contextvars.ContextVar(
+    "plan_task_deadlines", default=None
+)
 
 
 def enabled() -> bool:
@@ -96,7 +99,9 @@ def request_profile(plan_id, task_id, context):
     profile = {"current_plan_id": plan_id, "current_task_id": task_id,
                "intent_type": "execute_task", "execution_lane": "plan",
                "plan_tree_edit_allowed": _execution_edit_mode(),
-               "session_id": context.get("session_id"), "owner_id": context.get("owner_id")}
+               "memory_enabled": context.get("memory_enabled") is not False,
+               "session_id": context.get("session_id"), "owner_id": context.get("owner_id"),
+               **({"plan_assumptions": context.get("plan_assumptions")} if context.get("plan_assumptions") else {})}
     if enabled():
         budget = current_run_budget()
         profile["plan_budget_enabled"] = True
