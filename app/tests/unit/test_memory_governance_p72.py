@@ -8,7 +8,7 @@ import json
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from fastapi import HTTPException
@@ -103,21 +103,15 @@ async def test_query_memory_session_idor_fails_closed(env) -> None:
     await env.svc.save_memory(_req("bob", "bob secret lysin plan", session_id="sb"))
 
     # alice cannot read bob's per-session store by passing his session id
-    stolen = await env.svc.query_memory(
-        QueryMemoryRequest(search_text="lysin", session_id="sb", owner_id="alice")
-    )
+    stolen = await env.svc.query_memory(QueryMemoryRequest(search_text="lysin", session_id="sb", owner_id="alice"))
     assert stolen.total == 0
     # an empty owner is fail-closed even for a valid session
     anon = await env.svc.query_memory(QueryMemoryRequest(search_text="lysin", session_id="sb"))
     assert anon.total == 0
     # an unowned (NULL-owner) session authorizes nobody
-    nobody = await env.svc.query_memory(
-        QueryMemoryRequest(search_text="lysin", session_id="orphan", owner_id="alice")
-    )
+    nobody = await env.svc.query_memory(QueryMemoryRequest(search_text="lysin", session_id="orphan", owner_id="alice"))
     assert nobody.total == 0
-    own = await env.svc.query_memory(
-        QueryMemoryRequest(search_text="lysin", session_id="sb", owner_id="bob")
-    )
+    own = await env.svc.query_memory(QueryMemoryRequest(search_text="lysin", session_id="sb", owner_id="bob"))
     assert own.total == 1
 
 
@@ -144,15 +138,26 @@ async def test_crud_is_owner_scoped(env, monkeypatch: pytest.MonkeyPatch) -> Non
     a1 = await env.svc.save_memory(_req("alice", "alice prefers seaborn plots"))
     await env.svc.save_memory(_req("alice", "alice uses /data3/genomes", importance=ImportanceLevel.HIGH))
     b1 = await env.svc.save_memory(_req("bob", "bob prefers matplotlib"))
-    env.conn.execute("INSERT INTO memories (id, content, memory_type, importance, owner_id) VALUES ('legacy', 'null owner', 'knowledge', 'low', NULL)")
+    env.conn.execute(
+        "INSERT INTO memories (id, content, memory_type, importance, owner_id) VALUES ('legacy', 'null owner', 'knowledge', 'low', NULL)"
+    )
     env.conn.commit()
 
     page = env.svc.list_memories("alice", limit=1)
     assert page["total"] == 2 and page["limit"] == 1 and page["offset"] == 0
     item = page["items"][0]
     assert set(item) == {
-        "id", "content", "memory_type", "importance", "keywords", "tags", "context",
-        "created_at", "last_accessed", "retrieval_count", "embedding_generated",
+        "id",
+        "content",
+        "memory_type",
+        "importance",
+        "keywords",
+        "tags",
+        "context",
+        "created_at",
+        "last_accessed",
+        "retrieval_count",
+        "embedding_generated",
     }
     assert isinstance(item["keywords"], list) and isinstance(item["retrieval_count"], int)
     assert isinstance(item["embedding_generated"], bool)
@@ -177,9 +182,10 @@ async def test_crud_is_owner_scoped(env, monkeypatch: pytest.MonkeyPatch) -> Non
     assert env.svc.delete_memory("legacy", "alice") is False
     assert env.svc.delete_memory(a1.memory_id, "alice") is True
     assert _row(env.conn, a1.memory_id) is None
-    assert env.conn.execute(
-        "SELECT COUNT(*) FROM memory_embeddings WHERE memory_id = ?", (a1.memory_id,)
-    ).fetchone()[0] == 0
+    assert (
+        env.conn.execute("SELECT COUNT(*) FROM memory_embeddings WHERE memory_id = ?", (a1.memory_id,)).fetchone()[0]
+        == 0
+    )
 
     stats = await env.svc.get_memory_stats(owner_id="bob")
     assert stats.total_memories == 1
@@ -218,7 +224,9 @@ async def test_entries_api_uses_request_owner(env, monkeypatch: pytest.MonkeyPat
 async def test_save_dedupes_normalized_content_per_owner(env) -> None:
     first = await env.svc.save_memory(_req("alice", "User prefers Chinese answers.", keywords=["lang"], tags=["pref"]))
     again = await env.svc.save_memory(
-        _req("alice", "  user PREFERS chinese answers ", keywords=["zh"], tags=["style"], importance=ImportanceLevel.HIGH)
+        _req(
+            "alice", "  user PREFERS chinese answers ", keywords=["zh"], tags=["style"], importance=ImportanceLevel.HIGH
+        )
     )
     assert again.memory_id == first.memory_id
     row = _row(env.conn, first.memory_id)
@@ -230,16 +238,32 @@ async def test_save_dedupes_normalized_content_per_owner(env) -> None:
     assert env.conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 2
 
 
-async def test_save_dedupes_by_embedding_cosine(env) -> None:
+async def test_semantically_similar_facts_are_not_merged(env) -> None:
+    # Near-duplicates by embedding may still carry distinct facts (e.g. a changed
+    # path); only exact normalized content is merged so no fact is dropped.
     env.embeddings.vectors["Results live in /data3/out"] = [1.0, 0.0, 0.0]
-    env.embeddings.vectors["Outputs are stored at /data3/out"] = [0.95, 0.05, 0.0]
-    env.embeddings.vectors["Unrelated fact"] = [0.0, 1.0, 0.0]
+    env.embeddings.vectors["Results live in /data3/out2"] = [0.99, 0.01, 0.0]
     first = await env.svc.save_memory(_req("alice", "Results live in /data3/out"))
     assert _row(env.conn, first.memory_id)["embedding_generated"]
-    near = await env.svc.save_memory(_req("alice", "Outputs are stored at /data3/out"))
-    assert near.memory_id == first.memory_id
-    far = await env.svc.save_memory(_req("alice", "Unrelated fact"))
-    assert far.memory_id != first.memory_id
+    near = await env.svc.save_memory(_req("alice", "Results live in /data3/out2"))
+    assert near.memory_id != first.memory_id
+    assert _row(env.conn, near.memory_id)["content"] == "Results live in /data3/out2"
+
+
+async def test_save_rejects_foreign_session(env) -> None:
+    with pytest.raises(PermissionError):
+        await env.svc.save_memory(_req("alice", "sneaky", session_id="sb"))
+    assert env.conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+    ok = await env.svc.save_memory(_req("alice", "mine", session_id="sa"))
+    assert ok.memory_id
+
+
+async def test_save_endpoint_session_idor_returns_404(env, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(memory_api, "get_request_owner_id", lambda _r: "alice")
+    with pytest.raises(HTTPException) as exc:
+        await memory_api.save_memory_endpoint(_req(None, "sneaky", session_id="sb"), cast(Any, SimpleNamespace()))
+    assert exc.value.status_code == 404
+    assert env.conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
 
 
 class _FakeLLM:
@@ -272,8 +296,20 @@ async def test_middleware_extracts_atomic_entries(env) -> None:
     payload = {
         "should_save": True,
         "entries": [
-            {"content": "User prefers answers in Chinese.", "memory_type": "knowledge", "importance": "high", "keywords": ["language"], "tags": ["preference"]},
-            {"content": "Project data lives in /data3/phage.", "memory_type": "context", "importance": "medium", "keywords": ["path"], "tags": ["path"]},
+            {
+                "content": "User prefers answers in Chinese.",
+                "memory_type": "knowledge",
+                "importance": "high",
+                "keywords": ["language"],
+                "tags": ["preference"],
+            },
+            {
+                "content": "Project data lives in /data3/phage.",
+                "memory_type": "context",
+                "importance": "medium",
+                "keywords": ["path"],
+                "tags": ["path"],
+            },
             {"content": "x2", "memory_type": "bogus"},
             {"content": "x3"},
             {"content": "never saved (over the cap)"},
@@ -325,9 +361,15 @@ async def test_repository_mark_recalled_is_owner_scoped(env) -> None:
 
 def _candidate(identity: str, scope: str, content: str = "unrelated words") -> dict[str, Any]:
     return {
-        "id": identity, "content": content, "memory_type": "knowledge", "importance": "medium",
-        "keywords": "[]", "scope": scope, "source_store": "main",
-        "source_session_id": "sa" if scope == "session" else None, "created_at": "2026-11-01",
+        "id": identity,
+        "content": content,
+        "memory_type": "knowledge",
+        "importance": "medium",
+        "keywords": "[]",
+        "scope": scope,
+        "source_store": "main",
+        "source_session_id": "sa" if scope == "session" else None,
+        "created_at": "2026-11-01",
     }
 
 
@@ -340,9 +382,14 @@ def test_recall_hybrid_vector_and_cross_session(monkeypatch: pytest.MonkeyPatch)
     marked: list[tuple[str, list[str]]] = []
     monkeypatch.setattr(recall_repo, "session_scope", lambda sid: {"id": sid, "owner_id": "alice", "project_id": None})
     monkeypatch.setattr(recall_repo, "memory_candidates", lambda scope, terms: [dict(r) for r in rows])
-    monkeypatch.setattr(recall_repo, "owner_embeddings", lambda owner, ids: {
-        "cross-session-pref": "[1.0, 0.0]", "cross-session-noise": "[0.0, 1.0]",
-    })
+    monkeypatch.setattr(
+        recall_repo,
+        "owner_embeddings",
+        lambda owner, ids: {
+            "cross-session-pref": "[1.0, 0.0]",
+            "cross-session-noise": "[0.0, 1.0]",
+        },
+    )
     monkeypatch.setattr(recall_repo, "mark_recalled", lambda owner, ids: marked.append((owner, ids)))
     monkeypatch.setattr(recall_service, "_query_embedding", lambda q: [1.0, 0.0])
 
@@ -356,7 +403,26 @@ def test_recall_hybrid_vector_and_cross_session(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(recall_service, "_query_embedding", lambda q: None)
     offline = [m["id"] for m in recall_service.recall("sa", "lysin brevity")["memories"]]
     assert offline[0] == "same-session"
-    assert offline.index("cross-session-noise") < offline.index("cross-session-pref")
+    # Owner-scope notes must match the query: without vectors the unrelated
+    # preference is no longer admitted from other sessions.
+    assert "cross-session-noise" in offline
+    assert "cross-session-pref" not in offline
+
+
+def test_recall_caps_owner_scope_notes(monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = [_candidate("same-session", "session", "lysin note")]
+    rows += [_candidate(f"owner-{i}", "owner", f"lysin fact {i}") for i in range(6)]
+    rows.append(_candidate("owner-irrelevant", "owner", "unrelated"))
+    monkeypatch.setattr(recall_repo, "session_scope", lambda sid: {"id": sid, "owner_id": "alice", "project_id": None})
+    monkeypatch.setattr(recall_repo, "memory_candidates", lambda scope, terms: [dict(r) for r in rows])
+    monkeypatch.setattr(recall_repo, "owner_embeddings", lambda owner, ids: {})
+    monkeypatch.setattr(recall_repo, "mark_recalled", lambda owner, ids: None)
+    monkeypatch.setattr(recall_service, "_query_embedding", lambda q: None)
+    ids = [m["id"] for m in recall_service.recall("sa", "lysin")["memories"]]
+    assert "same-session" in ids
+    owner_ids = [i for i in ids if i.startswith("owner-")]
+    assert len(owner_ids) == recall_service.MAX_OWNER_SCOPE_NOTES
+    assert "owner-irrelevant" not in ids
 
 
 def test_query_embedding_times_out_cleanly(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -367,7 +433,20 @@ def test_query_embedding_times_out_cleanly(monkeypatch: pytest.MonkeyPatch) -> N
     slow = SimpleNamespace(get_single_embedding=lambda _t: time.sleep(0.5) or [1.0])
     monkeypatch.setattr(embeddings_module, "get_embeddings_service", lambda: slow)
     monkeypatch.setattr(recall_service, "VECTOR_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(recall_service, "_breaker_open_until", 0.0)
     assert recall_service._query_embedding("anything") is None
+    # Breaker is now open: the next call skips the provider entirely.
+    calls: list[str] = []
+    fast = SimpleNamespace(get_single_embedding=lambda t: calls.append(t) or [1.0])
+    monkeypatch.setattr(embeddings_module, "get_embeddings_service", lambda: fast)
+    assert recall_service._query_embedding("again") is None
+    assert calls == []
+    monkeypatch.setattr(recall_service, "_breaker_open_until", 0.0)
+    assert recall_service._query_embedding("again") == [1.0]
+
+
+def _principal_request(principal: Any) -> Any:
+    return SimpleNamespace(state=SimpleNamespace(principal=principal))
 
 
 # --- 4. memory_operation tool ----------------------------------------------
@@ -398,7 +477,9 @@ async def test_memory_operation_tool_scoped_to_context_owner(env) -> None:
 
     hijack = await memory_operation_handler("update", memory_id=saved["memory_id"], content="x", tool_context=bob)
     assert hijack["success"] is False
-    assert (await memory_operation_handler("forget", memory_id=saved["memory_id"], tool_context=bob))["success"] is False
+    assert (await memory_operation_handler("forget", memory_id=saved["memory_id"], tool_context=bob))[
+        "success"
+    ] is False
     assert (await memory_operation_handler("update", tool_context=alice))["success"] is False
     edited = await memory_operation_handler(
         "update", memory_id=saved["memory_id"], importance="critical", tool_context=alice
@@ -429,3 +510,24 @@ def test_memory_operation_wiring_and_plan_mode() -> None:
     assert plan_mode_tool_allowed("memory_operation", {"operation": "list"})
     for op in ("save", "update", "forget", ""):
         assert not plan_mode_tool_allowed("memory_operation", {"operation": op})
+
+
+async def test_hook_management_requires_admin(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.request_principal import RequestPrincipal
+
+    hooks = SimpleNamespace(enabled=False, enable=lambda: None, disable=lambda: None, get_stats=dict)
+    monkeypatch.setattr(memory_api, "get_memory_hooks", lambda: hooks)
+    anon = _principal_request(RequestPrincipal(user_id="anon", email=None, is_authenticated=False))
+    user = _principal_request(RequestPrincipal(user_id="alice", email=None))
+    admin = _principal_request(RequestPrincipal(user_id="root", email=None, role="admin"))
+    for endpoint in (memory_api.enable_hooks, memory_api.disable_hooks):
+        with pytest.raises(HTTPException) as exc:
+            await endpoint(anon)
+        assert exc.value.status_code == 401
+        with pytest.raises(HTTPException) as exc:
+            await endpoint(user)
+        assert exc.value.status_code == 403
+        await endpoint(admin)
+    with pytest.raises(HTTPException) as exc:
+        await memory_api.get_hooks_stats(anon)
+    assert exc.value.status_code == 401

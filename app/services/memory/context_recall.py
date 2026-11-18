@@ -12,6 +12,8 @@ import concurrent.futures
 import json
 import logging
 import re
+import threading
+import time
 from typing import Any
 
 from app.repository import context_recall as repository
@@ -20,8 +22,14 @@ from app.services.prompt_policy import REFERENCE_SCOPE_POLICY
 logger = logging.getLogger(__name__)
 MAX_CONTEXT_CHARS = 6500
 VECTOR_TIMEOUT_S = 2.0
+VECTOR_BREAKER_COOLDOWN_S = 60.0
+MAX_OWNER_SCOPE_NOTES = 2
 _SCOPE_BOOST = {"session": 1.0, "project": 0.6, "user": 0.4, "owner": 0.0}
 _EMBED_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="recall-embed")
+# After a slow/failed embedding call, skip vector scoring for a cooldown so a
+# degraded provider cannot add VECTOR_TIMEOUT_S to every turn or pin the pool.
+_breaker_lock = threading.Lock()
+_breaker_open_until = 0.0
 _RECALL_CUE = re.compile(r"上次|之前|以前|昨天|前天|上周|上个月|历史|记得|回顾|曾经|earlier|previous|last (?:time|week|month)|yesterday|remember", re.I)
 _STOP = {"the", "and", "for", "with", "from", "this", "that", "please", "what", "was", "were", "have", "我们", "一下", "什么", "这个", "那个", "帮我", "看看", "结果", "任务", "项目"}
 
@@ -41,6 +49,10 @@ def _score(content: str, terms: list[str]) -> int:
 
 
 def _query_embedding(query: str) -> list[float] | None:
+    global _breaker_open_until
+    with _breaker_lock:
+        if time.monotonic() < _breaker_open_until:
+            return None
     try:
         from app.services.embeddings import get_embeddings_service
 
@@ -49,6 +61,8 @@ def _query_embedding(query: str) -> list[float] | None:
         vector = future.result(timeout=VECTOR_TIMEOUT_S)
     except Exception as exc:  # offline / timeout / misconfigured -> keyword-only
         logger.debug("recall embedding unavailable: %s", type(exc).__name__)
+        with _breaker_lock:
+            _breaker_open_until = time.monotonic() + VECTOR_BREAKER_COOLDOWN_S
         return None
     return list(vector) if vector else None
 
@@ -102,6 +116,19 @@ def recall(session_id: str | None, query: str, *, enabled: bool = True, client_m
         return (round(hybrid, 6), row.get("importance") in {"critical", "high"}, str(row.get("created_at") or ""))
 
     notes.sort(key=_rank, reverse=True)
+    # Notes from the owner's unrelated sessions/projects must actually match the
+    # query (keyword or vector) and may fill at most MAX_OWNER_SCOPE_NOTES slots.
+    owner_kept = 0
+    bounded = []
+    for row in notes:
+        if row["scope"] == "owner":
+            keyword_hit = _score(row["content"] + str(row.get("keywords") or ""), terms) > 0
+            relevant = keyword_hit or vectors.get(str(row["id"]), 0.0) > 0.0
+            if not relevant or owner_kept >= MAX_OWNER_SCOPE_NOTES:
+                continue
+            owner_kept += 1
+        bounded.append(row)
+    notes = bounded
     profile = [row for row in notes if row['scope'] == 'user' and row['importance'] in {'critical','high'}][:2]
     notes = profile + [row for row in notes if row not in profile]
     seen = set()

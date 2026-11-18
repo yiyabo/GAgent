@@ -107,9 +107,7 @@ def test_owner_column_migration_idempotent(tmp_path) -> None:
 
 async def test_delete_memories_for_session_cascades(service) -> None:
     svc, conn = service
-    doomed = await svc.save_memory(
-        _save_request("user_a", tags=["conversation", "user", "session:sess_del"])
-    )
+    doomed = await svc.save_memory(_save_request("user_a", tags=["conversation", "user", "session:sess_del"]))
     kept = await svc.save_memory(
         _save_request(
             "user_a",
@@ -129,9 +127,7 @@ async def test_delete_memories_for_session_cascades(service) -> None:
     remaining = conn.execute("SELECT id, tags FROM memories").fetchall()
     assert len(remaining) == 1
     assert "sess_keep" in remaining[0][1]
-    assert (
-        conn.execute("SELECT COUNT(*) FROM memory_embeddings").fetchone()[0] == 0
-    )
+    assert conn.execute("SELECT COUNT(*) FROM memory_embeddings").fetchone()[0] == 0
 
     result = await svc.query_memory(QueryMemoryRequest(search_text="ERCP", owner_id="user_a"))
     assert result.total == 1
@@ -204,9 +200,7 @@ async def test_middleware_stamps_owner(monkeypatch: pytest.MonkeyPatch) -> None:
     assert stub.requests[0].owner_id == "user_a"
 
 
-async def test_hooks_task_complete_resolves_owner(
-    monkeypatch: pytest.MonkeyPatch, service
-) -> None:
+async def test_hooks_task_complete_resolves_owner(monkeypatch: pytest.MonkeyPatch, service) -> None:
     _svc, conn = service
     ms._task_owner_cache.clear()
     conn.execute("CREATE TABLE IF NOT EXISTS plans (id INTEGER PRIMARY KEY, owner TEXT)")

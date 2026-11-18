@@ -42,7 +42,9 @@ def _str_list(value: Any) -> list[str] | None:
     return [str(v).strip() for v in value if str(v).strip()]
 
 
-async def _search(service: Any, owner_id: str, query: str | None, memory_type: str | None, limit: int) -> dict[str, Any]:
+async def _search(
+    service: Any, owner_id: str, query: str | None, memory_type: str | None, limit: int
+) -> dict[str, Any]:
     from app.models_memory import MemoryType, QueryMemoryRequest
 
     text = (query or "").strip()
@@ -72,9 +74,16 @@ async def _search(service: Any, owner_id: str, query: str | None, memory_type: s
     return {"success": True, "operation": "search", "items": items, "total": len(items)}
 
 
-async def _save(service: Any, owner_id: str, content: str | None, memory_type: str | None,
-                importance: str | None, keywords: list[str] | None, tags: list[str] | None,
-                session_id: str | None) -> dict[str, Any]:
+async def _save(
+    service: Any,
+    owner_id: str,
+    content: str | None,
+    memory_type: str | None,
+    importance: str | None,
+    keywords: list[str] | None,
+    tags: list[str] | None,
+    session_id: str | None,
+) -> dict[str, Any]:
     from app.models_memory import ImportanceLevel, MemoryType, SaveMemoryRequest
 
     text = (content or "").strip()
@@ -139,8 +148,9 @@ async def memory_operation_handler(
             )
             return {"success": True, "operation": "list", **page}
         if op == "save":
-            return await _save(service, owner_id, content, memory_type, importance,
-                               _str_list(keywords), _str_list(tags), session_id)
+            return await _save(
+                service, owner_id, content, memory_type, importance, _str_list(keywords), _str_list(tags), session_id
+            )
         if not memory_id:
             return _error(op, f"memory_id is required for {op}")
         if op == "update":

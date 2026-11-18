@@ -27,10 +27,47 @@ MAX_ENTRY_CHARS = 500
 
 _TRIVIAL_ACKS = frozenset(
     {
-        "ok", "okay", "k", "yes", "no", "y", "n", "sure", "thanks", "thank you", "thx",
-        "go", "go on", "continue", "next", "done", "got it", "fine", "great", "cool",
-        "好", "好的", "好滴", "行", "可以", "嗯", "嗯嗯", "对", "是", "是的", "不是",
-        "继续", "继续吧", "接着", "下一步", "谢谢", "收到", "明白", "了解", "没问题", "开始",
+        "ok",
+        "okay",
+        "k",
+        "yes",
+        "no",
+        "y",
+        "n",
+        "sure",
+        "thanks",
+        "thank you",
+        "thx",
+        "go",
+        "go on",
+        "continue",
+        "next",
+        "done",
+        "got it",
+        "fine",
+        "great",
+        "cool",
+        "好",
+        "好的",
+        "好滴",
+        "行",
+        "可以",
+        "嗯",
+        "嗯嗯",
+        "对",
+        "是",
+        "是的",
+        "不是",
+        "继续",
+        "继续吧",
+        "接着",
+        "下一步",
+        "谢谢",
+        "收到",
+        "明白",
+        "了解",
+        "没问题",
+        "开始",
     }
 )
 
@@ -131,12 +168,8 @@ def normalize_extraction(payload: dict[str, Any]) -> list[dict[str, Any]]:
         cleaned.append(
             {
                 "content": content[:MAX_ENTRY_CHARS],
-                "memory_type": _MEMORY_TYPE_MAP.get(
-                    str(raw.get("memory_type") or "").lower(), MemoryType.KNOWLEDGE
-                ),
-                "importance": _IMPORTANCE_MAP.get(
-                    str(raw.get("importance") or "").lower(), ImportanceLevel.MEDIUM
-                ),
+                "memory_type": _MEMORY_TYPE_MAP.get(str(raw.get("memory_type") or "").lower(), MemoryType.KNOWLEDGE),
+                "importance": _IMPORTANCE_MAP.get(str(raw.get("importance") or "").lower(), ImportanceLevel.MEDIUM),
                 "keywords": _str_list(raw.get("keywords")),
                 "tags": _str_list(raw.get("tags")),
             }
@@ -244,18 +277,14 @@ class ChatMemoryMiddleware:
         model_provider: dict | None = None,
         max_retries: int = 2,
     ) -> list[dict[str, Any]]:
-        prompt = _EXTRACTION_PROMPT.format(
-            max_entries=MAX_EXTRACTED_ENTRIES, content=str(content)[:6000]
-        )
+        prompt = _EXTRACTION_PROMPT.format(max_entries=MAX_EXTRACTED_ENTRIES, content=str(content)[:6000])
         client = self._resolve_client(model_provider)
         for attempt in range(max_retries):
             try:
                 response = await asyncio.to_thread(client.chat, prompt, temperature=0.2)
                 return normalize_extraction(_parse_json_payload(response))
             except Exception as exc:
-                logger.warning(
-                    "Memory extraction failed (attempt %d/%d): %s", attempt + 1, max_retries, exc
-                )
+                logger.warning("Memory extraction failed (attempt %d/%d): %s", attempt + 1, max_retries, exc)
         return []
 
     async def process_assistant_response(
