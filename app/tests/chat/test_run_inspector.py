@@ -310,13 +310,13 @@ def test_build_inspection_projects_steps_usage_and_redacts(inspection_db) -> Non
     assert usage["total_tokens"] == 130 and usage["cache_read_tokens"] == 50
     assert usage["by_purpose"][0]["purpose"] == "deep_think_iteration"
     assert [item["type"] for item in report["events"]] == ["artifact"]
-    assert report["truncated"] == {"steps": False, "artifacts": False}
+    assert report["truncated"] == {"steps": False, "artifacts": False, "dropped_steps": 0}
 
 
 def test_error_status_marks_step_failed_and_success_flag_parsing() -> None:
     events = [(1, "", _step(3, "error", tools=TOOL, result="boom"))]
     steps, truncated = project_steps(events)
-    assert steps[0]["success"] is False and truncated is False
+    assert steps[0]["success"] is False and truncated == 0
     assert result_success('[x] {"success": false}') is False
     assert result_success({"success": True}) is True
     assert result_success("no flag here") is None
@@ -326,7 +326,7 @@ def test_step_cap_reports_truncation() -> None:
     events = [(i, "", _step(i, "done", kind="reasoning")) for i in range(MAX_STEPS + 5)]
     steps, truncated = project_steps(events)
     assert len(steps) == MAX_STEPS
-    assert truncated is True
+    assert truncated == 5
 
 
 def test_redact_masks_nested_secrets_and_long_strings() -> None:
@@ -396,3 +396,23 @@ def test_endpoint_is_mounted() -> None:
         if isinstance(route, APIRoute)
     }
     assert ("/sessions/{session_id}/run-inspection", ("GET",)) in paths
+
+
+def test_toolless_update_merges_into_open_iteration_step() -> None:
+    events = [
+        (1, "", _step(2, "calling_tool", tools=TOOL)),
+        (2, "", _step(2, "done", result='{"success": true}', finished="2026-11-15T10:00:04")),
+    ]
+    steps, dropped = project_steps(events)
+    assert dropped == 0 and len(steps) == 1
+    assert steps[0]["tools"][0]["tool"] == "web_search"
+    assert steps[0]["status"] == "done" and steps[0]["success"] is True
+
+
+def test_step_cap_keeps_tool_and_error_steps() -> None:
+    events = [(i, "", _step(i, "done", kind="reasoning")) for i in range(MAX_STEPS + 3)]
+    events.append((1000, "", _step(1000, "done", tools=TOOL)))
+    events.append((1001, "", _step(1001, "error", result="boom")))
+    steps, dropped = project_steps(events)
+    assert len(steps) == MAX_STEPS and dropped == 5
+    assert [s["iteration"] for s in steps][-2:] == [1000, 1001]
