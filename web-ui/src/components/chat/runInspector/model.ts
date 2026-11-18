@@ -9,7 +9,7 @@ import type {
 
 export type StepFilter = 'all' | 'tools' | 'failures';
 
-const RUN_ID_KEYS = ['chat_run_id', 'run_id', 'deep_think_job_id'] as const;
+const DIRECT_CHAT_RUN_KEYS = ['chat_run_id', 'deep_think_job_id'] as const;
 const MESSAGE_ID_KEYS = ['backend_id', 'message_id'] as const;
 
 function positiveInteger(value: unknown): number | null {
@@ -18,19 +18,22 @@ function positiveInteger(value: unknown): number | null {
 }
 
 /**
- * Resolve which run produced an assistant message: a live/persisted run id first, then the persisted
- * message id. Any non-blank run id is accepted; the server decides whether it exists.
+ * Resolve which run produced an assistant message: explicit chat/deep-think run ids (or dt_* run_id)
+ * first, then persisted message id, then any fallback run_id when no message id is present.
  */
 export function resolveRunTarget(metadata: Record<string, unknown> | undefined | null): ChatRunInspectionTarget | null {
   if (!metadata) return null;
-  for (const key of RUN_ID_KEYS) {
+  for (const key of DIRECT_CHAT_RUN_KEYS) {
     const value = metadata[key];
     if (typeof value === 'string' && value.trim()) return { run_id: value.trim() };
   }
+  const rawRunId = typeof metadata.run_id === 'string' ? metadata.run_id.trim() : '';
+  if (rawRunId.startsWith('dt_')) return { run_id: rawRunId };
   for (const key of MESSAGE_ID_KEYS) {
     const id = positiveInteger(metadata[key]);
     if (id !== null) return { message_id: id };
   }
+  if (rawRunId) return { run_id: rawRunId };
   return null;
 }
 

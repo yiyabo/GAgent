@@ -56,10 +56,10 @@ def _shard(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def _log(conn: sqlite3.Connection, job: str, at: str, meta: dict, level: str = "info") -> None:
+def _log(conn: sqlite3.Connection, job: str, at: str, meta: dict, level: str = "info", message: str = "m") -> None:
     conn.execute(
         "INSERT INTO decomposition_job_logs (job_id, timestamp, level, message, metadata_json) VALUES (?,?,?,?,?)",
-        (job, at, level, "m", json.dumps(meta)),
+        (job, at, level, message, json.dumps(meta)),
     )
 
 
@@ -336,3 +336,76 @@ def test_usage_attempt_prefix_is_literal(env) -> None:
     payload = _call()
     assert payload["usage"]["total_tokens"] == 140
     assert payload["usage"]["calls"] == 2
+
+
+def test_json_string_params_results_and_errors_are_redacted(env) -> None:
+    shard, main = env
+    _seed_executed(shard, main)
+    leaky_step = {
+        "iteration": 2,
+        "status": "error",
+        "display_text": "Calling remote service",
+        "action": json.dumps(
+            {
+                "tool": "http_fetch",
+                "params": json.dumps(
+                    {
+                        "url": "https://example.org",
+                        "headers": {"Authorization": "Bearer super-secret-bearer-token-999"},
+                        "api_key": "sk-proj-secret1234567890",
+                    }
+                ),
+            }
+        ),
+        "action_result": json.dumps(
+            {
+                "success": False,
+                "token": "tok-leak-xyz",
+                "detail": "Upstream rejected Bearer inline-bearer-token-888 and sk-inline1234567890abcd",
+            }
+        ),
+        "self_correction": "Retry without api_key=my_raw_secret_val_1234",
+    }
+    _log(shard, "job_new", "2026-11-18T01:00:08+00:00", {"task_id": TASK_ID, "sub_type": "thinking_step", "step": leaky_step})
+    _log(
+        shard,
+        "job_new",
+        "2026-11-18T01:00:09+00:00",
+        {"task_id": TASK_ID, "sub_type": "task_failed"},
+        level="error",
+        message="Crash with Authorization: Bearer crash-token-77777777",
+    )
+    shard.commit()
+
+    payload = _call()
+    dumped = json.dumps(payload)
+    for forbidden in (
+        "super-secret-bearer-token-999",
+        "sk-proj-secret1234567890",
+        "tok-leak-xyz",
+        "inline-bearer-token-888",
+        "sk-inline1234567890abcd",
+        "my_raw_secret_val_1234",
+        "crash-token-77777777",
+    ):
+        assert forbidden not in dumped, f"leaked {forbidden}"
+    leaky_projected = [s for s in payload["steps"] if s["iteration"] == 2][0]
+    assert leaky_projected["success"] is False
+    assert "[redacted]" in (leaky_projected.get("result") or "")
+
+
+def test_pinned_historical_job_does_not_mix_latest_execution_result(env) -> None:
+    shard, main = env
+    _seed_executed(shard, main)
+    latest_only = {
+        "status": "completed",
+        "content": "from job_new only",
+        "artifact_paths": ["results/only_in_job_new.csv"],
+    }
+    shard.execute("UPDATE tasks SET execution_result = ? WHERE id = ?", (json.dumps(latest_only), TASK_ID))
+    shard.commit()
+
+    old_payload = _call(job_id="job_old")
+    assert old_payload["run"]["job_id"] == "job_old"
+    assert old_payload["artifacts"] == []
+    assert old_payload["final"] == {}

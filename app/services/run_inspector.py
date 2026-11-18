@@ -24,6 +24,13 @@ _SECRET_KEY = re.compile(
     r"api[_-]?key|token|secret|password|passwd|authorization|cookie|credential",
     re.IGNORECASE,
 )
+_BEARER_SECRET = re.compile(r"(?i)(\bBearer\s+)[A-Za-z0-9._~+/=-]{8,}")
+_INLINE_SECRET = re.compile(
+    r"(?:\bsk-[A-Za-z0-9_-]{12,}|\bgh[pousr]_[A-Za-z0-9_]{16,}|\bxox[baprs]-[A-Za-z0-9-]{12,})"
+)
+_KEY_VALUE_SECRET = re.compile(
+    r"(?i)(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|passwd|authorization|cookie|credential)\b\s*[:=]\s*['\"]?)([^'\"\s,;}{\]]{6,})"
+)
 _SUCCESS_FLAG = re.compile(r'"success"\s*:\s*(true|false)', re.IGNORECASE)
 _CONTEXT_FLAGS = (
     "plan_mode",
@@ -55,23 +62,48 @@ def _truncate(value: Any, limit: int = MAX_TEXT) -> str | None:
     return text if len(text) <= limit else text[:limit] + f"… [+{len(text) - limit} chars]"
 
 
-def redact(value: Any, depth: int = 0) -> Any:
-    """Mask secret-looking keys and shorten long strings, recursively."""
+def _mask_inline_secrets(text: str) -> str:
+    masked = _BEARER_SECRET.sub(r"\1[redacted]", text)
+    masked = _INLINE_SECRET.sub("[redacted]", masked)
+    masked = _KEY_VALUE_SECRET.sub(r"\1[redacted]", masked)
+    return masked
+
+
+def redact(value: Any, depth: int = 0, *, text_limit: int = MAX_PARAM_TEXT) -> Any:
+    """Mask secret-looking keys/values (including JSON strings) and shorten strings."""
     if depth > 6:
         return "[depth limit]"
     if isinstance(value, dict):
         return {
-            str(key): "[redacted]" if _SECRET_KEY.search(str(key)) else redact(item, depth + 1)
+            str(key): "[redacted]" if _SECRET_KEY.search(str(key)) else redact(item, depth + 1, text_limit=text_limit)
             for key, item in value.items()
         }
     if isinstance(value, list):
-        items = [redact(item, depth + 1) for item in value[:50]]
+        items = [redact(item, depth + 1, text_limit=text_limit) for item in value[:50]]
         if len(value) > 50:
             items.append(f"[+{len(value) - 50} items]")
         return items
     if isinstance(value, str):
-        return _truncate(value, MAX_PARAM_TEXT)
+        stripped = value.strip()
+        if len(stripped) <= 200_000 and (
+            (stripped.startswith("{") and stripped.endswith("}"))
+            or (stripped.startswith("[") and stripped.endswith("]"))
+        ):
+            try:
+                parsed = json.loads(stripped)
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, (dict, list)):
+                return redact(parsed, depth + 1, text_limit=text_limit)
+        return _truncate(_mask_inline_secrets(value), text_limit)
     return value
+
+
+def redact_text(value: Any, limit: int = MAX_TEXT) -> str | None:
+    """Redact structured or free-text payloads and format as a bounded string."""
+    if value is None:
+        return None
+    return _truncate(redact(value, text_limit=limit), limit)
 
 
 def _parse_time(value: Any) -> datetime | None:
@@ -217,10 +249,10 @@ def project_steps(
             entry["finished_at"] = step.get("finished_at")
         result = step.get("action_result")
         if result is not None and result != "None":
-            entry["result"] = _truncate(result)
             entry["success"] = result_success(result)
+            entry["result"] = redact_text(result, MAX_TEXT)
         if step.get("self_correction") not in (None, "None", ""):
-            entry["self_correction"] = _truncate(step.get("self_correction"), 500)
+            entry["self_correction"] = redact_text(step.get("self_correction"), 500)
     for entry in merged.values():
         if entry.get("status") == "error":
             entry["success"] = False
@@ -311,7 +343,7 @@ def _timeline_event(seq: int, created: str, payload: dict[str, Any]) -> dict[str
             "seq": seq,
             "at": created,
             "type": "error",
-            "message": _truncate(payload.get("message"), 1000),
+            "message": redact_text(payload.get("message"), 1000),
             "error_type": payload.get("error_type"),
         }
     if kind == "steer_ack":
@@ -363,7 +395,7 @@ def build_run_inspection(
     if isinstance(tool_failures, list):
         final["tool_failures"] = redact(tool_failures[:20])
     if final_payload:
-        final["response_preview"] = _truncate(final_payload.get("response"), 1500)
+        final["response_preview"] = redact_text(final_payload.get("response"), 1500)
 
     tool_steps = [step for step in steps if step["kind"] == "tool"]
     tool_names = sorted({call["tool"] for step in tool_steps for call in step["tools"]})
@@ -380,7 +412,7 @@ def build_run_inspection(
             "started_at": run.get("started_at"),
             "finished_at": run.get("finished_at"),
             "duration_ms": _duration_ms(run.get("started_at") or run.get("created_at"), run.get("finished_at")),
-            "error": _truncate(run.get("error"), 1000),
+            "error": redact_text(run.get("error"), 1000),
             "last_event_seq": run.get("last_event_seq"),
             "user_message_id": run.get("user_message_id"),
             "assistant_message_id": run.get("assistant_message_id"),
@@ -460,7 +492,7 @@ def _plan_log_events(
                     at,
                     {
                         "type": "error",
-                        "message": row.get("message"),
+                        "message": redact_text(row.get("message"), 1000),
                         "error_type": sub_type or meta.get("error_type"),
                     },
                 )
@@ -481,12 +513,12 @@ def build_plan_task_inspection(
 
     Steps come from the task's ``thinking_step`` job logs; when the job logs
     are absent (pruned, or executed before logs carried ``task_id``) they are
-    rebuilt from ``tasks.execution_result``. The shape matches the chat
-    payload, plus ``run.plan_id/task_id/task_name/job_id``,
-    ``summary.streaming_chunks`` and a top-level ``artifacts`` list.
+    rebuilt from ``tasks.execution_result`` (only when inspecting the latest
+    job attempt so historical ``job_id`` pins never mix newer results).
     """
     task_id = int(task["id"])
-    result = _as_dict(task.get("execution_result")) or {}
+    is_latest_job = bool(job.get("is_latest_job", True)) if isinstance(job, dict) else True
+    result = (_as_dict(task.get("execution_result")) or {}) if is_latest_job else {}
     events = _plan_log_events(logs)
     last_seq = logs[-1][0] if logs else 0
     fallback_at = str(task.get("updated_at") or "")
@@ -500,7 +532,12 @@ def build_plan_task_inspection(
     if result:
         events.append((next_seq, fallback_at, _stored_final_event(result)))
 
-    payload = build_run_inspection(_plan_task_run(plan_id, task, job, logs, result), events, log_counts, usage_rows)
+    payload = build_run_inspection(
+        _plan_task_run(plan_id, task, job, logs, result, is_latest_job=is_latest_job),
+        events,
+        log_counts,
+        usage_rows,
+    )
     payload["run"].update(
         {
             "plan_id": plan_id,
@@ -539,6 +576,8 @@ def _plan_task_run(
     job: dict[str, Any] | None,
     logs: list[tuple[int, str, dict[str, Any]]],
     result: dict[str, Any],
+    *,
+    is_latest_job: bool = True,
 ) -> dict[str, Any]:
     """Run-row equivalent for a plan task, timed by its own job logs.
 
@@ -554,12 +593,13 @@ def _plan_task_run(
     if targeted:
         started = started or job_row.get("started_at")
         finished = finished or job_row.get("finished_at")
-    if str(task.get("status") or "").strip().lower() in _ACTIVE_TASK_STATUSES:
+    status = task.get("status") if is_latest_job else (job_row.get("status") or task.get("status"))
+    if str(status or "").strip().lower() in _ACTIVE_TASK_STATUSES:
         finished = None
     return {
         "run_id": plan_task_run_id(plan_id, task_id),
         "session_id": job_row.get("session_id"),
-        "status": task.get("status"),
+        "status": status,
         "created_at": job_row.get("created_at") or task.get("created_at"),
         "started_at": started,
         "finished_at": finished,

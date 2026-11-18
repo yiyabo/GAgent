@@ -37,6 +37,8 @@ describe('run inspector model', () => {
 
   it('accepts any persisted run id or message id a chat message carries', () => {
     expect(resolveRunTarget({ run_id: 'run-42' })).toEqual({ run_id: 'run-42' });
+    expect(resolveRunTarget({ run_id: 'dt_persisted', backend_id: 42 })).toEqual({ run_id: 'dt_persisted' });
+    expect(resolveRunTarget({ run_id: 'tool_subrun_9', backend_id: 42 })).toEqual({ message_id: 42 });
     expect(resolveRunTarget({ chat_run_id: ' run-A ' })).toEqual({ run_id: 'run-A' });
     expect(resolveRunTarget({ chat_run_id: 7, backend_id: '17' })).toEqual({ message_id: 17 });
     expect(resolveRunTarget({ message_id: 5 })).toEqual({ message_id: 5 });

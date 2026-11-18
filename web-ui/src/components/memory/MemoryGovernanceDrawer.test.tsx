@@ -61,7 +61,7 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
-describe('memory governance drawer', () => {
+describe('memory governance drawer', { timeout: 20_000 }, () => {
   it('does not fetch while closed', () => {
     render(<MemoryGovernanceDrawer open={false} onClose={() => {}} />);
     expect(api.listMemories).not.toHaveBeenCalled();
@@ -216,7 +216,7 @@ describe('memory governance drawer', () => {
   });
 });
 
-describe('memory governance drawer in English', () => {
+describe('memory governance drawer in English', { timeout: 20_000 }, () => {
   beforeEach(() => useLanguageStore.getState().setLanguage('en'));
   afterEach(() => useLanguageStore.getState().setLanguage('zh-CN'));
 

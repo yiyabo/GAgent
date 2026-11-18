@@ -228,10 +228,14 @@ def load_plan_task_inspection_inputs(plan_id: int, task_id: int, job_id: str | N
         task = dict(task_row)
         try:
             job = _find_plan_task_job(conn, task_id, job_id)
+            latest_job = _find_plan_task_job(conn, task_id, None) if (job_id and job is not None) else job
         except sqlite3.OperationalError as exc:
             if not _missing_schema(exc):
                 raise
             job = None
+            latest_job = None
+        if job is not None:
+            job["is_latest_job"] = latest_job is None or job["job_id"] == latest_job["job_id"]
         logs: list[tuple[int, str, dict[str, Any]]] = []
         log_counts: dict[str, int] = {}
         if job is not None:

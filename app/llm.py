@@ -1336,6 +1336,7 @@ class LLMClient(LLMProvider):
         try:
             for attempt in range(request_retries + 1):
                 _attempts = attempt + 1
+                _last_usage = None
                 emitted_any = False
                 try:
                     _outbound_limiter.acquire()
@@ -1380,7 +1381,8 @@ class LLMClient(LLMProvider):
                                 _record_attempt_context(
                                     logical_call_id,
                                     attempt + 1,
-                                    upstream_request_id=resp.headers.get("x-request-id") or resp.headers.get("request-id"),
+                                    upstream_request_id=resp.headers.get("x-request-id")
+                                    or resp.headers.get("request-id"),
                                     usage=usage,
                                 )
 
@@ -1681,6 +1683,7 @@ class LLMClient(LLMProvider):
         _t0 = time.perf_counter()
         _ttft_ms: float | None = None
         _last_usage: dict[str, Any] | None = None
+        _captured_usage_ctx = _usage_context.get()
         _stream_status = "ok"
         _stream_err: str | None = None
         try:
@@ -1754,15 +1757,24 @@ class LLMClient(LLMProvider):
             # The last provider snapshot is cumulative, including on partial streams.
             elapsed_ms = (time.perf_counter() - _t0) * 1000
             if isinstance(_last_usage, dict):
-                _log_usage(
-                    provider=self.provider,
-                    model=model or self.model,
-                    prompt_tokens=_last_usage.get("prompt_tokens", 0),
-                    completion_tokens=_last_usage.get("completion_tokens", 0),
-                    total_tokens=_last_usage.get("total_tokens", 0),
-                    call_status=_stream_status,
-                    duration_ms=elapsed_ms,
+                _ctx_tok = (
+                    _usage_context.set(_captured_usage_ctx)
+                    if _usage_context.get() is None and _captured_usage_ctx is not None
+                    else None
                 )
+                try:
+                    _log_usage(
+                        provider=self.provider,
+                        model=model or self.model,
+                        prompt_tokens=_last_usage.get("prompt_tokens", 0),
+                        completion_tokens=_last_usage.get("completion_tokens", 0),
+                        total_tokens=_last_usage.get("total_tokens", 0),
+                        call_status=_stream_status,
+                        duration_ms=elapsed_ms,
+                    )
+                finally:
+                    if _ctx_tok is not None:
+                        _usage_context.reset(_ctx_tok)
             _log_call_metrics(
                 method="stream_chat",
                 provider=self.provider,
