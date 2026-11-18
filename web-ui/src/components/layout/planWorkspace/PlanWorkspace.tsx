@@ -81,6 +81,13 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
   const sources = Array.isArray(contract?.source_preferences)
     ? contract.source_preferences.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
     : [];
+  const rawDelivery: unknown = treeQuery.data?.metadata?.delivery;
+  const delivery = rawDelivery && typeof rawDelivery === 'object' && !Array.isArray(rawDelivery)
+    ? rawDelivery as Record<string, unknown> : null;
+  const deliveryStatus = typeof delivery?.status === 'string' ? delivery.status : '';
+  const deliverySummary = typeof delivery?.summary === 'string' ? delivery.summary : '';
+  const deliveryReportPath = typeof delivery?.report_path === 'string' ? delivery.report_path : '';
+  const deliveryError = typeof delivery?.error === 'string' ? delivery.error : '';
   const planTitle = treeQuery.data?.title || currentPlanTitle || (planId != null ? t('planWorkspace.planNum', { id: planId }) : t('planWorkspace.noPlanYet'));
   const artifactSessionId = artifactSourceSession(treeQuery.data) ?? undefined;
   const foreignSource = Boolean(artifactSessionId && artifactSessionId !== sessionId);
@@ -169,6 +176,13 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
       message={t('planClarify.contractTitle')}
       description={<div className="pw-contract-body"><p>{objective}</p>
         {sources.length > 0 && <small>{t('planClarify.contractSources', { sources: sources.join(' / ') })}</small>}</div>} />}
+    {planId != null && deliveryStatus === 'completed' && <Alert className="pw-alert pw-delivery" type="success" showIcon
+      message={t('planClarify.deliveryTitle')}
+      description={<div className="pw-delivery-body"><pre>{deliverySummary}</pre>
+        <small>{t('planClarify.deliveryPublished', { path: deliveryReportPath })}</small></div>} />}
+    {planId != null && deliveryStatus === 'failed' && <Alert className="pw-alert" type="error" showIcon
+      message={t('planClarify.deliveryFailed')}
+      description={t('planClarify.deliveryFailedDesc', { error: deliveryError })} />}
     {planId != null && assumptions.length > 0 && <Alert className="pw-alert pw-assumptions" type="info" showIcon
       message={t('planClarify.assumptionsTitle')}
       description={<ul className="pw-assumption-list">{assumptions.map((item) => <li key={item}>{item}</li>)}</ul>} />}

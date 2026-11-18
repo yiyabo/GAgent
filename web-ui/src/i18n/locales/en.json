@@ -1896,6 +1896,10 @@
     "sendFailed": "Could not send your answers: {{detail}}",
     "assumptionsTitle": "Plan assumptions (unconfirmed)",
     "contractTitle": "Research contract (preserved during execution)",
-    "contractSources": "Source preferences: {{sources}}"
+    "contractSources": "Source preferences: {{sources}}",
+    "deliveryTitle": "Final synthesis and domain review completed",
+    "deliveryPublished": "The full report and review record are available in Deliverables: {{path}}",
+    "deliveryFailed": "Tasks finished, but final synthesis did not complete",
+    "deliveryFailedDesc": "The system did not fabricate a successful synthesis. Review the task artifacts and retry. Reason: {{error}}"
   }
 }
