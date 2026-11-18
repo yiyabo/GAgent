@@ -434,6 +434,12 @@ def _build_artifact_deliverable_workflow_block(agent: DeepThinkAgent) -> str:
     )
 
 
+def _build_research_source_policy_block() -> str:
+    from app.services.plans.research_contract import RESEARCH_SOURCE_POLICY
+
+    return RESEARCH_SOURCE_POLICY
+
+
 def _build_bio_tools_quick_map_block(agent: DeepThinkAgent) -> str:
     if "bio_tools" not in agent.available_tools:
         return ""
@@ -1013,6 +1019,7 @@ def _build_native_system_prompt(
         + agent._build_grounded_tooling_block()
         + agent._build_artifact_deliverable_workflow_block()
         + agent._build_bio_tools_quick_map_block()
+        + _build_research_source_policy_block()
         # A plan-task run already carries its pre-selected SKILL GUIDANCE above.
         + ("" if task_preamble else agent._build_skills_index_block())
         + agent._build_plan_artifact_discovery_block(context)
@@ -1395,6 +1402,7 @@ Your goal is to choose the right depth for the user's request: be thorough when 
 {agent._build_grounded_tooling_block()}
 {agent._build_artifact_deliverable_workflow_block()}
 {agent._build_bio_tools_quick_map_block()}
+{_build_research_source_policy_block()}
 {agent._build_plan_artifact_discovery_block(context)}
 {agent._build_evidence_scope_block()}
 {agent._build_session_isolation_block()}

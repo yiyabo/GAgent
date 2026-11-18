@@ -4,6 +4,20 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+RESEARCH_SOURCE_POLICY = (
+    "=== RESEARCH SOURCE & PROVENANCE ROUTING ===\n"
+    "- For research Plans and evidence-sensitive analysis, build an evidence matrix: question/claim, authoritative source, "
+    "query or accession, retrieval date/version, exact artifact path, independent cross-check, and limitations.\n"
+    "- PhageScope is an aggregated catalog and discovery/materialization source, not the default universal truth or proof of coverage. "
+    "Verify decisive accession, sequence, taxonomy, host and time-dependent claims against an authoritative or primary source when available.\n"
+    "- Route by question: NCBI RefSeq/GenBank (`ncbi_search`/`sequence_fetch`) for canonical sequences and metadata; "
+    "PhagesDB for isolated phage records; INPHARED for phage-host metadata; PubMed/Europe PMC for primary papers and methods; "
+    "ICTV for current taxonomy. Use web_search to locate authoritative records/endpoints and cite their URLs; do not imply a direct bulk connector exists when it does not.\n"
+    "- User-provided immutable data defines the requested scope; preserve exact inputs and provenance.\n"
+    "- Do not query every source for every task. Select the smallest suitable source set. If a required source is unavailable, "
+    "record an explicit coverage gap instead of silently narrowing the study to PhageScope.\n"
+    "- When sources disagree, report the source, version/date and exact difference; do not resolve conflicts by majority vote.\n\n"
+)
 CONTRACT_VERSION = 1
 MAX_MESSAGES = 24
 MAX_MESSAGE_CHARS = 20_000
@@ -86,7 +100,7 @@ def research_contract_prompt(contract: Mapping[str, Any]) -> str:
         "Use this contract together with task instructions. Do not silently reduce the objective, "
         "deliverables, validation depth, or source requirements. Mark uncertainty explicitly."
     )
-    return "\n".join(lines)
+    return "\n".join(lines) + "\n\n" + RESEARCH_SOURCE_POLICY
 
 
 def with_research_contract(

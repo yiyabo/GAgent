@@ -148,6 +148,18 @@ The traditional morphology-based families (Myoviridae, Siphoviridae, Podoviridae
    - Expression during lysogeny
    - Inhibition assays (plaque reduction)
 
+### Research Source Selection and Provenance
+
+Before choosing a data source, write an evidence matrix with the claim/question, authoritative source, accession or query, retrieval date/version, exact artifact path, independent cross-check and limitation.
+
+- **PhageScope V2**: aggregated discovery, cohort statistics and sequence/protein materialization. It is one source, not proof of complete coverage or the default authority for every claim.
+- **NCBI RefSeq/GenBank**: canonical accessions, sequences and record metadata (`ncbi_search`, `sequence_fetch`).
+- **PhagesDB**: isolated-phage records; **INPHARED**: phage-host metadata. Use `web_search` to locate authoritative records or download endpoints and cite URLs; do not pretend GAgent has a direct bulk connector when none is configured.
+- **PubMed/Europe PMC**: primary studies, methods and limitations; **ICTV**: current taxonomy. Record the release or retrieval date for time-dependent claims.
+- **User-provided data**: defines the requested scope. Preserve immutable inputs and record their exact paths/provenance.
+
+Do not query every source for every task. Use the smallest suitable source set and cross-check decisive claims. If a required source is unavailable, state the coverage gap explicitly rather than silently replacing the study with a PhageScope-only analysis. When sources disagree, report the exact source/version/date difference instead of taking a majority vote.
+
 ### 4. PhageScope V2 Dataset & Tooling Guide
 
 #### Dataset Overview (PhageScope V2, checked 2026-09-11)
