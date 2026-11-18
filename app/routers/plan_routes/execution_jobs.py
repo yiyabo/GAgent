@@ -920,7 +920,7 @@ def _run_full_plan_job(
                         return
                     if str(dependency_block_mode or "warn").strip().lower() == "block":
                         continue
-            except Exception as exc:
+            except Exception:
                 # Transient tree-refresh failure: retry once after a short
                 # backoff before giving up on this step.  This avoids burning
                 # through the queue on a momentary DB hiccup.
@@ -1253,6 +1253,16 @@ def _run_full_plan_job(
             )
         else:
             check_run_active()
+            # A successful task queue is not the final research answer.  Contract-aware
+            # full Plans now synthesize and domain-review their evidence automatically.
+            from app.services.plans.plan_delivery import generate_plan_delivery
+
+            final_result["delivery"] = generate_plan_delivery(
+                repo=_facade()._plan_repo,
+                plan_id=plan_id,
+                session_id=session_id,
+                job_id=job_id,
+            )
             _facade().plan_decomposition_jobs.mark_success(
                 job_id,
                 result=final_result,

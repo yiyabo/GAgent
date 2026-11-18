@@ -128,3 +128,5 @@
 
 .pw-contract-body p { margin: 0; white-space: pre-wrap; }
 .pw-contract-body small { display: block; margin-top: 6px; }
+.pw-delivery-body pre { margin: 0; white-space: pre-wrap; font: inherit; }
+.pw-delivery-body small { display: block; margin-top: 8px; overflow-wrap: anywhere; }

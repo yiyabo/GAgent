@@ -1896,6 +1896,10 @@
     "sendFailed": "无法发送你的回答：{{detail}}",
     "assumptionsTitle": "计划假设（尚未确认）",
     "contractTitle": "研究契约（执行时持续保留）",
-    "contractSources": "来源偏好：{{sources}}"
+    "contractSources": "来源偏好：{{sources}}",
+    "deliveryTitle": "最终综合与领域复核已完成",
+    "deliveryPublished": "完整报告与复核记录已发布到交付物：{{path}}",
+    "deliveryFailed": "任务已结束，但最终综合未完成",
+    "deliveryFailedDesc": "系统不会伪造成功或综合结果。请查看任务产物后重试。原因：{{error}}"
   }
 }

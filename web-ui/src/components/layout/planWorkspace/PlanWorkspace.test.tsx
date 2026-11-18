@@ -76,6 +76,19 @@ describe('plan workspace navigation and async isolation', () => {
     expect(screen.getByText('保留完整研究目标与科学约束')).toBeInTheDocument();
     expect(screen.getByText(/PhageScope \/ NCBI \/ PubMed/)).toBeInTheDocument();
   });
+  it('shows the integrated final delivery and its artifact path', async () => {
+    const withDelivery = tree(1);
+    withDelivery.metadata = {delivery: {
+      status: 'completed',
+      summary: '跨任务综合结论、方法、限制与交付物。',
+      report_path: 'deliverables/latest/docs/plan_1_final_report.md',
+    }};
+    api.getPlanTree.mockResolvedValue(withDelivery);
+    mount();
+    expect(await screen.findByText('最终综合与领域复核已完成')).toBeInTheDocument();
+    expect(screen.getByText('跨任务综合结论、方法、限制与交付物。')).toBeInTheDocument();
+    expect(screen.getByText(/plan_1_final_report.md/)).toBeInTheDocument();
+  });
   it('shows review work separately from completed execution tasks', async () => {
     const pendingReview = tree(1);
     pendingReview.nodes['2'].status = 'needs_review';
