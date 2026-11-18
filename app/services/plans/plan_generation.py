@@ -15,9 +15,10 @@ from ...config.rag_config import get_graph_rag_settings
 from ...config.search_config import get_search_settings
 from ...repository.plan_repository import PlanRepository
 from ..llm.decomposer_service import strip_code_fences
+from .phase_narrator import PHASE_TITLES_METADATA_KEY, generate_phase_titles
 from .plan_decomposer import DecompositionResult, PlanDecomposer
 from .plan_models import PlanNode, PlanTree
-from .phase_narrator import PHASE_TITLES_METADATA_KEY, generate_phase_titles
+from .research_contract import build_research_contract, with_research_contract
 from .task_metadata_generator import ensure_task_metadata
 
 logger = logging.getLogger(__name__)
@@ -121,6 +122,9 @@ def _build_plan_material_decision_prompt(
         f"Description: {description or ''}",
     ]
 
+    contract_prompt = effective.get("research_contract_prompt")
+    if contract_prompt:
+        prompt.append(str(contract_prompt))
     user_message = str(effective.get("user_message") or "").strip()
     if user_message:
         prompt.extend([
@@ -553,10 +557,15 @@ async def create_plan_and_generate(
     decomposer: Optional[PlanDecomposer] = None,
     session_context: Optional[Dict[str, Any]] = None,
 ) -> PlanGenerationOutcome:
-    from .seed_structure import prepare, complete
+    from .seed_structure import complete, prepare
     prepare(tasks)
     repo = repo or PlanRepository()
     effective_metadata = dict(metadata or {})
+    effective_metadata["research_contract"] = build_research_contract(
+        session_context,
+        description=description,
+        assumptions=effective_metadata.get("assumptions"),
+    )
     plan_tree = repo.create_plan(
         title=title,
         owner=owner,
@@ -608,7 +617,9 @@ async def create_plan_and_generate(
         repo.update_plan_metadata(plan_id, effective_metadata)
 
     collected_materials: List[Dict[str, Any]] = []
-    effective_context = dict(session_context or {})
+    effective_context = with_research_contract(
+        session_context, effective_metadata["research_contract"]
+    )
     if decomposer is None:
         decomposer = PlanDecomposer(repo=repo)
 

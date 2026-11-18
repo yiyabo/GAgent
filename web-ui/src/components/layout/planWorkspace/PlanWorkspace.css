@@ -125,3 +125,6 @@
 .pw-assumption-list li + li {
   margin-top: 2px;
 }
+
+.pw-contract-body p { margin: 0; white-space: pre-wrap; }
+.pw-contract-body small { display: block; margin-top: 6px; }

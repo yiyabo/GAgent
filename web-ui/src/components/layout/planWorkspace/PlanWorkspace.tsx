@@ -74,6 +74,13 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
   const assumptions = Array.isArray(rawAssumptions)
     ? rawAssumptions.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
     : [];
+  const rawContract: unknown = treeQuery.data?.metadata?.research_contract;
+  const contract = rawContract && typeof rawContract === 'object' && !Array.isArray(rawContract)
+    ? rawContract as Record<string, unknown> : null;
+  const objective = typeof contract?.objective === 'string' ? contract.objective : '';
+  const sources = Array.isArray(contract?.source_preferences)
+    ? contract.source_preferences.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    : [];
   const planTitle = treeQuery.data?.title || currentPlanTitle || (planId != null ? t('planWorkspace.planNum', { id: planId }) : t('planWorkspace.noPlanYet'));
   const artifactSessionId = artifactSourceSession(treeQuery.data) ?? undefined;
   const foreignSource = Boolean(artifactSessionId && artifactSessionId !== sessionId);
@@ -158,6 +165,10 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
       !tasks.some((child) => child.parent_id === task.id)) &&
       <Alert className="pw-alert" type="warning" showIcon message={t('planWorkspace.decomposeIncomplete')}
         description={t('planWorkspace.decomposeIncompleteDesc')} />}
+    {planId != null && objective && <Alert className="pw-alert pw-contract" type="info" showIcon
+      message={t('planClarify.contractTitle')}
+      description={<div className="pw-contract-body"><p>{objective}</p>
+        {sources.length > 0 && <small>{t('planClarify.contractSources', { sources: sources.join(' / ') })}</small>}</div>} />}
     {planId != null && assumptions.length > 0 && <Alert className="pw-alert pw-assumptions" type="info" showIcon
       message={t('planClarify.assumptionsTitle')}
       description={<ul className="pw-assumption-list">{assumptions.map((item) => <li key={item}>{item}</li>)}</ul>} />}

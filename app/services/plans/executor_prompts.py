@@ -19,8 +19,9 @@ from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
 from app.services.prompt_policy import REFERENCE_SCOPE_POLICY, TASK_EXECUTION_POLICY
+
+from .paper_task_policy import PLANNING_DOCUMENT_SCOPE, is_planning_document
 from .plan_models import PlanNode
-from .paper_task_policy import is_planning_document, PLANNING_DOCUMENT_SCOPE
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +122,10 @@ class ExecutorPromptBuilder:
         the canonical landing path is where the published copy ends up.
         """
         try:
-            from .artifact_contracts import candidate_filenames_for_alias, canonical_artifact_path
+            from .artifact_contracts import (
+                candidate_filenames_for_alias,
+                canonical_artifact_path,
+            )
         except Exception:  # pragma: no cover - defensive
             return []
         session_id = session_context.get("session_id") if isinstance(session_context, dict) else None
@@ -169,12 +173,15 @@ class ExecutorPromptBuilder:
             lines.append(recall_block)
 
         if session_context:
+            contract_prompt = session_context.get("research_contract_prompt")
+            if contract_prompt:
+                lines.append(str(contract_prompt))
             user_message = session_context.get("user_message")
             if user_message:
                 lines.append("\n=== USER REQUEST ===")
                 lines.append(f"{user_message}")
 
-            chat_history = session_context.get("chat_history", [])
+            chat_history = [] if contract_prompt else session_context.get("chat_history", [])
             if chat_history:
                 lines.append("\n=== RECENT CONVERSATION ===")
                 recent_history = chat_history[-6:] if len(chat_history) > 6 else chat_history
