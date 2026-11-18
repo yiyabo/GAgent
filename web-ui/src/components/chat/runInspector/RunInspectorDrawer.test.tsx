@@ -110,6 +110,19 @@ describe('RunInspectorDrawer', () => {
     expect(screen.getByText('任务 #7 · Assemble genomes')).toBeTruthy();
   });
 
+  it('labels plan task usage as covering every attempt', async () => {
+    mocked.getPlanTaskRunInspection.mockResolvedValue({ ...planTaskInspection, usage: { ...inspection.usage, scope: 'plan_task_all_attempts' } });
+    renderDrawer({ planId: 3, taskId: 7, jobId: 'job_1' }, null);
+    await screen.findByText('dt_task');
+    expect(screen.getAllByText(/包含该任务的所有执行尝试/)).toHaveLength(2);
+
+    cleanup();
+    mocked.getRunInspection.mockResolvedValue(inspection);
+    renderDrawer();
+    await screen.findByText('dt_abc');
+    expect(screen.queryByText(/包含该任务的所有执行尝试/)).toBeNull();
+  });
+
   it('passes a pinned job id and falls back to the target task name and id', async () => {
     mocked.getPlanTaskRunInspection.mockResolvedValue({ ...inspection, run: { ...inspection.run, task_id: null, task_name: null } });
     renderDrawer({ planId: 3, taskId: 9, jobId: 'job_1', taskName: 'Annotate' }, '');

@@ -235,6 +235,7 @@ def dry_run_reverify_plan(
 ):
     _load_authorized_plan_tree(plan_id, request)
     from app.services.plans.completion_policy import acceptance_enabled
+
     if not acceptance_enabled():
         raise HTTPException(status_code=410, detail="独立验收已关闭。")
     if not isinstance(task_ids, list):
@@ -306,11 +307,7 @@ def _build_unverifiable_task_response(
         if not tree.children_ids(child_id):
             leaf_child_ids.append(child_id)
     if child_ids and not leaf_child_ids:
-        leaf_child_ids = [
-            child_id
-            for child_id in child_ids
-            if tree.has_node(child_id)
-        ]
+        leaf_child_ids = [child_id for child_id in child_ids if tree.has_node(child_id)]
     details = {
         "verification_status": "not_run",
         "reason": reason,
@@ -348,6 +345,7 @@ def verify_task_result(
 ):
     tree = _load_authorized_plan_tree(plan_id, request)
     from app.services.plans.completion_policy import acceptance_enabled
+
     if not acceptance_enabled():
         raise HTTPException(status_code=410, detail="独立验收已关闭。任务按执行结果记录，后续任务可自行补充输入。")
     if not tree.has_node(task_id):
@@ -413,14 +411,10 @@ def verify_task_result(
         message = f"Task {task_id} verification finished, but artifact authority failed."
     elif manual_acceptance_active and verification_status == "failed":
         message = (
-            f"Task {task_id} verification still failed deterministically, "
-            f"but the task remains manually accepted."
+            f"Task {task_id} verification still failed deterministically, " f"but the task remains manually accepted."
         )
     elif final_status == "needs_review":
-        message = (
-            f"Task {task_id} needs review: no primary execution tool ran and "
-            "no output was produced."
-        )
+        message = f"Task {task_id} needs review: no primary execution tool ran and " "no output was produced."
     elif verification_status == "passed":
         message = f"Task {task_id} verification passed."
     elif verification_status == "failed":
@@ -460,6 +454,7 @@ def accept_task_result(
 ):
     tree = _load_authorized_plan_tree(plan_id, request)
     from app.services.plans.completion_policy import acceptance_enabled
+
     if not acceptance_enabled():
         raise HTTPException(status_code=410, detail="独立验收已关闭，无需人工审批。")
     if not tree.has_node(task_id):
@@ -572,6 +567,7 @@ def execute_task_with_dependencies(
             raise HTTPException(status_code=404, detail=f"Task {selected_id} not found in plan {plan_id}")
     state_by_task = _resolve_effective_task_states(plan_id, tree)
     from .execution_selection import selected_dependency_plan
+
     dep_plan = selected_dependency_plan(tree, selected_task_ids, request, state_by_task)
     dep_response = _to_dependency_plan_response(tree, dep_plan, state_by_task=state_by_task)
 
@@ -686,6 +682,7 @@ def execute_task_with_dependencies(
         )
 
     from .execution_submission import start_task_chain
+
     return start_task_chain(tree, task_id, selected_task_ids, task_order, dep_response, request, raw_request)
 
 
@@ -823,6 +820,7 @@ def execute_full_plan(
     # --- Artifact dependency enrichment ---
     try:
         from app.services.plans.completion_policy import acceptance_enabled
+
         _enrichment_result = enrich_plan_dependencies(tree)
         if _enrichment_result.added_edges:
             for _enode in tree.iter_nodes():
@@ -832,7 +830,8 @@ def execute_full_plan(
                     pass
             logging.getLogger("app.routers.plan_routes").info(
                 "Enriched plan %s with %d implicit dependency edges.",
-                plan_id, len(_enrichment_result.added_edges),
+                plan_id,
+                len(_enrichment_result.added_edges),
             )
         _normalization = normalize_plan_dependencies(tree)
         if _normalization.dependencies_by_task and acceptance_enabled():
@@ -916,9 +915,9 @@ def execute_full_plan(
                     continue
 
                 current_state_by_task = _resolve_effective_task_states(plan_id, current_tree)
-                current_status = str(
-                    (current_state_by_task.get(tid) or {}).get("effective_status") or "pending"
-                ).strip().lower()
+                current_status = (
+                    str((current_state_by_task.get(tid) or {}).get("effective_status") or "pending").strip().lower()
+                )
                 if current_status in ("completed", "running", "delegating"):
                     executed.append(tid)
                     continue
@@ -975,7 +974,9 @@ def execute_full_plan(
                     if _status_after_audit_repair("failed", repair_result) == "completed":
                         executed.append(tid)
                         _publish_deliverables_after_audit_repair(
-                            plan_id=plan_id, task_id=tid, session_id=request.session_id,
+                            plan_id=plan_id,
+                            task_id=tid,
+                            session_id=request.session_id,
                         )
                         continue
                 except Exception as repair_exc:
@@ -1022,8 +1023,7 @@ def execute_full_plan(
             )
         else:
             message = (
-                f"Full plan execution finished: {len(executed)} done, "
-                f"{len(failed)} failed, {len(skipped)} skipped."
+                f"Full plan execution finished: {len(executed)} done, " f"{len(failed)} failed, {len(skipped)} skipped."
             )
         return ExecuteFullPlanResponse(
             success=success,
@@ -1282,9 +1282,7 @@ def decompose_task(
             node_budget,
             allow_existing_children,
         )
-        message = (
-            "Task decomposition started in background. Poll job status to track progress."
-        )
+        message = "Task decomposition started in background. Poll job status to track progress."
         payload = job.to_payload()
         return DecomposeTaskResponse(
             success=True,
@@ -1416,43 +1414,55 @@ register_router(
 )
 
 
-@plan_router.get('/{plan_id}/artifacts')
-def get_plan_artifacts(plan_id: int, request: Request, task_id: Optional[int] = None,
-                       cursor: Optional[str] = Query(None, max_length=256),
-                       limit: int = Query(50, ge=1, le=50)):
+@plan_router.get("/{plan_id}/artifacts")
+def get_plan_artifacts(
+    plan_id: int,
+    request: Request,
+    task_id: Optional[int] = None,
+    cursor: Optional[str] = Query(None, max_length=256),
+    limit: int = Query(50, ge=1, le=50),
+):
     _ensure_plan_access(plan_id, request)
     from app.services.plans.artifact_listing import list_artifacts, ArtifactListingConflict
+
     try:
         return list_artifacts(plan_id, task_id=task_id, cursor=cursor, limit=limit)
     except ArtifactListingConflict as exc:
         raise HTTPException(409, str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(409 if str(exc) == 'ambiguous_artifact_store' else 422, str(exc)) from exc
+        raise HTTPException(409 if str(exc) == "ambiguous_artifact_store" else 422, str(exc)) from exc
 
 
-@plan_router.get('/{plan_id}/artifact-versions')
-def get_artifact_versions(plan_id:int,request:Request,alias:Optional[str]=None,cursor:int=Query(0,ge=0)):
-    _load_authorized_plan_tree(plan_id,request)
+@plan_router.get("/{plan_id}/artifact-versions")
+def get_artifact_versions(plan_id: int, request: Request, alias: Optional[str] = None, cursor: int = Query(0, ge=0)):
+    _load_authorized_plan_tree(plan_id, request)
     from app.services.plans.artifact_recompute import versions
     from app.services.plans.artifact_versions import ArtifactRevisionConflict
-    try:return versions(_plan_repo,plan_id,alias,cursor)
-    except (ValueError,ArtifactRevisionConflict) as exc:raise HTTPException(409,str(exc)) from exc
+
+    try:
+        return versions(_plan_repo, plan_id, alias, cursor)
+    except (ValueError, ArtifactRevisionConflict) as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
-@plan_router.post('/{plan_id}/recompute-preview')
-def preview_artifact_recompute(plan_id:int,request:Request,payload:Dict[str,Any]=Body(...)):
-    _load_authorized_plan_tree(plan_id,request)
+@plan_router.post("/{plan_id}/recompute-preview")
+def preview_artifact_recompute(plan_id: int, request: Request, payload: Dict[str, Any] = Body(...)):
+    _load_authorized_plan_tree(plan_id, request)
     from app.services.plans.artifact_recompute import preview
     from app.services.plans.artifact_versions import ArtifactRevisionConflict
-    try:return preview(_plan_repo,plan_id,payload)
-    except (ValueError,ArtifactRevisionConflict) as exc:raise HTTPException(409,str(exc)) from exc
+
+    try:
+        return preview(_plan_repo, plan_id, payload)
+    except (ValueError, ArtifactRevisionConflict) as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
-@plan_router.post('/{plan_id}/recompute')
-def execute_artifact_recompute(plan_id:int,request:Request,payload:Dict[str,Any]=Body(...)):
-    _load_authorized_plan_tree(plan_id,request)
+@plan_router.post("/{plan_id}/recompute")
+def execute_artifact_recompute(plan_id: int, request: Request, payload: Dict[str, Any] = Body(...)):
+    _load_authorized_plan_tree(plan_id, request)
     from app.services.plans.artifact_recompute import enqueue
-    return enqueue(_plan_repo,plan_id,payload,get_request_owner_id(request))
+
+    return enqueue(_plan_repo, plan_id, payload, get_request_owner_id(request))
 
 
 @plan_router.get(

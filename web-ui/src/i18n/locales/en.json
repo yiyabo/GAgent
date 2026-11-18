@@ -1825,6 +1825,7 @@
     "toolFailures": "Tool failures",
     "tokens": "Tokens",
     "tokenSummary": "{{total}} total · {{cached}} cached · {{calls}} calls",
+    "usageAllAttempts": "Covers every attempt of this task",
     "artifacts": "Artifacts",
     "runId": "Run ID",
     "request": "Request",

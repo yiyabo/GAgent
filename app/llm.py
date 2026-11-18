@@ -1332,136 +1332,145 @@ class LLMClient(LLMProvider):
         logical_call_id = _new_logical_call_id()
         _last_usage: dict[str, Any] | None = None
         _attempts = 0
-        for attempt in range(request_retries + 1):
-            _attempts = attempt + 1
-            emitted_any = False
-            try:
-                _outbound_limiter.acquire()
-                attempt_headers = dict(headers)
-                attempt_headers.update(_billing_request_headers(logical_call_id, attempt + 1))
-                _record_attempt_context(logical_call_id, attempt + 1, request_metadata=_request_metadata(payload))
-                with client.stream(
-                    "POST",
-                    self._effective_url(),
-                    headers=attempt_headers,
-                    json=payload,
-                    timeout=timeout,
-                ) as resp:
-                    _record_attempt_context(
-                        logical_call_id,
-                        attempt + 1,
-                        upstream_request_id=resp.headers.get("x-request-id") or resp.headers.get("request-id"),
-                    )
-                    if resp.status_code >= 400:
-                        # httpx streams must be read before .text is available;
-                        # read() also caches the body for the error handler below.
-                        resp.read()
-                        resp.raise_for_status()
-                    for line in resp.iter_lines():
-                        if not line:
-                            continue
-                        if not line.startswith("data:"):
-                            continue
-                        data = line[len("data:") :].strip()
-                        if not data:
-                            continue
-                        if data == "[DONE]":
-                            break
-                        try:
-                            obj = json.loads(data)
-                        except json.JSONDecodeError:
-                            continue
+        _usage_status = "ok"
+        try:
+            for attempt in range(request_retries + 1):
+                _attempts = attempt + 1
+                emitted_any = False
+                try:
+                    _outbound_limiter.acquire()
+                    attempt_headers = dict(headers)
+                    attempt_headers.update(_billing_request_headers(logical_call_id, attempt + 1))
+                    _record_attempt_context(logical_call_id, attempt + 1, request_metadata=_request_metadata(payload))
+                    with client.stream(
+                        "POST",
+                        self._effective_url(),
+                        headers=attempt_headers,
+                        json=payload,
+                        timeout=timeout,
+                    ) as resp:
+                        _record_attempt_context(
+                            logical_call_id,
+                            attempt + 1,
+                            upstream_request_id=resp.headers.get("x-request-id") or resp.headers.get("request-id"),
+                        )
+                        if resp.status_code >= 400:
+                            # httpx streams must be read before .text is available;
+                            # read() also caches the body for the error handler below.
+                            resp.read()
+                            resp.raise_for_status()
+                        for line in resp.iter_lines():
+                            if not line:
+                                continue
+                            if not line.startswith("data:"):
+                                continue
+                            data = line[len("data:") :].strip()
+                            if not data:
+                                continue
+                            if data == "[DONE]":
+                                break
+                            try:
+                                obj = json.loads(data)
+                            except json.JSONDecodeError:
+                                continue
 
-                        usage = obj.get("usage")
-                        if isinstance(usage, dict):
-                            _last_usage = usage
-                            _record_attempt_context(
-                                logical_call_id,
-                                attempt + 1,
-                                upstream_request_id=resp.headers.get("x-request-id") or resp.headers.get("request-id"),
-                                usage=usage,
-                            )
+                            usage = obj.get("usage")
+                            if isinstance(usage, dict):
+                                _last_usage = usage
+                                _record_attempt_context(
+                                    logical_call_id,
+                                    attempt + 1,
+                                    upstream_request_id=resp.headers.get("x-request-id") or resp.headers.get("request-id"),
+                                    usage=usage,
+                                )
 
-                        content_delta = self._extract_stream_delta(obj)
-                        if content_delta:
-                            emitted_any = True
-                            yield content_delta
-                    if isinstance(_last_usage, dict):
-                        # One ledger row per call: some providers repeat `usage`
-                        # in every chunk, and logging in-loop wrote one row per
-                        # chunk (2026-10-11).
-                        _log_usage(
+                            content_delta = self._extract_stream_delta(obj)
+                            if content_delta:
+                                emitted_any = True
+                                yield content_delta
+                        _log_call_metrics(
+                            method="stream_chat",
                             provider=self.provider,
                             model=model or self.model,
-                            prompt_tokens=_last_usage.get("prompt_tokens", 0),
-                            completion_tokens=_last_usage.get("completion_tokens", 0),
-                            total_tokens=_last_usage.get("total_tokens", 0),
-                            call_status="ok",
-                            duration_ms=(time.perf_counter() - _t0) * 1000,
+                            status="ok",
+                            latency_ms=(time.perf_counter() - _t0) * 1000,
+                            attempts=attempt + 1,
+                            usage=_last_usage,
                         )
+                        return
+                except httpx.HTTPStatusError as e:
+                    status_code = e.response.status_code if e.response is not None else None
+                    if (
+                        not emitted_any
+                        and isinstance(status_code, int)
+                        and 500 <= status_code < 600
+                        and attempt < request_retries
+                    ):
+                        delay = max(0.0, self.backoff_base * (2**attempt) + random.uniform(0, self.backoff_base / 4.0))
+                        time.sleep(delay)
+                        last_err = e
+                        continue
+                    body = ""
+                    try:
+                        body = e.response.text if e.response is not None else ""
+                    except Exception:
+                        body = ""
+                    try:
+                        _ra = e.response.headers.get("retry-after") if e.response is not None else None
+                    except Exception:
+                        _ra = None
+                    _ra_suffix = f" (retry_after={_ra})" if _ra else ""
                     _log_call_metrics(
                         method="stream_chat",
                         provider=self.provider,
                         model=model or self.model,
-                        status="ok",
+                        status="error",
                         latency_ms=(time.perf_counter() - _t0) * 1000,
                         attempts=attempt + 1,
-                        usage=_last_usage,
+                        error=f"HTTPStatusError:{status_code}",
                     )
-                    return
-            except httpx.HTTPStatusError as e:
-                status_code = e.response.status_code if e.response is not None else None
-                if (
-                    not emitted_any
-                    and isinstance(status_code, int)
-                    and 500 <= status_code < 600
-                    and attempt < request_retries
-                ):
-                    delay = max(0.0, self.backoff_base * (2**attempt) + random.uniform(0, self.backoff_base / 4.0))
-                    time.sleep(delay)
-                    last_err = e
-                    continue
-                body = ""
-                try:
-                    body = e.response.text if e.response is not None else ""
-                except Exception:
-                    body = ""
-                try:
-                    _ra = e.response.headers.get("retry-after") if e.response is not None else None
-                except Exception:
-                    _ra = None
-                _ra_suffix = f" (retry_after={_ra})" if _ra else ""
-                _log_call_metrics(
-                    method="stream_chat",
+                    raise RuntimeError(_format_http_error(e, body=body) + _ra_suffix) from e
+                except ObserverRejected:
+                    raise
+                except Exception as e:
+                    # Treat as transient (network) and retry only before any content
+                    if not emitted_any and attempt < request_retries:
+                        delay = max(0.0, self.backoff_base * (2**attempt) + random.uniform(0, self.backoff_base / 4.0))
+                        time.sleep(delay)
+                        last_err = e
+                        continue
+                    _log_call_metrics(
+                        method="stream_chat",
+                        provider=self.provider,
+                        model=model or self.model,
+                        status="error",
+                        latency_ms=(time.perf_counter() - _t0) * 1000,
+                        attempts=attempt + 1,
+                        error=type(e).__name__,
+                    )
+                    raise RuntimeError(f"LLM request failed: {e}")
+            if last_err is not None:
+                raise RuntimeError(f"LLM request failed: {last_err}")
+        except GeneratorExit:
+            _usage_status = "abandoned"
+            raise
+        except BaseException:
+            _usage_status = "error"
+            raise
+        finally:
+            # One ledger row per call, written once the stream ends (some
+            # providers repeat ``usage`` in every chunk). Partial streams that
+            # are abandoned or fail still record the last cumulative snapshot.
+            if isinstance(_last_usage, dict):
+                _log_usage(
                     provider=self.provider,
                     model=model or self.model,
-                    status="error",
-                    latency_ms=(time.perf_counter() - _t0) * 1000,
-                    attempts=attempt + 1,
-                    error=f"HTTPStatusError:{status_code}",
+                    prompt_tokens=_last_usage.get("prompt_tokens", 0),
+                    completion_tokens=_last_usage.get("completion_tokens", 0),
+                    total_tokens=_last_usage.get("total_tokens", 0),
+                    call_status=_usage_status,
+                    duration_ms=(time.perf_counter() - _t0) * 1000,
                 )
-                raise RuntimeError(_format_http_error(e, body=body) + _ra_suffix) from e
-            except ObserverRejected:
-                raise
-            except Exception as e:
-                # Treat as transient (network) and retry only before any content
-                if not emitted_any and attempt < request_retries:
-                    delay = max(0.0, self.backoff_base * (2**attempt) + random.uniform(0, self.backoff_base / 4.0))
-                    time.sleep(delay)
-                    last_err = e
-                    continue
-                _log_call_metrics(
-                    method="stream_chat",
-                    provider=self.provider,
-                    model=model or self.model,
-                    status="error",
-                    latency_ms=(time.perf_counter() - _t0) * 1000,
-                    attempts=attempt + 1,
-                    error=type(e).__name__,
-                )
-                raise RuntimeError(f"LLM request failed: {e}")
-        if last_err is not None:
-            raise RuntimeError(f"LLM request failed: {last_err}")
 
     @_track_inflight
     async def chat_async(
@@ -1734,20 +1743,7 @@ class LLMClient(LLMProvider):
                         if _ttft_ms is None:
                             _ttft_ms = (time.perf_counter() - _t0) * 1000
                         yield content_delta
-                if isinstance(_last_usage, dict):
-                    # One ledger row per call, logged once the stream ends:
-                    # providers that repeat ``usage`` in every chunk used to
-                    # write one row per chunk (mirrors sync ``stream_chat``).
-                    _log_usage(
-                        provider=self.provider,
-                        model=model or self.model,
-                        prompt_tokens=_last_usage.get("prompt_tokens", 0),
-                        completion_tokens=_last_usage.get("completion_tokens", 0),
-                        total_tokens=_last_usage.get("total_tokens", 0),
-                        call_status="ok",
-                        duration_ms=(time.perf_counter() - _t0) * 1000,
-                    )
-        except GeneratorExit:
+        except (GeneratorExit, asyncio.CancelledError):
             _stream_status = "abandoned"
             raise
         except Exception as exc:
@@ -1755,6 +1751,18 @@ class LLMClient(LLMProvider):
             _stream_err = type(exc).__name__
             raise
         finally:
+            # The last provider snapshot is cumulative, including on partial streams.
+            elapsed_ms = (time.perf_counter() - _t0) * 1000
+            if isinstance(_last_usage, dict):
+                _log_usage(
+                    provider=self.provider,
+                    model=model or self.model,
+                    prompt_tokens=_last_usage.get("prompt_tokens", 0),
+                    completion_tokens=_last_usage.get("completion_tokens", 0),
+                    total_tokens=_last_usage.get("total_tokens", 0),
+                    call_status=_stream_status,
+                    duration_ms=elapsed_ms,
+                )
             _log_call_metrics(
                 method="stream_chat",
                 provider=self.provider,
@@ -1948,108 +1956,117 @@ class LLMClient(LLMProvider):
         timeout = _make_request_timeout(self.stream_timeout)
         client = _get_shared_async_client()
         _t0 = time.perf_counter()
-        for _stream_attempt in range(2):
-            await _outbound_limiter.acquire_async()
-            _record_attempt_context(logical_call_id, 1, request_metadata=_request_metadata(payload))
-            retry_without_stream_options = False
-            async with client.stream("POST", effective_url, headers=headers, json=payload, timeout=timeout) as resp:
-                if resp.status_code >= 400:
-                    body = await _read_stream_error_body(resp)
-                    if use_stream_options and resp.status_code == 400 and _stream_options_rejected(body):
-                        # Gateway does not understand stream_options: remember
-                        # it and re-issue the same request without the field.
-                        _STREAM_OPTIONS_UNSUPPORTED_URLS.add(effective_url)
-                        payload.pop("stream_options", None)
-                        logger.warning(
-                            "[LLM] gateway rejected stream_options.include_usage; "
-                            "retrying without it and disabling it for %s",
-                            effective_url,
-                        )
-                        retry_without_stream_options = True
-                    else:
+        _usage_status = "ok"
+        try:
+            for _stream_attempt in range(2):
+                await _outbound_limiter.acquire_async()
+                _record_attempt_context(logical_call_id, 1, request_metadata=_request_metadata(payload))
+                retry_without_stream_options = False
+                async with client.stream("POST", effective_url, headers=headers, json=payload, timeout=timeout) as resp:
+                    if resp.status_code >= 400:
+                        body = await _read_stream_error_body(resp)
+                        if use_stream_options and resp.status_code == 400 and _stream_options_rejected(body):
+                            # Gateway does not understand stream_options: remember
+                            # it and re-issue the same request without the field.
+                            _STREAM_OPTIONS_UNSUPPORTED_URLS.add(effective_url)
+                            payload.pop("stream_options", None)
+                            logger.warning(
+                                "[LLM] gateway rejected stream_options.include_usage; "
+                                "retrying without it and disabling it for %s",
+                                effective_url,
+                            )
+                            retry_without_stream_options = True
+                        else:
+                            try:
+                                resp.raise_for_status()
+                            except httpx.HTTPStatusError as e:
+                                _ra = resp.headers.get("retry-after")
+                                _ra_suffix = f" (retry_after={_ra})" if _ra else ""
+                                raise RuntimeError(_format_http_error(e, body=body) + _ra_suffix) from e
+                    if retry_without_stream_options:
+                        continue
+                    async for line in resp.aiter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue
+                        data = line[len("data:") :].strip()
+                        if data == "[DONE]":
+                            result.diagnostics["done_seen"] = True
+                            continue
+                        if not data:
+                            continue
                         try:
-                            resp.raise_for_status()
-                        except httpx.HTTPStatusError as e:
-                            _ra = resp.headers.get("retry-after")
-                            _ra_suffix = f" (retry_after={_ra})" if _ra else ""
-                            raise RuntimeError(_format_http_error(e, body=body) + _ra_suffix) from e
-                if retry_without_stream_options:
-                    continue
-                async for line in resp.aiter_lines():
-                    if not line or not line.startswith("data:"):
-                        continue
-                    data = line[len("data:") :].strip()
-                    if data == "[DONE]":
-                        result.diagnostics["done_seen"] = True
-                        continue
-                    if not data:
-                        continue
-                    try:
-                        obj = json.loads(data)
-                    except json.JSONDecodeError:
-                        continue
+                            obj = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
 
-                    # Extract usage from last chunk
-                    usage = obj.get("usage")
-                    if isinstance(usage, dict):
-                        result.usage = usage
-                        _record_attempt_context(logical_call_id, 1, usage=usage)
+                        # Extract usage from last chunk
+                        usage = obj.get("usage")
+                        if isinstance(usage, dict):
+                            result.usage = usage
+                            _record_attempt_context(logical_call_id, 1, usage=usage)
 
-                    choices = obj.get("choices")
-                    if not isinstance(choices, list) or not choices:
-                        continue
-                    choice = choices[0]
-                    if not isinstance(choice, dict):
-                        continue
+                        choices = obj.get("choices")
+                        if not isinstance(choices, list) or not choices:
+                            continue
+                        choice = choices[0]
+                        if not isinstance(choice, dict):
+                            continue
 
-                    fr = choice.get("finish_reason")
-                    if isinstance(fr, str):
-                        result.finish_reason = fr
+                        fr = choice.get("finish_reason")
+                        if isinstance(fr, str):
+                            result.finish_reason = fr
 
-                    delta = choice.get("delta")
-                    if not isinstance(delta, dict):
-                        continue
+                        delta = choice.get("delta")
+                        if not isinstance(delta, dict):
+                            continue
 
-                    # Reasoning content delta (thinking tokens from enable_thinking)
-                    reasoning = delta.get("reasoning_content")
-                    if isinstance(reasoning, str) and reasoning:
-                        result.reasoning_content += reasoning
-                        if on_reasoning_delta is not None:
-                            try:
-                                ret = on_reasoning_delta(reasoning)
-                                if asyncio.iscoroutine(ret):
-                                    await ret
-                            except Exception:
-                                pass
+                        # Reasoning content delta (thinking tokens from enable_thinking)
+                        reasoning = delta.get("reasoning_content")
+                        if isinstance(reasoning, str) and reasoning:
+                            result.reasoning_content += reasoning
+                            if on_reasoning_delta is not None:
+                                try:
+                                    ret = on_reasoning_delta(reasoning)
+                                    if asyncio.iscoroutine(ret):
+                                        await ret
+                                except Exception:
+                                    pass
 
-                    # Content delta
-                    content = delta.get("content")
-                    if isinstance(content, str) and content:
-                        result.content += content
-                        if on_content_delta is not None:
-                            try:
-                                ret = on_content_delta(content)
-                                if asyncio.iscoroutine(ret):
-                                    await ret
-                            except Exception:
-                                pass
+                        # Content delta
+                        content = delta.get("content")
+                        if isinstance(content, str) and content:
+                            result.content += content
+                            if on_content_delta is not None:
+                                try:
+                                    ret = on_content_delta(content)
+                                    if asyncio.iscoroutine(ret):
+                                        await ret
+                                except Exception:
+                                    pass
 
-                    # Tool call deltas
-                    _accumulate_native_tool_call_deltas(tc_accum, delta.get("tool_calls"))
-            break
-
-        if isinstance(result.usage, dict):
-            # One ledger row per streamed call, written after the stream ends so
-            # providers repeating ``usage`` in every chunk do not multiply rows.
-            _log_usage(
-                provider=self.provider,
-                model=model or self.model,
-                prompt_tokens=result.usage.get("prompt_tokens", 0),
-                completion_tokens=result.usage.get("completion_tokens", 0),
-                total_tokens=result.usage.get("total_tokens", 0),
-                call_status="ok",
-                duration_ms=(time.perf_counter() - _t0) * 1000,
-            )
+                        # Tool call deltas
+                        _accumulate_native_tool_call_deltas(tc_accum, delta.get("tool_calls"))
+                break
+        except asyncio.CancelledError:
+            _usage_status = "abandoned"
+            raise
+        except BaseException:
+            _usage_status = "error"
+            raise
+        finally:
+            if isinstance(result.usage, dict):
+                # One ledger row per streamed call, written after the stream ends
+                # so providers repeating ``usage`` in every chunk do not multiply
+                # rows; failed or cancelled streams keep their partial usage.
+                _log_usage(
+                    provider=self.provider,
+                    model=model or self.model,
+                    prompt_tokens=result.usage.get("prompt_tokens", 0),
+                    completion_tokens=result.usage.get("completion_tokens", 0),
+                    total_tokens=result.usage.get("total_tokens", 0),
+                    call_status=_usage_status,
+                    duration_ms=(time.perf_counter() - _t0) * 1000,
+                )
 
         # Parse accumulated tool calls
         result.tool_calls.extend(_parse_native_tool_calls(tc_accum))

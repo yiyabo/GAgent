@@ -37,9 +37,7 @@ def get_run_for_inspection(run_id: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
-def get_run_by_assistant_message(
-    session_id: str, message_id: int
-) -> dict[str, Any] | None:
+def get_run_by_assistant_message(session_id: str, message_id: int) -> dict[str, Any] | None:
     with get_db() as conn:
         row = conn.execute(
             """
@@ -76,10 +74,7 @@ def fetch_inspection_events(run_id: str) -> list[tuple[int, str, dict[str, Any]]
             """,
             (run_id,),
         ).fetchall()
-    return [
-        (row["seq"], str(row["created_at"] or ""), _decode_payload(row["payload_json"]))
-        for row in rows
-    ]
+    return [(row["seq"], str(row["created_at"] or ""), _decode_payload(row["payload_json"])) for row in rows]
 
 
 def count_run_event_types(run_id: str) -> dict[str, int]:
@@ -122,6 +117,12 @@ def fetch_run_usage(run_id: str) -> list[dict[str, Any]]:
 # Plan task inspection (read-only; plan shard + main usage ledger)
 # ---------------------------------------------------------------------------
 
+
+# Newest non-delta log rows loaded per task; older rows are dropped in SQL so a
+# runaway task cannot load an unbounded result set (steps are capped later).
+MAX_PLAN_TASK_LOG_ROWS = 5000
+
+
 def _missing_schema(exc: sqlite3.OperationalError) -> bool:
     text = str(exc).lower()
     return "no such table" in text or "no such column" in text
@@ -139,18 +140,27 @@ def _job_dict(row: Any) -> dict[str, Any]:
     return job
 
 
-def _find_plan_task_job(
-    conn: sqlite3.Connection, task_id: int, job_id: str | None
-) -> dict[str, Any] | None:
+def _find_plan_task_job(conn: sqlite3.Connection, task_id: int, job_id: str | None) -> dict[str, Any] | None:
     if job_id:
+        # A pinned job must belong to this task (exact ids); otherwise None -> 404.
         row = conn.execute(
             """
             SELECT job_id, job_type, mode, target_task_id, session_id, status, error,
                stats_json, metadata_json, created_at, started_at, finished_at
             FROM decomposition_jobs
             WHERE job_id = ? AND job_type = 'plan_execute'
+              AND (
+                target_task_id = ?
+                OR json_extract(metadata_json, '$.task_id') = ?
+                OR json_extract(stats_json, '$.task_id') = ?
+                OR EXISTS (
+                  SELECT 1 FROM decomposition_job_logs
+                  WHERE decomposition_job_logs.job_id = decomposition_jobs.job_id
+                    AND json_extract(decomposition_job_logs.metadata_json, '$.task_id') = ?
+                )
+              )
             """,
-            (job_id,),
+            (job_id, task_id, task_id, task_id, task_id),
         ).fetchone()
         return _job_dict(row) if row else None
     # Latest plan_execute job that logged this task, else one that targeted it,
@@ -186,9 +196,7 @@ def _decode_meta(raw: Any) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
-def load_plan_task_inspection_inputs(
-    plan_id: int, task_id: int, job_id: str | None = None
-) -> dict[str, Any] | None:
+def load_plan_task_inspection_inputs(plan_id: int, task_id: int, job_id: str | None = None) -> dict[str, Any] | None:
     """Gather the rows ``build_plan_task_inspection`` needs, or None if no task.
 
     Returns ``{"task", "job", "logs", "log_counts", "usage_rows"}``. Streaming
@@ -229,9 +237,10 @@ def load_plan_task_inspection_inputs(
                 WHERE job_id = ?
                   AND json_extract(metadata_json, '$.task_id') = ?
                   AND COALESCE(json_extract(metadata_json, '$.sub_type'), '') != 'thinking_delta'
-                ORDER BY id ASC
+                ORDER BY id DESC
+                LIMIT ?
                 """,
-                params,
+                (*params, MAX_PLAN_TASK_LOG_ROWS),
             ).fetchall()
             logs = [
                 (
@@ -239,7 +248,7 @@ def load_plan_task_inspection_inputs(
                     str(row["timestamp"] or ""),
                     {"level": row["level"], "message": row["message"], "metadata": _decode_meta(row["metadata_json"])},
                 )
-                for row in rows
+                for row in reversed(rows)
             ]
             count_rows = conn.execute(
                 """

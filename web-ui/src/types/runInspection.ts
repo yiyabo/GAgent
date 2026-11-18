@@ -91,8 +91,10 @@ export interface RunInspection {
     cost_currency?: string | null;
     models: string[];
     by_purpose: RunInspectionUsageGroup[];
+    /** Plan tasks: the ledger is keyed by task, so totals span every attempt. */
+    scope?: 'run' | 'plan_task_all_attempts';
   };
-  truncated: { steps: boolean; artifacts: boolean };
+  truncated: { steps: boolean; artifacts: boolean; logs?: boolean };
 }
 
 /** A chat run, addressed by its run id or by the persisted assistant message it produced. */

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from collections.abc import AsyncGenerator, Generator
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import httpx
@@ -95,9 +96,7 @@ def test_stream_chat_with_tools_logs_once_with_duration(monkeypatch, usage_calls
             "data: [DONE]",
         ],
     )
-    result = asyncio.run(
-        _client().stream_chat_with_tools_async([{"role": "user", "content": "hi"}], tools=[])
-    )
+    result = asyncio.run(_client().stream_chat_with_tools_async([{"role": "user", "content": "hi"}], tools=[]))
     assert result.content == "x"
     _assert_single_row(usage_calls)
 
@@ -119,3 +118,101 @@ def test_repair_nonstream_logs_duration(monkeypatch, usage_calls) -> None:
     monkeypatch.setattr("app.llm._get_shared_async_client", lambda: mock)
     asyncio.run(_client()._repair_tool_calls_nonstream({"messages": [], "stream": True}, "call_1"))
     _assert_single_row(usage_calls)
+
+
+@pytest.mark.parametrize("finish,status", [("close", "abandoned"), ("cancel", "abandoned"), ("error", "error")])
+@pytest.mark.parametrize("received_usage", [False, True])
+def test_partial_chat_stream_preserves_received_usage(monkeypatch, usage_calls, finish, status, received_usage):
+    chunk = 'data: {"choices": [{"delta": {"content": "a"}}]' + (", " + _USAGE if received_usage else "") + "}"
+
+    async def lines(_response):
+        yield chunk
+        if finish == "cancel":
+            raise asyncio.CancelledError
+        raise httpx.ReadError("simulated stream disconnect")
+
+    monkeypatch.setattr(_Resp, "aiter_lines", lines)
+    _install_stream(monkeypatch, [])
+
+    async def consume():
+        stream = cast(AsyncGenerator[str, None], _client().stream_chat_async("hi"))
+        assert await anext(stream) == "a"
+        if finish == "close":
+            await stream.aclose()
+        else:
+            with pytest.raises(asyncio.CancelledError if finish == "cancel" else httpx.ReadError):
+                await anext(stream)
+
+    asyncio.run(consume())
+    if received_usage:
+        assert len(usage_calls) == 1
+        assert usage_calls[0]["call_status"] == status
+        assert usage_calls[0]["total_tokens"] == 3
+        assert usage_calls[0]["duration_ms"] >= 0
+    else:
+        assert usage_calls == []
+
+
+@pytest.mark.parametrize("finish,status", [("cancel", "abandoned"), ("error", "error")])
+def test_partial_tool_stream_preserves_received_usage(monkeypatch, usage_calls, finish, status):
+    async def lines(_response):
+        yield 'data: {"choices": [{"delta": {"content": "a"}}], ' + _USAGE + "}"
+        if finish == "cancel":
+            raise asyncio.CancelledError
+        raise httpx.ReadError("simulated stream disconnect")
+
+    monkeypatch.setattr(_Resp, "aiter_lines", lines)
+    _install_stream(monkeypatch, [])
+    expected = asyncio.CancelledError if finish == "cancel" else Exception
+    with pytest.raises(expected):
+        asyncio.run(_client().stream_chat_with_tools_async([{"role": "user", "content": "hi"}], tools=[]))
+    assert len(usage_calls) == 1
+    assert usage_calls[0]["call_status"] == status
+    assert usage_calls[0]["total_tokens"] == 3
+    assert usage_calls[0]["duration_ms"] >= 0
+
+
+class _SyncResp:
+    status_code = 200
+    headers = httpx.Headers()
+
+    def __init__(self, fail: bool) -> None:
+        self._fail = fail
+
+    def iter_lines(self):
+        yield 'data: {"choices": [{"delta": {"content": "a"}}], ' + _USAGE + "}"
+        if self._fail:
+            raise httpx.ReadError("simulated stream disconnect")
+        yield 'data: {"choices": [{"delta": {"content": "b"}}], ' + _USAGE + "}"
+        yield "data: [DONE]"
+
+
+class _SyncCM:
+    def __init__(self, fail: bool) -> None:
+        self._fail = fail
+
+    def __enter__(self):
+        return _SyncResp(self._fail)
+
+    def __exit__(self, *args):
+        return False
+
+
+@pytest.mark.parametrize("finish,status", [("complete", "ok"), ("close", "abandoned"), ("error", "error")])
+def test_sync_stream_chat_logs_usage_once_on_every_exit(monkeypatch, usage_calls, finish, status):
+    mock = MagicMock(spec=httpx.Client)
+    mock.stream = lambda *a, **k: _SyncCM(fail=finish == "error")
+    monkeypatch.setattr("app.llm._get_shared_sync_client", lambda: mock)
+    stream = cast(Generator[str, None, None], _client().stream_chat("hi"))
+    assert next(stream) == "a"
+    if finish == "complete":
+        assert list(stream) == ["b"]
+    elif finish == "close":
+        stream.close()
+    else:
+        with pytest.raises(RuntimeError):
+            next(stream)
+    assert len(usage_calls) == 1
+    assert usage_calls[0]["call_status"] == status
+    assert usage_calls[0]["total_tokens"] == 3
+    assert usage_calls[0]["duration_ms"] >= 0

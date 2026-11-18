@@ -510,6 +510,11 @@ def build_plan_task_inspection(
         }
     )
     payload["summary"]["streaming_chunks"] = int(log_counts.get("thinking_delta", 0))
+    # The usage ledger keys plan tasks by task, not job: totals cover every
+    # attempt of the task even when ``job_id`` pins one run.
+    payload["usage"]["scope"] = "plan_task_all_attempts"
+    logged = sum(n for kind, n in log_counts.items() if kind != "thinking_delta")
+    payload["truncated"]["logs"] = len(logs) < logged
     payload["artifacts"] = [item for item in payload["events"] if item["type"] == "artifact"]
     return payload
 

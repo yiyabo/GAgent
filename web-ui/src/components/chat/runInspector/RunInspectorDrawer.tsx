@@ -83,6 +83,7 @@ const RunInspectorDrawer: React.FC<RunInspectorDrawerProps> = ({ open, sessionId
     retry: false,
   });
   const inspection = query.data;
+  const usageAllAttempts = inspection?.usage.scope === 'plan_task_all_attempts';
   const steps = useMemo(() => (inspection ? filterSteps(inspection.steps, filter, tool) : []), [inspection, filter, tool]);
 
   const taskId = inspection?.run.task_id ?? planTask?.taskId ?? null;
@@ -156,6 +157,7 @@ const RunInspectorDrawer: React.FC<RunInspectorDrawerProps> = ({ open, sessionId
                 cached: formatTokens(inspection.usage.cache_read_tokens),
                 calls: inspection.usage.calls,
               })}
+              {usageAllAttempts && <Text type="secondary"> · {t('runInspector.usageAllAttempts')}</Text>}
             </Descriptions.Item>
             <Descriptions.Item label={t('runInspector.artifacts')}>{inspection.summary.artifacts}</Descriptions.Item>
             <Descriptions.Item label={t('runInspector.runId')} span={2}>
@@ -248,6 +250,7 @@ const RunInspectorDrawer: React.FC<RunInspectorDrawerProps> = ({ open, sessionId
           {inspection.usage.by_purpose.length > 0 && (
             <div>
               <Text strong>{t('runInspector.usage')}</Text>
+              {usageAllAttempts && <Text type="secondary"> · {t('runInspector.usageAllAttempts')}</Text>}
               <ul style={{ paddingLeft: 18, marginTop: 8 }}>
                 {inspection.usage.by_purpose.map((group) => (
                   <li key={`${group.phase}:${group.purpose}`}>

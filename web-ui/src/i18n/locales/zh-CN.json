@@ -1825,6 +1825,7 @@
     "toolFailures": "工具失败",
     "tokens": "Token",
     "tokenSummary": "共 {{total}} · 缓存 {{cached}} · {{calls}} 次调用",
+    "usageAllAttempts": "包含该任务的所有执行尝试",
     "artifacts": "产物",
     "runId": "运行 ID",
     "request": "请求",
