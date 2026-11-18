@@ -68,6 +68,7 @@ async def save_memory_endpoint(request: SaveMemoryRequest, raw_request: Request)
 
         # Convert to MCP compatible format
         return {
+            "memory_id": response.memory_id,
             "context_id": (
                 f"{response.task_id}_{response.memory_type.value}" if response.task_id else response.memory_id
             ),
@@ -112,6 +113,7 @@ async def query_memory_endpoint(request: QueryMemoryRequest, raw_request: Reques
         for memory in response.memories:
             memories.append(
                 {
+                    "memory_id": memory.memory_id,
                     "task_id": memory.task_id,
                     "memory_type": memory.memory_type.value,
                     "content": memory.content,

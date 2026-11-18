@@ -13,55 +13,49 @@ import type {
   DeleteMemoryResponse,
 } from '@/types';
 
+interface MemoryWireRecord {
+  memory_id: string;
+  task_id: number | null;
+  memory_type: Memory['memory_type'];
+  content: string;
+  created_at: string;
+  similarity?: number;
+  meta: {
+    importance: Memory['importance'];
+    agentic_keywords: string[];
+    tags: string[];
+    agentic_context: string;
+  };
+}
+
+function fromMemoryResponse(row: MemoryWireRecord): Memory {
+  return {
+    id: row.memory_id,
+    content: row.content,
+    memory_type: row.memory_type,
+    importance: row.meta.importance,
+    keywords: row.meta.agentic_keywords,
+    tags: row.meta.tags,
+    context: row.meta.agentic_context,
+    related_task_id: row.task_id ?? undefined,
+    created_at: row.created_at,
+    retrieval_count: 0,
+    similarity: row.similarity,
+  };
+}
+
 class MemoryApi extends BaseApi {
-  /**
-  * Save one memory entry.
-  */
   async saveMemory(request: SaveMemoryRequest): Promise<Memory> {
-  const response = await this.post<any>('/mcp/save_memory', request);
-
-  return {
-  id: response.context_id || response.memory_id || '',
-  content: response.content,
-  memory_type: response.memory_type,
-  importance: response.meta?.importance || 'medium',
-  keywords: response.meta?.agentic_keywords || [],
-  tags: response.meta?.tags || [],
-  context: response.meta?.agentic_context || 'General',
-  related_task_id: response.task_id,
-  created_at: response.created_at,
-  retrieval_count: 0,
-  similarity: undefined,
-  };
+    const row = await this.post<MemoryWireRecord>('/mcp/save_memory', request);
+    return fromMemoryResponse(row);
   }
 
-  /**
-  * Query memories by filters/search.
-  */
   async queryMemory(request: QueryMemoryRequest): Promise<QueryMemoryResponse> {
-  const response = await this.post<any>('/mcp/query_memory', request);
-
-  const memories: Memory[] = response.memories.map((m: any) => ({
-  id: m.memory_id || m.id || '',
-  content: m.content,
-  memory_type: m.memory_type,
-  importance: m.meta?.importance || 'medium',
-  keywords: m.meta?.agentic_keywords || [],
-  tags: m.meta?.tags || [],
-  context: m.meta?.agentic_context || 'General',
-  related_task_id: m.task_id,
-  created_at: m.created_at,
-  retrieval_count: m.retrieval_count || 0,
-  similarity: m.similarity,
-  }));
-
-  return {
-  memories,
-  total: response.total,
-  search_time_ms: response.search_time_ms,
-  };
+    const response = await this.post<Omit<QueryMemoryResponse, 'memories'> & { memories: MemoryWireRecord[] }>(
+      '/mcp/query_memory', request,
+    );
+    return { ...response, memories: response.memories.map(fromMemoryResponse) };
   }
-
   /**
   * Fetch memory statistics.
   */

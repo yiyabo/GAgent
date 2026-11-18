@@ -266,6 +266,22 @@ async def test_save_endpoint_session_idor_returns_404(env, monkeypatch: pytest.M
     assert env.conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
 
 
+async def test_task_memories_have_stable_ids_across_save_query_edit(env, monkeypatch) -> None:
+    monkeypatch.setattr(memory_api, "get_request_owner_id", lambda _request: "alice")
+    request = cast(Any, SimpleNamespace())
+    first, second = [
+        await memory_api.save_memory_endpoint(_req(None, content, related_task_id=12), request)
+        for content in ("meeting agenda for Tuesday", "meeting venue is upstairs")
+    ]
+    assert first["context_id"] == second["context_id"] == "12_knowledge"
+    assert first["memory_id"] != second["memory_id"]
+    result = await memory_api.query_memory_endpoint(QueryMemoryRequest(search_text="meeting", min_similarity=0), request)
+    assert {item["memory_id"] for item in result["memories"]} == {first["memory_id"], second["memory_id"]}
+    await memory_api.update_memory_entry(first["memory_id"], request, {"content": "meeting agenda for Wednesday"})
+    assert _row(env.conn, first["memory_id"])["content"] == "meeting agenda for Wednesday"
+    assert _row(env.conn, second["memory_id"])["content"] == "meeting venue is upstairs"
+
+
 class _FakeLLM:
     def __init__(self, response: str) -> None:
         self.response = response
