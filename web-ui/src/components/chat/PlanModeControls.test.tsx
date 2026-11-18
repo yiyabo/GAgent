@@ -1,4 +1,3 @@
-import React from 'react';
 import { App as AntdApp } from 'antd';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -44,7 +43,6 @@ describe('PlanModeControls', () => {
   it('leaves Plan mode and submits the approved Plan through the existing background API', async () => {
     renderControls();
     fireEvent.click(screen.getByRole('button', { name: '批准并执行' }));
-    fireEvent.click(await screen.findByRole('button', { name: '确认执行' }));
 
     await waitFor(() => expect(mocked.executeFullPlan).toHaveBeenCalledWith(34, {
       async_mode: true,
@@ -60,7 +58,6 @@ describe('PlanModeControls', () => {
     mocked.executeFullPlan.mockRejectedValueOnce(new Error('offline'));
     renderControls();
     fireEvent.click(screen.getByRole('button', { name: '批准并执行' }));
-    fireEvent.click(await screen.findByRole('button', { name: '确认执行' }));
 
     await waitFor(() => expect(mocked.setPlanMode).toHaveBeenCalledWith(true));
     expect(mocked.setPlanMode.mock.calls.map(([value]) => value)).toEqual([false, true]);

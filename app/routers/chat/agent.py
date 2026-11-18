@@ -2130,8 +2130,18 @@ class StructuredChatAgent:
                     if name == "plan_operation" and requested_operation in PLAN_EDITS:
                         denied = blocked_plan_edit(requested_operation, agent_plan_edit_allowed(self))
                         if denied:
-                            return denied
+                            from app.services.plan_autonomy import revision_denial
+                            return revision_denial(
+                                agent=self, operation=requested_operation, denied=denied, params=safe_params
+                            )
 
+                        if requested_operation == "optimize":
+                            from app.services.plan_autonomy import revision_scope_denial
+                            scope_denied = revision_scope_denial(
+                                agent=self, operation=requested_operation, params=safe_params
+                            )
+                            if scope_denied:
+                                return scope_denied
                     if name not in ("plan_operation", "verify_task"):
                         if name == "code_executor":
                             sequence_block_context = self.extra_context.get(sequence_input_block_key)
@@ -2519,6 +2529,10 @@ class StructuredChatAgent:
                     else:
                         result = await execute_tool(name, **safe_params)
 
+
+                    if name == "plan_operation" and isinstance(result, dict):
+                        from app.services.plan_autonomy import consume_agent_revision
+                        consume_agent_revision(self, result, safe_params)
                     if (name == "plan_operation" and isinstance(result, dict)
                             and result.get("success") and result.get("operation") == "offer"
                             and isinstance(result.get("offer"), dict)):
@@ -3488,11 +3502,10 @@ class StructuredChatAgent:
         if MODEL_SELECTION in routing_decision.route_reason_codes:
             update_model_context(self, routing_decision)
             return
-        from app.services.plans.edit_policy import user_requested_plan_edit
+        from app.services.plan_autonomy import configure_revision_context
+        self._plan_tree_edit_allowed = configure_revision_context(self, routing_decision)
         self.extra_context.pop("action_selection", None)
         self.extra_context.pop("model_plan_index", None)
-        self._plan_tree_edit_allowed = bool(routing_decision.plan_create_required or
-            user_requested_plan_edit(routing_decision.effective_user_message))
         self.extra_context.update(
             {
                 "request_tier": routing_decision.request_tier,

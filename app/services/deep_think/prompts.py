@@ -110,6 +110,13 @@ def _build_structured_plan_requirement_block(agent: DeepThinkAgent) -> str:
         )
 
     requirement_lines: list[str] = []
+    approved = (getattr(agent, "extra_context", None) or {}).get("approved_plan_revision_proposal")
+    if isinstance(approved, dict):
+        requirement_lines.append(
+            f"The user approved revision proposal {approved.get('proposal_id')} for Plan {approved.get('plan_id')}. "
+            "You MUST call plan_operation optimize once using the stored proposal changes. Do not ask again, "
+            "create another Plan, or expand the approved scope."
+        )
     if flags["contract_enforced"]:
         requirement_lines.append(
             "Explicit Plan mode is active. Research with read-only tools and create, review, or update "
