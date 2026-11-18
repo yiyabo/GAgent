@@ -641,6 +641,13 @@ def _build_chat_tool_context(agent: Any, tool_name: str) -> Optional[Any]:
         work_dir = session_dir / "raw_files" / "chat_tools" / tool_name
     agent_context = getattr(agent, "extra_context", {}) or {}
     owner_id = agent_context.get("owner_id")
+    qa_checked_figures = getattr(agent, "_qa_checked_figures", None)
+    if not isinstance(qa_checked_figures, list):
+        qa_checked_figures = []
+        try:
+            agent._qa_checked_figures = qa_checked_figures
+        except Exception:
+            qa_checked_figures = []
     on_progress, on_progress_loop = _chat_tool_progress_channel(agent)
     return ToolContext(
         session_id=session_id.strip(),
@@ -653,7 +660,10 @@ def _build_chat_tool_context(agent: Any, tool_name: str) -> Optional[Any]:
         work_dir=str(work_dir),
         on_progress=_bind_chat_tool_progress(on_progress, tool_name),
         on_progress_loop=on_progress_loop,
-        extra={"plan_tree_edit_allowed": agent_plan_edit_allowed(agent)},
+        extra={
+            "plan_tree_edit_allowed": agent_plan_edit_allowed(agent),
+            "qa_checked_figures": qa_checked_figures,
+        },
     )
 
 
@@ -948,6 +958,11 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
             message=f"Tool {tool_name} is not supported yet.",
             details={"error": "unsupported_tool", "tool": tool_name},
         )
+
+    if tool_name in {"vision_reader", "deliverable_submit"} and "tool_context" not in params:
+        tool_context = _build_chat_tool_context(agent, tool_name)
+        if tool_context is not None:
+            params["tool_context"] = tool_context
 
     pre_terminal_mutation_snapshot: Optional[Dict[str, Any]] = None
     mutation_marker_id: Optional[int] = None

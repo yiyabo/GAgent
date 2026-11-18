@@ -4,7 +4,10 @@ File Operations Tool Implementation
 This module provides file system operations for AI agents.
 """
 
+from __future__ import annotations
+
 import asyncio
+import difflib
 import logging
 import os
 import re
@@ -12,6 +15,11 @@ import shutil
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+try:  # POSIX advisory locking; absent on Windows.
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore[assignment]
 
 from tool_box.context import ToolContext
 from tool_box.path_resolution import resolve_tool_path_str
@@ -625,12 +633,15 @@ async def file_operations_handler(
     pattern: Optional[str] = None,
     session_id: Optional[str] = None,
     tool_context: Optional[ToolContext] = None,
+    old_text: Optional[str] = None,
+    new_text: Optional[str] = None,
+    replace_all: bool = False,
 ) -> Dict[str, Any]:
     """
     File operations tool handler
 
     Args:
-        operation: Operation type ("read", "write", "list", "profile", "census", "delete", "copy", "move")
+        operation: Operation type ("read", "write", "edit", "list", "profile", "census", "delete", "copy", "move")
         path: Target file/directory path
         content: Content for write operations
         destination: Destination path for copy/move operations
@@ -639,11 +650,23 @@ async def file_operations_handler(
             executor compatibility and intentionally ignored by this tool.
         tool_context: Optional structured execution context. Used for
             work_dir-aware relative path resolution.
+        old_text: Exact text to find for ``edit`` (must be non-empty).
+        new_text: Replacement text for ``edit`` ("" deletes ``old_text``).
+        replace_all: For ``edit``, replace every occurrence instead of
+            requiring ``old_text`` to match exactly once.
 
     Returns:
         Dict containing operation results
     """
     try:
+        if operation == "edit":
+            return await _edit_file(
+                _resolve_edit_target(path, tool_context=tool_context),
+                old_text,
+                new_text,
+                replace_all=_coerce_flag(replace_all),
+                tool_context=tool_context,
+            )
         rewritten_path = path
         rewritten_destination = destination
         if operation == "write":
@@ -836,6 +859,242 @@ async def _write_file(file_path: str, content: str, tool_context: Optional[ToolC
     except Exception as e:
         return {"operation": "write", "path": file_path, "success": False, "error": str(e)}
 
+
+# Edit diffs are shown to the model as a receipt; a whole-file rewrite through
+# replace_all must not echo the file back into the context.
+MAX_EDIT_DIFF_CHARS = 4_000
+MAX_EDIT_MATCH_LINES = 10
+
+
+def _coerce_flag(value: Any) -> bool:
+    """Boolean tool argument that some lanes deliver as a string."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes"}
+    return False
+
+
+def _resolve_edit_target(path: str, *, tool_context: Optional[ToolContext]) -> str:
+    """Resolve the existing file an in-place ``edit`` should change.
+
+    An edit mutates a file that already exists. It follows the write pipeline
+    (session workspace + session output redirects) when that redirected file
+    exists, then the session copy of the read target, then the read target
+    itself, so it lands on the same file the agent wrote or read earlier.
+    ``_edit_file`` still applies the mutation security check, which refuses
+    project-source files.
+    """
+    rewritten = _redirect_session_workspace_path(
+        path,
+        tool_context=tool_context,
+        require_existing=True,
+    )
+    write_like = resolve_tool_path_str(
+        _redirect_mutation_path_to_session(rewritten, tool_context=tool_context) or "",
+        tool_context=tool_context,
+        treat_bare_as_results_output=True,
+    )
+    write_like = _redirect_mutation_path_to_session(
+        write_like,
+        tool_context=tool_context,
+    ) or write_like
+    read_like = resolve_tool_path_str(rewritten or "", tool_context=tool_context)
+    redirected_read = _redirect_mutation_path_to_session(
+        read_like,
+        tool_context=tool_context,
+    ) or read_like
+    for candidate in (write_like, redirected_read, read_like):
+        if candidate and Path(candidate).is_file():
+            return candidate
+    return read_like
+
+
+def _edit_match_lines(text: str, needle: str, *, limit: int = MAX_EDIT_MATCH_LINES) -> List[int]:
+    """1-based start lines of the first non-overlapping matches of ``needle``."""
+    lines: List[int] = []
+    start = 0
+    while len(lines) < limit:
+        index = text.find(needle, start)
+        if index < 0:
+            break
+        lines.append(text.count("\n", 0, index) + 1)
+        start = index + len(needle)
+    return lines
+
+
+def _edit_diff_snippet(original: str, updated: str, name: str) -> str:
+    """Bounded unified diff of an edit (context of 2 lines)."""
+    diff = "\n".join(
+        difflib.unified_diff(
+            original.splitlines(),
+            updated.splitlines(),
+            fromfile=f"a/{name}",
+            tofile=f"b/{name}",
+            lineterm="",
+            n=2,
+        )
+    )
+    if len(diff) > MAX_EDIT_DIFF_CHARS:
+        omitted = len(diff) - MAX_EDIT_DIFF_CHARS
+        diff = diff[:MAX_EDIT_DIFF_CHARS] + f"\n…[diff truncated: {omitted} chars omitted]"
+    return diff
+
+
+async def _edit_file(
+    file_path: str,
+    old_text: Any,
+    new_text: Any,
+    *,
+    replace_all: bool = False,
+    tool_context: Optional[ToolContext] = None,
+) -> Dict[str, Any]:
+    """Replace an exact text span in an existing UTF-8 file.
+
+    ``old_text`` must match exactly once unless ``replace_all`` is set; an
+    ambiguous match is refused with the matching line numbers so the caller can
+    add context instead of rewriting the whole file.
+    """
+    receipt: Dict[str, Any] = {"operation": "edit", "path": file_path}
+    if not isinstance(old_text, str) or old_text == "":
+        return {**receipt, "success": False, "error": "old_text must be a non-empty string"}
+    if new_text is None:
+        return {
+            **receipt,
+            "success": False,
+            "error": "new_text is required (use an empty string to delete old_text)",
+        }
+    if not isinstance(new_text, str):
+        return {**receipt, "success": False, "error": "new_text must be a string"}
+    try:
+        is_safe, error_msg = _validate_path_security(
+            file_path,
+            tool_context=tool_context,
+            for_mutation=True,
+        )
+        if not is_safe:
+            return {**receipt, "success": False, "error": f"Security violation: {error_msg}"}
+
+        path = Path(file_path)
+        if not path.exists():
+            return {**receipt, "success": False, "error": "File not found"}
+        if not path.is_file():
+            return {**receipt, "success": False, "error": "Path is not a regular file"}
+        file_size = path.stat().st_size
+        if file_size > MAX_READ_FILE_BYTES:
+            return {
+                **receipt,
+                "success": False,
+                "error": (
+                    f"File too large to edit: {file_size} bytes "
+                    f"(limit {MAX_READ_FILE_BYTES} bytes)"
+                ),
+            }
+        # Read-modify-write runs under an exclusive advisory lock on the file
+        # itself and rewrites it in place, so two concurrent edits (other
+        # tasks, jobs, or processes) serialize instead of losing an update,
+        # and the inode, permissions and ownership are preserved.
+        return await asyncio.to_thread(
+            _edit_file_locked, path, old_text, new_text, replace_all, receipt
+        )
+    except Exception as e:
+        return {**receipt, "success": False, "error": str(e)}
+
+
+def _acquire_exclusive_lock(fd: int, timeout_sec: float = 15.0) -> None:
+    if fcntl is None:
+        return
+    import errno
+    import time
+
+    deadline = time.monotonic() + timeout_sec
+    delay = 0.005
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except OSError as exc:
+            if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                raise
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"Timed out waiting {timeout_sec:.1f}s for exclusive file lock") from exc
+            time.sleep(delay)
+            delay = min(0.05, delay * 1.5)
+
+
+def _edit_file_locked(
+    path: Path,
+    old_text: str,
+    new_text: str,
+    replace_all: bool,
+    receipt: Dict[str, Any],
+) -> Dict[str, Any]:
+    import stat
+
+    open_flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    raw_fd = os.open(path, open_flags)
+    with os.fdopen(raw_fd, "r+b") as handle:
+        _acquire_exclusive_lock(handle.fileno())
+        try:
+            st = os.fstat(handle.fileno())
+            if not stat.S_ISREG(st.st_mode):
+                return {**receipt, "success": False, "error": "Path is not a regular file"}
+            if st.st_size > MAX_READ_FILE_BYTES:
+                return {
+                    **receipt,
+                    "success": False,
+                    "error": (
+                        f"File too large to edit: {st.st_size} bytes "
+                        f"(limit {MAX_READ_FILE_BYTES} bytes)"
+                    ),
+                }
+            try:
+                original = handle.read().decode("utf-8")
+            except UnicodeDecodeError:
+                return {
+                    **receipt,
+                    "success": False,
+                    "error": "File is not valid UTF-8 text; edit supports UTF-8 text files only",
+                }
+
+            occurrences = original.count(old_text)
+            if occurrences == 0:
+                return {
+                    **receipt,
+                    "success": False,
+                    "error": "old_text not found in file",
+                    "occurrences": 0,
+                }
+            if occurrences > 1 and not replace_all:
+                return {
+                    **receipt,
+                    "success": False,
+                    "error": (
+                        f"old_text matches {occurrences} locations; include more surrounding "
+                        "context so it matches exactly once, or set replace_all=true"
+                    ),
+                    "occurrences": occurrences,
+                    "match_lines": _edit_match_lines(original, old_text),
+                }
+
+            replacements = occurrences if replace_all else 1
+            updated = original.replace(old_text, new_text, replacements)
+            # Bytes in, bytes out: line endings and a missing final newline survive.
+            handle.seek(0)
+            handle.write(updated.encode("utf-8"))
+            handle.truncate()
+            handle.flush()
+            os.fsync(handle.fileno())
+        finally:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    return {
+        **receipt,
+        "success": True,
+        "replacements": replacements,
+        "size": len(updated),
+        "diff": _edit_diff_snippet(original, updated, path.name),
+    }
 
 def _tokenize_status_name(name: str) -> Set[str]:
     return {token for token in re.split(r"[^a-z0-9]+", name.lower()) if token}
@@ -1814,24 +2073,27 @@ async def _get_file_info(target_path: str, tool_context: Optional[ToolContext] =
 # Tool definition for file operations
 file_operations_tool = {
     "name": "file_operations",
-    "description": "Perform file system operations (read, write, list, profile/census, delete, copy, move, etc.). Use profile/census for compact directory-wide evidence before making all/every/completed claims. In task execution, prefer relative output paths so writes land in the current task output directory.",
+    "description": "Perform file system operations (read, write, edit, list, profile/census, delete, copy, move, etc.). Use edit to change part of an existing text file (exact old_text -> new_text) instead of rewriting it with write. Use profile/census for compact directory-wide evidence before making all/every/completed claims. In task execution, prefer relative output paths so writes land in the current task output directory.",
     "category": "file_management",
     "parameters_schema": {
         "type": "object",
         "properties": {
             "operation": {
                 "type": "string",
-                "description": "Operation type; profile/census accept directories and return metadata for single files.",
-                "enum": ["read", "write", "list", "profile", "census", "delete", "copy", "move", "exists", "info"],
+                "description": "Operation type; profile/census accept directories and return metadata for single files. edit replaces an exact text span in an existing UTF-8 file.",
+                "enum": ["read", "write", "edit", "list", "profile", "census", "delete", "copy", "move", "exists", "info"],
             },
             "path": {"type": "string", "description": "Target file or directory path. Prefer relative paths or bare filenames for task outputs; avoid absolute session workspace paths for final deliverables."},
             "content": {"type": "string", "description": "Content to write (required for write operation)"},
             "destination": {"type": "string", "description": "Destination path (required for copy/move operations). Prefer task-relative destinations for final outputs."},
             "pattern": {"type": "string", "description": "File matching pattern (optional for list/profile/census operation)"},
+            "old_text": {"type": "string", "description": "Exact text to replace (required for edit). Must match exactly once unless replace_all is true; include surrounding lines to make it unique."},
+            "new_text": {"type": "string", "description": "Replacement text (required for edit; an empty string deletes old_text)."},
+            "replace_all": {"type": "boolean", "description": "For edit: replace every occurrence of old_text instead of requiring a unique match.", "default": False},
         },
         "required": ["operation", "path"],
     },
     "handler": file_operations_handler,
-    "tags": ["file", "filesystem", "read", "write", "management"],
-    "examples": ["Read configuration file", "Create new document", "List directory contents", "Profile a directory before global completion claims", "Copy file to backup directory"],
+    "tags": ["file", "filesystem", "read", "write", "edit", "management"],
+    "examples": ["Read configuration file", "Create new document", "Edit one function in an existing script with old_text/new_text", "List directory contents", "Profile a directory before global completion claims", "Copy file to backup directory"],
 }

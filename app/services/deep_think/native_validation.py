@@ -127,6 +127,77 @@ def invalid_call(agent,call):
     return policy_for(agent, get_settings())['arguments'] and validate(call.arguments,schema_for(agent,call.name)) is not None
 
 
+def _anchor_produced_paths(agent, context):
+    """Deliverables written this run (newest kept when capped) plus carried ones."""
+    from app.services.context.request_budget import MAX_ANCHOR_PRODUCED_PATHS
+
+    continuation = (context or {}).get("execution_continuation") if isinstance(context, dict) else None
+    carried = continuation.get("produced_paths") if isinstance(continuation, dict) else None
+    raw_current = getattr(agent, "_produced_deliverable_paths", None)
+    current = [
+        str(item or "").strip()
+        for item in (raw_current if isinstance(raw_current, (list, tuple)) else [])
+        if str(item or "").strip()
+    ]
+    dedup_current: list[str] = []
+    for text in reversed(current):
+        if text not in dedup_current:
+            dedup_current.append(text)
+    out = list(reversed(dedup_current[:MAX_ANCHOR_PRODUCED_PATHS]))
+    for item in carried if isinstance(carried, (list, tuple)) else []:
+        if len(out) >= MAX_ANCHOR_PRODUCED_PATHS:
+            break
+        text = str(item or "").strip()
+        if text and text not in out:
+            out.append(text)
+    return out[:MAX_ANCHOR_PRODUCED_PATHS]
+
+
+def _anchor_assumptions(agent, context):
+    """Unconfirmed defaults of the bound plan, from profile, context, or plan repo."""
+    from app.services.plan_clarifications import normalize_assumptions
+
+    profile = getattr(agent, "request_profile", None) or {}
+    candidates = [profile.get("plan_assumptions"), profile.get("assumptions")]
+    if isinstance(context, dict):
+        candidates.append(context.get("plan_assumptions"))
+        for key in ("plan_metadata", "current_plan_metadata"):
+            meta = context.get(key)
+            if isinstance(meta, dict):
+                candidates.append(meta.get("assumptions"))
+    plan_tree = getattr(agent, "plan_tree", None)
+    plan_meta = getattr(plan_tree, "metadata", None)
+    if isinstance(plan_meta, dict):
+        candidates.append(plan_meta.get("assumptions"))
+    for raw in candidates:
+        values = normalize_assumptions(raw)
+        if values:
+            return values
+    raw_plan_id = profile.get("current_plan_id")
+    if raw_plan_id is None and isinstance(context, dict):
+        raw_plan_id = context.get("plan_id") or context.get("current_plan_id")
+    if raw_plan_id is not None:
+        try:
+            from app.repository.plan_repository import PlanRepository
+
+            tree = PlanRepository().get_plan_tree(int(raw_plan_id))
+            tree_meta = getattr(tree, "metadata", None)
+            if isinstance(tree_meta, dict):
+                return normalize_assumptions(tree_meta.get("assumptions"))
+        except Exception:
+            return []
+    return []
+
+def compaction_anchors(agent,user_query,context,messages,*,output_spec=False):
+    anchors={'request':user_query,'profile':agent.request_profile,'latest_user_turns':[m.get('content') for m in messages if m.get('role')=='user'][-2:]}
+    if output_spec:anchors['output_spec']=str(getattr(agent,'_output_spec',None))
+    produced=_anchor_produced_paths(agent,context)
+    if produced:anchors['produced_paths']=produced
+    assumptions=_anchor_assumptions(agent,context)
+    if assumptions:anchors['assumptions']=assumptions
+    return anchors
+
+
 def request_kwargs(agent,user_query,context,messages,iteration,tools_used):
     if not enabled():
         cap=getattr(agent,'_native_repair_cap',None)
@@ -136,10 +207,10 @@ def request_kwargs(agent,user_query,context,messages,iteration,tools_used):
     schemas=agent._schema_disclosure.effective(iteration=iteration+1,tools_used=tools_used,plan_bound=agent._current_plan_id() is not None)
     from app.services.memory.context_recall import format_recall_context
     return {'component_texts':{'skills':format_skill_context(context),'recall':format_recall_context(context)},'tool_schemas':schemas,'output_reserve_tokens':getattr(agent,'_native_repair_cap',None) or _default_max_tokens(),
-        'anchors':{'request':user_query,'output_spec':str(getattr(agent,'_output_spec',None)),'profile':agent.request_profile,'latest_user_turns':[m.get('content') for m in messages if m.get('role')=='user'][-2:]}}
+        'anchors':compaction_anchors(agent,user_query,context,messages,output_spec=True)}
 
 
-async def compact_strict(agent,messages,user_query):
+async def compact_strict(agent,messages,user_query,context=None):
     if not enabled():return messages
     from app.services.context.context_manager import ContextWindowManager
     from app.services.run_budget import run_work_stage
@@ -150,4 +221,4 @@ async def compact_strict(agent,messages,user_query):
         agent._strict_context_manager=manager
     async def summarize(text):
         return await run_work_stage(agent.llm_client.chat_async(prompt='Summarize execution facts and preserve source references:\n'+text,max_tokens=1200),stage='strict-compaction')
-    return await manager.compact_if_needed(messages,summarizer=summarize,output_reserve_tokens=_default_max_tokens(),anchors={'request':user_query,'profile':agent.request_profile,'latest_user_turns':[m.get('content') for m in messages if m.get('role')=='user'][-2:]})
+    return await manager.compact_if_needed(messages,summarizer=summarize,output_reserve_tokens=_default_max_tokens(),anchors=compaction_anchors(agent,user_query,context,messages))

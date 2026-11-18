@@ -70,6 +70,35 @@ def _is_image_part(part: Any) -> bool:
 _IMAGE_ESTIMATE_SAMPLE_CHARS = 40_000
 
 
+def _refresh_summary_anchors(messages: List[Dict[str, Any]], anchors_block: str) -> List[Dict[str, Any]]:
+    """Keep an earlier summary's anchor block current across a reclaim commit.
+
+    Deterministic reclaim only touches tool bodies and images, so a prior
+    compaction summary survives verbatim — including an anchor block that may
+    predate newer deliverables. The reclaim already breaks the prompt-cache
+    prefix, so the anchor block is rewritten to the current anchors (same
+    message count and roles; nothing else changes).
+    """
+    from .request_budget import ANCHOR_HEADER
+
+    if not anchors_block:
+        return messages
+    out = messages
+    for index, message in enumerate(messages):
+        content = message.get("content")
+        if not isinstance(content, str) or not content.startswith(SUMMARY_PREFIX):
+            continue
+        position = content.rfind(ANCHOR_HEADER)
+        if position < 0:
+            continue
+        refreshed = content[:position] + anchors_block
+        if refreshed != content:
+            if out is messages:
+                out = list(messages)
+            out[index] = {**message, "content": refreshed}
+    return out
+
+
 def _estimate_retired_image_tokens(text: str) -> int:
     if not text:
         return 0
@@ -513,7 +542,7 @@ class ContextWindowManager:
                     usage.used_tokens,
                     reclaimed_usage.used_tokens,
                 )
-                return reclaimed_messages
+                return _refresh_summary_anchors(reclaimed_messages, anchor_text(anchors))
 
         # Build text block for summarization
         text_block = self._messages_to_text(compactable)
@@ -587,7 +616,8 @@ class ContextWindowManager:
             for call in message.get("tool_calls") or []:
                 if not isinstance(call, dict) or not call.get("id"):
                     continue
-                function = call.get("function") if isinstance(call.get("function"), dict) else {}
+                raw_fn = call.get("function")
+                function = raw_fn if isinstance(raw_fn, dict) else {}
                 names[str(call["id"])] = str(
                     function.get("name") or call.get("name") or "tool"
                 )
@@ -655,7 +685,7 @@ class ContextWindowManager:
             content = message.get("content")
             if not isinstance(content, str) or len(content) < _DEDUPE_MIN_CHARS:
                 continue
-            digest = hashlib.md5(content.encode("utf-8", "replace")).hexdigest()
+            digest = hashlib.sha256(content.encode("utf-8", "replace")).hexdigest()
             if digest in seen:
                 tool_name = names.get(str(message.get("tool_call_id") or ""), "tool")
                 result[index] = {

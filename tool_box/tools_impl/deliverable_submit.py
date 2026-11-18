@@ -32,6 +32,20 @@ def _absolute_if_found(path_text: str, tool_context: Any) -> str:
     return str(resolved) if resolved.is_file() else path_text
 
 
+def _qa_checked_figures(tool_context: Any) -> Optional[List[str]]:
+    """Figures this run already QA'd with vision_reader ``qa_figure``.
+
+    ``None`` means the lane does not track figure QA, so no warning is due.
+    """
+    extra = getattr(tool_context, "extra", None)
+    if not isinstance(extra, dict):
+        return None
+    checked = extra.get("qa_checked_figures")
+    if not isinstance(checked, list):
+        return None
+    return sorted({str(item) for item in checked if isinstance(item, str) and item.strip()})
+
+
 async def deliverable_submit_handler(
     *,
     publish: bool = True,
@@ -60,13 +74,19 @@ async def deliverable_submit_handler(
                 entry["reason"] = reason.strip()
             normalized.append(entry)
 
+    submit_payload: Dict[str, Any] = {
+        "publish": bool(publish),
+        "artifacts": normalized,
+    }
+    qa_checked = _qa_checked_figures(tool_context)
+    if qa_checked is not None:
+        # The publisher has no tool context; this lets it soft-warn on raster
+        # figures that never went through vision_reader qa_figure.
+        submit_payload["qa_checked_figures"] = qa_checked
     return {
         "success": True,
         "tool": "deliverable_submit",
-        "deliverable_submit": {
-            "publish": bool(publish),
-            "artifacts": normalized,
-        },
+        "deliverable_submit": submit_payload,
     }
 
 
