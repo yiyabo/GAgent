@@ -311,6 +311,7 @@ async def chat_message(
         )
     try:
         context = dict(request.context or {})
+        context["owner_id"] = owner_id
         incoming_plan_id = context.get("plan_id")
         if incoming_plan_id is not None and not isinstance(incoming_plan_id, int):
             try:
@@ -537,6 +538,7 @@ async def chat_message(
                 request.message,
                 user_message_metadata or None,
                 owner_id=owner_id,
+                memory_enabled=context.get("memory_enabled") is not False,
             )
             session_settings = _get_session_settings(
                 request.session_id,
@@ -590,7 +592,6 @@ async def chat_message(
             session_llm_provider = session_settings.get("default_llm_provider")
             if session_llm_provider:
                 context["default_llm_provider"] = session_llm_provider
-        context.setdefault("owner_id", owner_id)
 
         from app.services.response_style import snapshot_response_preferences
         snapshot = snapshot_response_preferences(request, session_settings)
@@ -697,6 +698,7 @@ async def chat_message(
                 request.session_id,
                 chat_response,
                 owner_id=owner_id,
+                memory_enabled=(request.context or {}).get("memory_enabled") is not False,
             )
 
         tracking_id = f"act_{uuid4().hex}"
@@ -830,6 +832,7 @@ async def chat_message(
             request.session_id,
             chat_response,
             owner_id=owner_id,
+            memory_enabled=(request.context or {}).get("memory_enabled") is not False,
         )
 
     except PermissionError as exc:
@@ -849,6 +852,7 @@ async def chat_message(
             request.session_id,
             fallback,
             owner_id=owner_id,
+            memory_enabled=(request.context or {}).get("memory_enabled") is not False,
         )
 
 
@@ -1338,7 +1342,7 @@ async def delete_chat_session(
                 try:
                     from ...services.memory.memory_service import get_memory_service
 
-                    get_memory_service().delete_memories_for_session(session_id)
+                    get_memory_service().delete_memories_for_session(session_id, owner_id)
                 except Exception as mem_exc:
                     logger.warning(
                         "Failed to delete memories for %s: %s",

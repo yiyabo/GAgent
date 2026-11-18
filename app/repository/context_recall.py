@@ -54,7 +54,6 @@ def memory_candidates(scope: dict, terms: list[str], *, limit: int = 60) -> list
     relevance, term_params = _matches(terms, ("m.content", "m.keywords"))
     # Malformed old tags behave as empty tags, but don't become user facts.
     tags = "CASE WHEN json_valid(m.tags) THEN m.tags ELSE '[]' END"
-    source = f"EXISTS(SELECT 1 FROM json_each({tags}) t JOIN chat_sessions s ON t.value='session:'||s.id WHERE {scoped})"
     user_fact = f"(m.related_task_id IS NULL AND (m.tags IS NULL OR json_valid(m.tags)) AND NOT EXISTS(SELECT 1 FROM json_each({tags}) t WHERE t.value LIKE 'session:%'))"
     with get_db() as conn:
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memories'").fetchone():
@@ -62,22 +61,32 @@ def memory_candidates(scope: dict, terms: list[str], *, limit: int = 60) -> list
         else:
             rows = [dict(row) for row in conn.execute(f"""WITH eligible AS (SELECT m.*,
                 CASE WHEN {user_fact} AND m.importance IN ('critical','high') THEN 1 ELSE 0 END AS user_preference,
+                CASE WHEN {user_fact} THEN 1 ELSE 0 END AS is_user_fact,
                 (SELECT s.id FROM json_each({tags}) t JOIN chat_sessions s ON t.value='session:'||s.id
                  WHERE {scoped} ORDER BY (s.id=?) DESC,s.id LIMIT 1) AS recalled_session
                 FROM memories m
-                WHERE m.owner_id=? AND ({source} OR {user_fact})
+                WHERE m.owner_id=?
                 AND (({relevance}) OR ({user_fact} AND m.importance IN ('critical','high')))
                 ), ranked AS (
                     SELECT *, ROW_NUMBER() OVER(PARTITION BY user_preference
-                        ORDER BY (importance='critical') DESC,created_at DESC,id) AS recall_rank
+                        ORDER BY (recalled_session=?) DESC,(recalled_session IS NOT NULL) DESC,
+                        (importance='critical') DESC,created_at DESC,id) AS recall_rank
                     FROM eligible
                 ) SELECT * FROM ranked
                 WHERE (user_preference=1 AND recall_rank<=2) OR (user_preference=0 AND recall_rank<=?)""",
-                [*scope_params, scope["id"], scope["owner_id"], *scope_params, *term_params, limit]).fetchall()]
+                [*scope_params, scope["id"], scope["owner_id"], *term_params, scope["id"], limit]).fetchall()]
     for row in rows:
         row["source_store"] = "main"
         row["source_session_id"] = row.pop("recalled_session", None)
-        row["scope"] = "session" if row["source_session_id"] == scope["id"] else "project" if row["source_session_id"] else "user"
+        if row["source_session_id"] == scope["id"]:
+            row["scope"] = "session"
+        elif row["source_session_id"]:
+            row["scope"] = "project"
+        else:
+            # Owner-wide: untagged durable facts, or notes from the owner's other
+            # sessions/projects (still owner-isolated, ranked below scoped notes).
+            row["scope"] = "user" if row.pop("is_user_fact", 0) else "owner"
+        row.pop("is_user_fact", None)
 
     # Do not create empty SQLite files during recall. Legacy stores are read-only.
     path = get_database_config().get_session_db_path(scope["id"])
@@ -154,3 +163,38 @@ def terminal_turns_without_answer(session_id: str, owner_id: str, message_ids: l
                 AND newer.user_message_id=chat_runs.user_message_id AND newer.rowid>chat_runs.rowid)
             ORDER BY rowid ASC""",
             [session_id,owner_id,*message_ids]).fetchall()]
+
+
+def owner_embeddings(owner_id: str, memory_ids: list[str]) -> dict[str, str]:
+    """Raw stored vectors (JSON text) for the owner's candidate memories."""
+    ids = [str(i) for i in memory_ids if i]
+    if not owner_id or not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    with get_db() as conn:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_embeddings'").fetchone():
+            return {}
+        rows = conn.execute(
+            f"SELECT me.memory_id, me.embedding_vector FROM memory_embeddings me "
+            f"JOIN memories m ON m.id = me.memory_id WHERE m.owner_id=? AND me.memory_id IN ({placeholders})",
+            [owner_id, *ids],
+        ).fetchall()
+    return {str(r[0]): r[1] for r in rows}
+
+
+def mark_recalled(owner_id: str, memory_ids: list[str]) -> None:
+    """Atomically bump retrieval_count/last_accessed for recalled main-store rows."""
+    ids = [str(i) for i in memory_ids if i]
+    if not owner_id or not ids:
+        return
+    with get_db() as conn:
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(memories)")}
+        if not {"retrieval_count", "last_accessed"} <= columns:
+            return
+        placeholders = ",".join("?" for _ in ids)
+        conn.execute(
+            "UPDATE memories SET retrieval_count = COALESCE(retrieval_count, 0) + 1, "
+            f"last_accessed = CURRENT_TIMESTAMP WHERE owner_id=? AND id IN ({placeholders})",
+            [owner_id, *ids],
+        )
+        conn.commit()

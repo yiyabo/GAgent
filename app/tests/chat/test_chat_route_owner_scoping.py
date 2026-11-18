@@ -88,8 +88,9 @@ def test_chat_message_propagates_request_owner_to_session_helpers(
         seen["binding"] = (session_id, requested_plan_id, owner_id)
         return requested_plan_id
 
-    def _save_chat_message(session_id, role, content, metadata=None, *, owner_id=None):
+    def _save_chat_message(session_id, role, content, metadata=None, *, owner_id=None, memory_enabled=True):
         seen.setdefault("saved_messages", []).append((session_id, role, content, owner_id))
+        seen["user_memory_enabled"] = memory_enabled
         _ = metadata
 
     def _get_session_settings(session_id, *, owner_id=None):
@@ -104,8 +105,9 @@ def test_chat_message_propagates_request_owner_to_session_helpers(
         seen["runtime_context"] = (session_id, owner_id)
         return {}
 
-    def _save_assistant_response(session_id, response, *, owner_id=None):
+    def _save_assistant_response(session_id, response, *, owner_id=None, memory_enabled=True):
         seen["assistant"] = (session_id, owner_id, response.response)
+        seen["assistant_memory_enabled"] = memory_enabled
         return response
 
     def _set_session_plan_id(session_id, plan_id, *, owner_id=None):
@@ -119,7 +121,7 @@ def test_chat_message_propagates_request_owner_to_session_helpers(
     monkeypatch.setattr(chat_routes, "_save_assistant_response", _save_assistant_response)
     monkeypatch.setattr(chat_routes, "_set_session_plan_id", _set_session_plan_id)
 
-    payload = ChatRequest(message="hello", session_id="sess-owner-1")
+    payload = ChatRequest(message="hello", session_id="sess-owner-1", context={"memory_enabled": False})
     raw_request = _build_raw_request("alice")
 
     response = asyncio.run(
@@ -134,3 +136,5 @@ def test_chat_message_propagates_request_owner_to_session_helpers(
     assert seen["set_plan"] == ("sess-owner-1", None, "alice")
     assert seen["saved_messages"] == [("sess-owner-1", "user", "hello", "alice")]
     assert seen["assistant"] == ("sess-owner-1", "alice", "assistant response")
+    assert seen["user_memory_enabled"] is False
+    assert seen["assistant_memory_enabled"] is False

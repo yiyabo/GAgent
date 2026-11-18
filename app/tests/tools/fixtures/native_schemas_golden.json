@@ -933,6 +933,85 @@
     },
     {
       "function": {
+        "description": "Manage the current user's long-term memory (durable preferences, facts, constraints, paths). Operations: search (semantic/keyword recall by query), list (paginated browse), save (store one atomic durable fact; near-duplicates are merged), update (edit by memory_id), forget (delete by memory_id). Scoped to the current user only.",
+        "name": "memory_operation",
+        "parameters": {
+          "properties": {
+            "content": {
+              "description": "Memory text for save/update; one atomic fact.",
+              "type": "string"
+            },
+            "importance": {
+              "enum": [
+                "critical",
+                "high",
+                "medium",
+                "low",
+                "temporary"
+              ],
+              "type": "string"
+            },
+            "keywords": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "limit": {
+              "maximum": 50,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "memory_id": {
+              "description": "Target memory id for update/forget.",
+              "type": "string"
+            },
+            "memory_type": {
+              "enum": [
+                "conversation",
+                "experience",
+                "knowledge",
+                "context",
+                "task_output",
+                "evaluation"
+              ],
+              "type": "string"
+            },
+            "offset": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "operation": {
+              "enum": [
+                "search",
+                "save",
+                "list",
+                "update",
+                "forget"
+              ],
+              "type": "string"
+            },
+            "query": {
+              "description": "Search text (search) or filter text (list).",
+              "type": "string"
+            },
+            "tags": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "operation"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
         "description": "Generate a literature-backed review draft by first collecting evidence with literature_pipeline and then drafting with manuscript_writer.",
         "name": "review_pack_writer",
         "parameters": {
@@ -1699,6 +1778,85 @@
           },
           "required": [
             "name"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Manage the current user's long-term memory (durable preferences, facts, constraints, paths). Operations: search (semantic/keyword recall by query), list (paginated browse), save (store one atomic durable fact; near-duplicates are merged), update (edit by memory_id), forget (delete by memory_id). Scoped to the current user only.",
+        "name": "memory_operation",
+        "parameters": {
+          "properties": {
+            "content": {
+              "description": "Memory text for save/update; one atomic fact.",
+              "type": "string"
+            },
+            "importance": {
+              "enum": [
+                "critical",
+                "high",
+                "medium",
+                "low",
+                "temporary"
+              ],
+              "type": "string"
+            },
+            "keywords": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "limit": {
+              "maximum": 50,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "memory_id": {
+              "description": "Target memory id for update/forget.",
+              "type": "string"
+            },
+            "memory_type": {
+              "enum": [
+                "conversation",
+                "experience",
+                "knowledge",
+                "context",
+                "task_output",
+                "evaluation"
+              ],
+              "type": "string"
+            },
+            "offset": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "operation": {
+              "enum": [
+                "search",
+                "save",
+                "list",
+                "update",
+                "forget"
+              ],
+              "type": "string"
+            },
+            "query": {
+              "description": "Search text (search) or filter text (list).",
+              "type": "string"
+            },
+            "tags": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "operation"
           ],
           "type": "object"
         }
@@ -2966,6 +3124,7 @@
     "phagescope_research",
     "literature_pipeline",
     "load_skill",
+    "memory_operation",
     "review_pack_writer",
     "manuscript_writer",
     "deliverable_submit",

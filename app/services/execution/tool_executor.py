@@ -51,6 +51,7 @@ class ToolExecutionContext:
     """
     on_progress_loop: Optional[asyncio.AbstractEventLoop] = None
     """The loop that owns ``on_progress``; see ``ToolContext.on_progress_loop``."""
+    memory_enabled: bool = True
 
 
 def _task_edit_mode(context: "ToolExecutionContext") -> Any:
@@ -149,6 +150,7 @@ class UnifiedToolExecutor:
             task_name=context.task_name,
             job_id=context.current_job_id,
             owner_id=context.owner_id,
+            memory_enabled=context.memory_enabled,
             work_dir=context.work_dir or "",
             model_provider=getattr(context, 'model_provider', None),
             extra={**({"ancestor_chain": list(context.ancestor_chain)} if context.ancestor_chain is not None else {}),

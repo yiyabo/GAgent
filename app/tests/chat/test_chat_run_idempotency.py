@@ -220,6 +220,20 @@ async def test_reentry_terminal_run_not_respawned(
 # --- _save_chat_message ------------------------------------------------------
 
 
+async def test_memory_opt_out_persists_both_messages_without_scheduling_extraction(idem_db, monkeypatch):
+    from app.routers.chat import session_helpers
+
+    scheduled = []
+    monkeypatch.setattr(session_helpers, "_schedule_memory_extraction", lambda cursor, **kw: scheduled.append(kw["content"]))
+    for role in ("user", "assistant"):
+        assert _save_chat_message("sess_privacy", role, role, owner_id="alice", memory_enabled=False)
+    assert _save_chat_message("sess_privacy", "user", "opted back in", owner_id="alice", memory_enabled=True)
+    assert scheduled == ["opted back in"]
+    assert [row[0] for row in idem_db.execute("SELECT content FROM chat_messages ORDER BY id")] == [
+        "user", "assistant", "opted back in",
+    ]
+
+
 async def test_save_chat_message_dedupes_client_message_id(
     idem_db: sqlite3.Connection,
 ) -> None:

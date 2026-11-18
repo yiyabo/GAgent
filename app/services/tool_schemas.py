@@ -352,6 +352,7 @@ EXECUTOR_AVAILABLE_TOOLS: List[str] = [
     "phagescope_research",
     "literature_pipeline",
     "load_skill",
+    "memory_operation",
     "review_pack_writer",
     "manuscript_writer",
     "deliverable_submit",
