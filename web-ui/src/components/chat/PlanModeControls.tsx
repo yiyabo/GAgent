@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { App, Button, Popconfirm, Space, Switch, Tooltip } from 'antd';
+import { App, Button, Space, Switch, Tooltip } from 'antd';
 import { PlayCircleOutlined } from '@ant-design/icons';
 import { planTreeApi } from '@api/planTree';
 import { useT } from '@/i18n/useT';
@@ -71,24 +71,16 @@ const PlanModeControls: React.FC<PlanModeControlsProps> = ({ showApprove = false
         </Space>
       </Tooltip>
       {showApprove && planMode && currentPlanId ? (
-        <Popconfirm
-          title={t('chatMain.planApproveTitle')}
-          description={t('chatMain.planApproveDescription')}
-          okText={t('chatMain.planApproveConfirm')}
-          cancelText={t('common.cancel')}
-          onConfirm={approveAndExecute}
-          okButtonProps={{ loading: executing }}
+        <Button
+          type="primary"
+          size="small"
+          icon={<PlayCircleOutlined />}
+          loading={executing}
+          aria-label={t('chatMain.planApprove')}
+          onClick={() => void approveAndExecute()}
         >
-          <Button
-            type="primary"
-            size="small"
-            icon={<PlayCircleOutlined />}
-            loading={executing}
-            aria-label={t('chatMain.planApprove')}
-          >
-            {t('chatMain.planApprove')}
-          </Button>
-        </Popconfirm>
+          {t('chatMain.planApprove')}
+        </Button>
       ) : null}
     </Space>
   );
