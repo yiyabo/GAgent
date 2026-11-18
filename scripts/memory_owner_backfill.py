@@ -8,8 +8,13 @@ to recall until backfilled. Memories whose source session was deleted are purged
 
 Owner resolution order:
   1. ``session:<id>`` tag -> chat_sessions.owner_id
-  2. related_task_id -> tasks.session_id -> chat_sessions.owner_id
-  3. otherwise left NULL (stays invisible to recall)
+  2. ``plan:<id>`` tag + related_task_id -> plans.owner (the task must exist in
+     that plan's shard; see ``resolve_owner_id_for_plan_task``)
+  3. otherwise left NULL (stays invisible to recall; never deleted)
+
+Limit: task ids are plan-local (every plan shard numbers tasks from 1), so a
+bare related_task_id without a ``plan:<id>`` tag is ambiguous and is never used
+to guess an owner. Such rows are reported as unresolved and preserved as-is.
 
 Usage:
   python scripts/memory_owner_backfill.py --dry-run
@@ -34,6 +39,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 _SESSION_TAG_RE = re.compile(r"session:(session_[0-9A-Za-z_]+)")
+_PLAN_TAG_RE = re.compile(r'"plan:([1-9][0-9]*)"')
 
 
 def _session_tag_of(tags_raw: str | None) -> str | None:
@@ -41,6 +47,14 @@ def _session_tag_of(tags_raw: str | None) -> str | None:
         return None
     match = _SESSION_TAG_RE.search(tags_raw)
     return match.group(1) if match else None
+
+
+def _plan_tag_of(tags_raw: str | None) -> int | None:
+    """Return the plan id from a single unambiguous ``plan:<id>`` tag."""
+    if not tags_raw:
+        return None
+    plan_ids = {int(m) for m in _PLAN_TAG_RE.findall(tags_raw)}
+    return plan_ids.pop() if len(plan_ids) == 1 else None
 
 
 def run(dry_run: bool) -> int:
@@ -64,7 +78,7 @@ def run(dry_run: bool) -> int:
                 session_owner[session_id] = str(row[0]) if row and row[0] else None
             return session_owner[session_id]
 
-        from app.services.memory.memory_service import resolve_owner_id_for_task
+        from app.services.memory.memory_service import resolve_owner_id_for_plan_task
 
         rows = conn.execute(
             "SELECT id, tags, related_task_id FROM memories WHERE owner_id IS NULL"
@@ -85,7 +99,9 @@ def run(dry_run: bool) -> int:
                     orphan_ids.append(memory_id)
                     continue
             elif row[2] is not None:
-                owner_id = resolve_owner_id_for_task(int(row[2]))
+                plan_id = _plan_tag_of(row[1])
+                if plan_id is not None:
+                    owner_id = resolve_owner_id_for_plan_task(plan_id, row[2])
             if owner_id is not None:
                 if not dry_run:
                     conn.execute(

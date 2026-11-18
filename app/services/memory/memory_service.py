@@ -180,50 +180,71 @@ def mark_memories_recalled(conn: sqlite3.Connection, memory_ids: list[str]) -> N
         logger.warning("Failed to update retrieval_count: %s", exc)
 
 
-_task_owner_cache: dict[int, str | None] = {}
+PLAN_TAG_PREFIX = "plan:"
+SESSION_TAG_PREFIX = "session:"
 
 
-def resolve_owner_id_for_task(task_id: int | None) -> str | None:
-    """Look up the owning user of a task (None when unknown).
-
-    Tasks live in per-plan SQLite shards (no global tasks table), so scan plan
-    DBs for the task id and read the plan's owner from the main ``plans``
-    table. Results are cached per process.
-    """
-    if task_id is None:
+def coerce_positive_id(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
         return None
-    tid = int(task_id)
-    if tid in _task_owner_cache:
-        return _task_owner_cache[tid]
-    owner: str | None = None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def resolve_owner_id_for_plan_task(plan_id: Any, task_id: Any = None) -> str | None:
+    """Resolve the owning user of a plan task from authoritative plan context.
+
+    Task ids are plan-local: every plan shard (``plan_<id>.sqlite``) numbers
+    its tasks from 1, so a bare ``task_id`` is ambiguous across plans and must
+    never be used to infer ownership. The caller has to supply the plan id the
+    task was loaded from; the owner is read from the main ``plans`` table.
+
+    When ``task_id`` is given it must exist in that plan's shard, otherwise the
+    (plan, task) pair is treated as unknown. Returns ``None`` whenever the owner
+    cannot be established (missing plan id, unknown plan, ownerless plan,
+    missing shard/task, or lookup errors) so callers can skip the write.
+    Results are not cached: plan ownership is read fresh on every call.
+    """
+    pid = coerce_positive_id(plan_id)
+    if pid is None:
+        return None
+    tid: int | None = None
+    if task_id is not None:
+        tid = coerce_positive_id(task_id)
+        if tid is None:
+            return None
     try:
         with get_db() as conn:
-            plans = conn.execute("SELECT id, owner FROM plans").fetchall()
+            row = conn.execute("SELECT owner FROM plans WHERE id = ?", (pid,)).fetchone()
+        owner = str(row[0]).strip() if row and row[0] else ""
+        if not owner:
+            return None
+        if tid is None:
+            return owner
         from ...repository.plan_storage import get_plan_db_path
 
-        for plan_row in plans:
-            plan_id, plan_owner = plan_row[0], plan_row[1]
-            try:
-                db_path = get_plan_db_path(plan_id)
-            except Exception:
-                continue
-            if not db_path.exists():
-                continue
-            shard = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-            try:
-                hit = shard.execute("SELECT 1 FROM tasks WHERE id = ?", (tid,)).fetchone()
-            except sqlite3.Error:
-                hit = None
-            finally:
-                shard.close()
-            if hit:
-                owner = str(plan_owner) if plan_owner else None
-                break
+        db_path = get_plan_db_path(pid)
+        if not db_path.exists():
+            return None
+        shard = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            hit = shard.execute("SELECT 1 FROM tasks WHERE id = ?", (tid,)).fetchone()
+        except sqlite3.Error:
+            hit = None
+        finally:
+            shard.close()
+        return owner if hit else None
     except Exception as exc:
-        logger.warning("resolve_owner_id_for_task failed for %s: %s", task_id, exc)
+        logger.warning(
+            "resolve_owner_id_for_plan_task failed for plan=%s task=%s: %s",
+            plan_id,
+            task_id,
+            exc,
+        )
         return None
-    _task_owner_cache[tid] = owner
-    return owner
 
 
 class IntegratedMemoryService:
@@ -1008,30 +1029,67 @@ Return the analysis result in JSON format:
         """memory"""
         pass
 
-    def delete_memories_for_session(self, session_id: str) -> int:
-        """Delete global-store memories tagged ``session:<id>`` (session-delete cascade).
+    def delete_memories_for_session(self, session_id: str, owner_id: str) -> int:
+        """Delete the authorized owner's memories tagged exactly ``session:<id>``.
 
-        Also removes the per-session memory database file when present.
-        Never raises for missing data; returns the number of deleted memories.
+        Session-delete cascade. The caller must have authorized ``owner_id`` for
+        ``session_id`` (e.g. the route deleted the ``chat_sessions`` row with an
+        ``owner_id`` predicate) before calling. Deletion is scoped twice:
+
+        * ``memories.owner_id`` must equal ``owner_id`` — rows of other owners
+          that happen to carry the same tag are never touched;
+        * the JSON ``tags`` array must contain the exact element
+          ``session:<id>`` — no ``LIKE`` matching, so ``_``/``%`` in a session
+          id or a session id that is a prefix of another cannot widen the match.
+
+        Limits (old data is preserved, never guessed at): rows with a NULL
+        ``owner_id`` (written before owner isolation) or with non-JSON ``tags``
+        are left in place; they stay invisible to recall and are handled by
+        ``scripts/memory_owner_backfill.py``. The per-session memory database
+        file is removed only for an authorized call. Missing ``session_id`` or
+        ``owner_id`` is a no-op. Returns the number of deleted memories.
         """
-        if not session_id:
+        if not session_id or not owner_id:
             return 0
-        pattern = f'%"session:{session_id}"%'
-        deleted = 0
+        session_tag = f"{SESSION_TAG_PREFIX}{session_id}"
+        params = (str(owner_id), session_tag)
         with get_db() as conn:
-            ids = [row[0] for row in conn.execute("SELECT id FROM memories WHERE tags LIKE ?", (pattern,)).fetchall()]
-            if ids:
-                placeholders = ",".join("?" for _ in ids)
-                conn.execute(
-                    f"DELETE FROM memory_embeddings WHERE memory_id IN ({placeholders})",
-                    tuple(ids),
+            conn.execute(
+                """
+                DELETE FROM memory_embeddings WHERE memory_id IN (
+                    SELECT memories.id FROM memories
+                    WHERE memories.owner_id = ?
+                      AND EXISTS (
+                        SELECT 1 FROM json_each(
+                            CASE WHEN json_valid(memories.tags) THEN
+                                CASE WHEN json_type(memories.tags) = 'array'
+                                     THEN memories.tags ELSE '[]' END
+                            ELSE '[]' END
+                        ) AS t
+                        WHERE t.type = 'text' AND t.value = ?
+                      )
                 )
-                cursor = conn.execute(
-                    f"DELETE FROM memories WHERE id IN ({placeholders})",
-                    tuple(ids),
-                )
-                deleted = cursor.rowcount
-                conn.commit()
+                """,
+                params,
+            )
+            cursor = conn.execute(
+                """
+                DELETE FROM memories
+                WHERE memories.owner_id = ?
+                  AND EXISTS (
+                    SELECT 1 FROM json_each(
+                        CASE WHEN json_valid(memories.tags) THEN
+                            CASE WHEN json_type(memories.tags) = 'array'
+                                 THEN memories.tags ELSE '[]' END
+                        ELSE '[]' END
+                    ) AS t
+                    WHERE t.type = 'text' AND t.value = ?
+                  )
+                """,
+                params,
+            )
+            deleted = max(int(cursor.rowcount or 0), 0)
+            conn.commit()
         try:
             db_path = self.db_config.get_session_db_path(session_id)
             if db_path.exists():
