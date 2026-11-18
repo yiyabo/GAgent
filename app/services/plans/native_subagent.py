@@ -31,9 +31,10 @@ import asyncio
 import logging
 import math
 import os
+import threading
 import time
 import uuid
-import weakref
+from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -45,6 +46,7 @@ DEFAULT_ROLE = "worker"
 ROLES: tuple[str, ...] = ("scout", "researcher", "worker", "verifier")
 READ_ONLY_ROLES: frozenset[str] = frozenset({"scout", "researcher", "verifier"})
 MAX_ANCESTOR_DEPTH = 2
+MAX_DELEGATION_DEPTH = 1
 DEFAULT_TIMEOUT_SECONDS = 600.0
 ENV_MAX_ITERATIONS = "DELEGATE_TASK_MAX_ITERATIONS"
 ENV_TIMEOUT_SECONDS = "DELEGATE_TASK_TIMEOUT_SECONDS"
@@ -194,18 +196,72 @@ def configured_max_concurrency() -> int:
     return DEFAULT_MAX_CONCURRENCY
 
 
-_LOOP_LIMITERS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = weakref.WeakKeyDictionary()
+class _ProcessWideAsyncLimiter:
+    """Thread-safe async concurrency limiter shared across all event loops in the process."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = max(1, limit)
+        self._lock = threading.Lock()
+        self._in_flight = 0
+        self._waiters: deque[tuple[asyncio.AbstractEventLoop, asyncio.Future[None]]] = deque()
+
+    async def __aenter__(self) -> _ProcessWideAsyncLimiter:
+        loop = asyncio.get_running_loop()
+        with self._lock:
+            if self._in_flight < self.limit:
+                self._in_flight += 1
+                return self
+            fut: asyncio.Future[None] = loop.create_future()
+            self._waiters.append((loop, fut))
+        try:
+            await fut
+        except BaseException:
+            with self._lock:
+                still_queued = any(f is fut for _, f in self._waiters)
+                if still_queued:
+                    self._waiters = deque((lp, f) for lp, f in self._waiters if f is not fut)
+            if not still_queued and fut.done() and not fut.cancelled():
+                self._release()
+            raise
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        self._release()
+
+    def _release(self) -> None:
+        with self._lock:
+            while self._waiters:
+                waiter_loop, waiter_fut = self._waiters.popleft()
+                if waiter_fut.done():
+                    continue
+
+                def _deliver(target: asyncio.Future[None] = waiter_fut) -> None:
+                    if target.done():
+                        self._release()
+                    else:
+                        target.set_result(None)
+
+                try:
+                    waiter_loop.call_soon_threadsafe(_deliver)
+                    return
+                except RuntimeError:
+                    continue
+            self._in_flight = max(0, self._in_flight - 1)
 
 
-def _process_limiter() -> asyncio.Semaphore:
-    """One semaphore per event loop bounds children across concurrent delegate calls."""
-    loop = asyncio.get_running_loop()
-    limiter = _LOOP_LIMITERS.get(loop)
-    if limiter is None:
-        limiter = asyncio.Semaphore(configured_max_concurrency())
-        _LOOP_LIMITERS[loop] = limiter
-    return limiter
+_PROCESS_LIMITER_LOCK = threading.Lock()
+_PROCESS_LIMITERS: dict[int, _ProcessWideAsyncLimiter] = {}
 
+
+def _process_limiter() -> _ProcessWideAsyncLimiter:
+    """Process-wide limiter bounding concurrently active children across all event loops."""
+    cap = configured_max_concurrency()
+    with _PROCESS_LIMITER_LOCK:
+        limiter = _PROCESS_LIMITERS.get(cap)
+        if limiter is None:
+            limiter = _ProcessWideAsyncLimiter(cap)
+            _PROCESS_LIMITERS[cap] = limiter
+        return limiter
 
 def _refusal(error: str, summary: str) -> dict[str, Any]:
     return {"success": False, "executed": False, "error": error, "summary": summary}
@@ -424,6 +480,7 @@ class ParentContext:
     job_id: str | None = None
     work_dir: str | None = None
     ancestor_chain: list[int] = field(default_factory=list)
+    delegation_depth: int = 0
     on_progress: ProgressFn | None = None
     parent_cancel: asyncio.Event | None = None
 
@@ -660,7 +717,7 @@ class NativeSubagentExecutor:
             result["duration_ms"] = round((time.perf_counter() - started) * 1000.0, 1)
             return result
 
-        if len(parent.ancestor_chain) >= MAX_ANCESTOR_DEPTH:
+        if parent.delegation_depth >= MAX_DELEGATION_DEPTH:
             result["error"] = "subagent_recursion_limit"
             result["summary"] = "Refused: sub-agent delegation depth limit reached."
             return _finish()
@@ -746,14 +803,14 @@ class NativeSubagentExecutor:
         from app.services.execution.tool_executor import ToolExecutionContext
 
         parent_run_id = child_run_id.rsplit(":sub_", 1)[0]
-        child_chain = list(parent.ancestor_chain) + [len(parent.ancestor_chain) + 1]
         exec_context = ToolExecutionContext(
             plan_id=parent.plan_id,
             task_id=parent.task_id,
             task_name=f"subagent:{spec.role}",
             task_instruction=spec.goal,
             session_id=parent.session_id,
-            ancestor_chain=child_chain,
+            ancestor_chain=list(parent.ancestor_chain),
+            delegation_depth=parent.delegation_depth + 1,
             owner_id=parent.owner_id,
             current_job_id=parent.job_id,
             work_dir=str(sub_dir),
@@ -800,17 +857,28 @@ class NativeSubagentExecutor:
             call_purpose=f"subagent_{role}",
             billing_lane=inherited.get("billing_lane") if isinstance(inherited, Mapping) else None,
         )
+        try:
+            from app.services.chat_run_state import chat_run_claim as _chat_claim_var
+
+            _claim_reset = _chat_claim_var.set(None)
+        except Exception:  # noqa: BLE001 - child isolation must never break delegation
+            _chat_claim_var = None
+            _claim_reset = None
         bridge = asyncio.ensure_future(_bridge_cancel())
-        think = asyncio.ensure_future(
-            agent.think(
-                build_child_prompt(spec, sub_dir, read_roots),
-                context={
-                    "subagent_role": role,
-                    "work_dir": str(sub_dir),
-                    "readable_dirs": [str(p) for p in read_roots],
-                },
+        try:
+            think = asyncio.ensure_future(
+                agent.think(
+                    build_child_prompt(spec, sub_dir, read_roots),
+                    context={
+                        "subagent_role": role,
+                        "work_dir": str(sub_dir),
+                        "readable_dirs": [str(p) for p in read_roots],
+                    },
+                )
             )
-        )
+        finally:
+            if _chat_claim_var is not None and _claim_reset is not None:
+                _chat_claim_var.reset(_claim_reset)
         stop_reason: str | None = None
         try:
             cancel_wait = asyncio.ensure_future(cancel_event.wait())
@@ -829,7 +897,6 @@ class NativeSubagentExecutor:
             await _stop_task(think)
             await _stop_task(bridge)
             clear_usage_context(token)
-
         outcome = None if think.cancelled() else think.result()  # re-raises a child failure
         if stop_reason == "subagent_timeout":
             return {

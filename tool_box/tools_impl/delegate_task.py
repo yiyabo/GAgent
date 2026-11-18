@@ -468,6 +468,8 @@ def _parent_context(tool_context: ToolContext | None):
     extra_map: Mapping[str, Any] = extra if isinstance(extra, Mapping) else {}
     chain_raw = extra_map.get("ancestor_chain")
     chain = [item for item in chain_raw if isinstance(item, int)] if isinstance(chain_raw, (list, tuple)) else []
+    depth_raw = extra_map.get("delegation_depth")
+    delegation_depth = int(depth_raw) if isinstance(depth_raw, int) and not isinstance(depth_raw, bool) else 0
     plan_id = getattr(tool_context, "plan_id", None)
     task_id = getattr(tool_context, "task_id", None)
     abort_event = getattr(tool_context, "abort_event", None)
@@ -479,6 +481,7 @@ def _parent_context(tool_context: ToolContext | None):
         job_id=_context_text(tool_context, "job_id") or None,
         work_dir=_context_text(tool_context, "work_dir") or None,
         ancestor_chain=chain,
+        delegation_depth=delegation_depth,
         on_progress=getattr(tool_context, "on_progress", None),
         parent_cancel=abort_event if isinstance(abort_event, asyncio.Event) else None,
     )

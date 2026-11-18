@@ -133,8 +133,12 @@ def plan_mode_tool_allowed(tool_name: str, params: Mapping[str, Any] | None = No
 def plan_mode_tool_names(tool_names: Sequence[str]) -> list[str]:
     """Filter a model offer without changing order or introducing duplicates."""
     allowed = _READ_TOOLS | _SCOPED_TOOLS
-    return [name for name in tool_names if name in allowed]
-
+    native_delegate = _delegate_backend_native()
+    return [
+        name
+        for name in tool_names
+        if name in allowed and (name != "delegate_task" or native_delegate)
+    ]
 
 def defer_plan_mode_execution(decision: Any) -> Any:
     """Remove execution authority while preserving the router's intent telemetry."""

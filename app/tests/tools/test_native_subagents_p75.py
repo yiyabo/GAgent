@@ -307,7 +307,7 @@ async def test_parent_cancel_propagates_to_child_cancel_event(tmp_path: Path) ->
 async def test_recursion_guard_rejects_deep_chains(tmp_path: Path) -> None:
     factory = _FakeFactory()
     [result] = await NativeSubagentExecutor(agent_factory=factory).run_many(
-        [SubagentSpec(goal="g")], _parent(tmp_path, ancestor_chain=[1, 2])
+        [SubagentSpec(goal="g")], _parent(tmp_path, delegation_depth=1)
     )
     assert result["status"] == "failed"
     assert result["error"] == "subagent_recursion_limit"
@@ -317,12 +317,21 @@ async def test_recursion_guard_rejects_deep_chains(tmp_path: Path) -> None:
 async def test_recursion_guard_reaches_handler(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     factory = _FakeFactory()
     monkeypatch.setattr(dt, "_new_native_executor", lambda: NativeSubagentExecutor(agent_factory=factory))
-    ctx = ToolContext(work_dir=str(tmp_path), extra={"ancestor_chain": [1, 2]})
+    ctx = ToolContext(work_dir=str(tmp_path), extra={"delegation_depth": 1})
     result = await dt.delegate_task_handler(goal="g", tool_context=ctx)
     assert result["success"] is False
     assert result["subagent_runs"][0]["error"] == "subagent_recursion_limit"
     assert factory.created == []
 
+
+async def test_deep_plan_tree_ancestor_chain_does_not_block_first_delegation(tmp_path: Path) -> None:
+    factory = _FakeFactory()
+    [result] = await NativeSubagentExecutor(agent_factory=factory).run_many(
+        [SubagentSpec(goal="g", role="scout")],
+        _parent(tmp_path, ancestor_chain=[1, 5, 12], delegation_depth=0),
+    )
+    assert result["status"] == "completed"
+    assert len(factory.created) == 1
 
 # --- parallel fan-out --------------------------------------------------------------
 
@@ -498,3 +507,86 @@ def test_children_never_create_chat_runs_rows() -> None:
     assert "insert into chat_runs" not in source
     assert "create_run" not in source
     assert "chat_run_state import chat_run_claim" in source
+
+
+
+def test_process_wide_limiter_caps_concurrency_across_event_loops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import concurrent.futures
+    import threading
+
+    monkeypatch.setenv("DELEGATE_TASK_MAX_CONCURRENCY", "2")
+    ns._PROCESS_LIMITERS.clear()
+    lock = threading.Lock()
+    active = 0
+    peak = 0
+
+    async def behaviour(prompt: str, kwargs: dict[str, Any]) -> _Outcome:
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            await asyncio.sleep(0.12)
+            return _Outcome("ok")
+        finally:
+            with lock:
+                active -= 1
+
+    def _worker(idx: int) -> list[dict[str, Any]]:
+        sub_tmp = tmp_path / f"loop_{idx}"
+        sub_tmp.mkdir(parents=True, exist_ok=True)
+        executor = NativeSubagentExecutor(agent_factory=_FakeFactory(behaviour))
+        return asyncio.run(
+            executor.run_many(
+                [SubagentSpec(goal=f"g{idx}_a", role="scout"), SubagentSpec(goal=f"g{idx}_b", role="scout")],
+                _parent(sub_tmp, job_id=f"job_{idx}"),
+            )
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        f1 = pool.submit(_worker, 1)
+        f2 = pool.submit(_worker, 2)
+        r1 = f1.result(timeout=10)
+        r2 = f2.result(timeout=10)
+
+    assert all(r["status"] == "completed" for r in (*r1, *r2))
+    assert peak <= 2
+
+
+async def test_child_isolates_parent_resumed_chat_run_claim(tmp_path: Path) -> None:
+    from app.services.chat_run_state import chat_run_claim
+
+    seen_child_claims: list[Any] = []
+
+    async def behaviour(prompt: str, kwargs: dict[str, Any]) -> _Outcome:
+        seen_child_claims.append(chat_run_claim.get())
+        return _Outcome("isolated")
+
+    parent_claim = ("chat_run_resumed_parent", "lease_tok_1")
+    tok = chat_run_claim.set(parent_claim)
+    try:
+        [run] = await NativeSubagentExecutor(agent_factory=_FakeFactory(behaviour)).run_many(
+            [SubagentSpec(goal="recon", role="scout")],
+            _parent(tmp_path),
+        )
+        assert chat_run_claim.get() == parent_claim
+    finally:
+        chat_run_claim.reset(tok)
+
+    assert run["status"] == "completed"
+    assert run["parent_run_id"] == "chat_run_resumed_parent"
+    assert run["child_run_id"].startswith("chat_run_resumed_parent:sub_")
+    assert seen_child_claims == [None]
+
+
+def test_plan_mode_tool_names_hides_delegate_task_when_backend_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.deep_think.plan_mode import plan_mode_tool_names
+
+    offered = ["file_operations", "delegate_task", "plan_operation"]
+    monkeypatch.setenv("DELEGATE_TASK_BACKEND", "cli")
+    assert "delegate_task" not in plan_mode_tool_names(offered)
+
+    monkeypatch.setenv("DELEGATE_TASK_BACKEND", "native")
+    assert "delegate_task" in plan_mode_tool_names(offered)
