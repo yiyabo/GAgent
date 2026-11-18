@@ -392,6 +392,7 @@ async def _stream_deterministic_execute(
                         response_text,
                         metadata=metadata,
                         model_provider=(agent.extra_context or {}).get("model_provider"),
+                        memory_enabled=(agent.extra_context or {}).get("memory_enabled") is not False,
                     )
                 except Exception as save_err:
                     logger.warning(
@@ -467,6 +468,7 @@ async def _stream_direct_image_response(
                 response_text,
                 metadata=response_metadata,
                 model_provider=(agent.extra_context or {}).get("model_provider"),
+                memory_enabled=(agent.extra_context or {}).get("memory_enabled") is not False,
             )
         except Exception as save_err:  # pragma: no cover - defensive
             logger.warning(
@@ -519,6 +521,7 @@ async def _stream_plan_mode_offer(
                 response_text,
                 metadata=metadata,
                 model_provider=(agent.extra_context or {}).get("model_provider"),
+                memory_enabled=(agent.extra_context or {}).get("memory_enabled") is not False,
             )
         except Exception as save_err:  # pragma: no cover - defensive
             logger.warning("[CHAT][PLAN_OFFER] Failed to save offer: %s", save_err)
@@ -691,6 +694,7 @@ async def _drain_unified_stream_events(
                         full_response,
                         metadata=final_metadata,
                         model_provider=(agent.extra_context or {}).get("model_provider"),
+                        memory_enabled=(agent.extra_context or {}).get("memory_enabled") is not False,
                     )
                     logger.info(
                         "[CHAT][DEEP_THINK] Response saved to database for session=%s",

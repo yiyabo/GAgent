@@ -468,6 +468,14 @@ def _principal_request(principal: Any) -> Any:
 # --- 4. memory_operation tool ----------------------------------------------
 
 
+@pytest.mark.parametrize("operation", ["search", "list", "save", "update", "forget"])
+async def test_memory_operation_opt_out_refuses_before_service_access(monkeypatch, operation) -> None:
+    monkeypatch.setattr(ms, "get_memory_service", lambda: pytest.fail("memory service touched during opt out"))
+    result = await memory_operation_handler(operation, tool_context=ToolContext(owner_id="alice", memory_enabled=False))
+    assert result["success"] is False
+    assert result["memory_disabled"] is True
+
+
 async def test_memory_operation_tool_scoped_to_context_owner(env) -> None:
     alice = ToolContext(owner_id="alice", session_id="sa")
     bob = ToolContext(owner_id="bob")

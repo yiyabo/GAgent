@@ -3,6 +3,8 @@
 Every operation is scoped to the calling user (``tool_context.owner_id``);
 there is no way to address another user's memories. ``search``/``list`` are
 read-only; ``save``/``update``/``forget`` mutate and are blocked in Plan mode.
+When the user turned memory off for the turn (``tool_context.memory_enabled``
+is False) every operation is refused before the memory service is touched.
 """
 
 from __future__ import annotations
@@ -40,6 +42,16 @@ def _str_list(value: Any) -> list[str] | None:
     if not isinstance(value, list):
         return None
     return [str(v).strip() for v in value if str(v).strip()]
+
+
+def _authorize(op: str, tool_context: ToolContext | None) -> tuple[str, dict[str, Any] | None]:
+    """Resolve the server-bound owner, refusing when the turn opted out of memory."""
+    if tool_context is not None and tool_context.memory_enabled is False:
+        return "", {**_error(op, "memory is disabled for this conversation turn"), "memory_disabled": True}
+    owner_id = str(getattr(tool_context, "owner_id", None) or "").strip()
+    if not owner_id:
+        return "", _error(op, "memory is unavailable: no authenticated owner in tool context")
+    return owner_id, None
 
 
 async def _search(
@@ -126,9 +138,9 @@ async def memory_operation_handler(
     op = str(operation or "").strip().lower()
     if op not in MEMORY_OPERATIONS:
         return _error(op or "unknown", f"operation must be one of {list(MEMORY_OPERATIONS)}")
-    owner_id = str(getattr(tool_context, "owner_id", None) or "").strip()
-    if not owner_id:
-        return _error(op, "memory is unavailable: no authenticated owner in tool context")
+    owner_id, denial = _authorize(op, tool_context)
+    if denial is not None:
+        return denial
     session_id = getattr(tool_context, "session_id", None)
 
     from app.services.memory.memory_service import get_memory_service

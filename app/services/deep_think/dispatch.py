@@ -327,6 +327,7 @@ async def _execute_native_tool_call(
         plan_id=agent._current_plan_id(),
         session_id=str(agent.request_profile.get("session_id") or "").strip() or None,
         owner_id=str(agent.request_profile.get("owner_id") or "").strip() or None,
+        memory_enabled=agent.request_profile.get("memory_enabled") is not False,
         work_dir=_native_tool_work_dir(
             tool_name,
             str(agent.request_profile.get("session_id") or "").strip(),

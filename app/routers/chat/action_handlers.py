@@ -639,7 +639,8 @@ def _build_chat_tool_context(agent: Any, tool_name: str) -> Optional[Any]:
         work_dir = session_dir
     else:
         work_dir = session_dir / "raw_files" / "chat_tools" / tool_name
-    owner_id = (getattr(agent, "extra_context", {}) or {}).get("owner_id")
+    agent_context = getattr(agent, "extra_context", {}) or {}
+    owner_id = agent_context.get("owner_id")
     on_progress, on_progress_loop = _chat_tool_progress_channel(agent)
     return ToolContext(
         session_id=session_id.strip(),
@@ -648,6 +649,7 @@ def _build_chat_tool_context(agent: Any, tool_name: str) -> Optional[Any]:
         task_name=task_name,
         job_id=get_current_job(),
         owner_id=str(owner_id).strip() if owner_id is not None and str(owner_id).strip() else None,
+        memory_enabled=agent_context.get("memory_enabled") is not False,
         work_dir=str(work_dir),
         on_progress=_bind_chat_tool_progress(on_progress, tool_name),
         on_progress_loop=on_progress_loop,

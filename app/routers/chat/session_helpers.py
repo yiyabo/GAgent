@@ -1066,6 +1066,41 @@ def _set_session_plan_id(
 # Message persistence
 # ---------------------------------------------------------------------------
 
+def _schedule_memory_extraction(
+    cursor: Any,
+    *,
+    session_id: str,
+    role: str,
+    content: str,
+    owner_id: Optional[str],
+    model_provider: Optional[Dict[str, Any]],
+) -> None:
+    """Fire-and-forget implicit memory extraction for one persisted message."""
+    try:
+        from ...services.memory.chat_memory_middleware import get_chat_memory_middleware
+
+        middleware = get_chat_memory_middleware()
+        memory_owner_id = owner_id
+        if not memory_owner_id:
+            owner_row = cursor.execute(
+                "SELECT owner_id FROM chat_sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if owner_row and owner_row[0]:
+                memory_owner_id = str(owner_row[0])
+        # Run async middleware in background (fire and forget)
+        asyncio.create_task(
+            middleware.process_message(
+                content=content,
+                role=role,
+                session_id=session_id,
+                model_provider=model_provider,
+                owner_id=memory_owner_id,
+            )
+        )
+    except Exception as mem_err:
+        logger.warning(f"Failed to process chat memory: {mem_err}")
+
+
 def _save_chat_message(
     session_id: str,
     role: str,
@@ -1074,8 +1109,14 @@ def _save_chat_message(
     *,
     owner_id: Optional[str] = None,
     model_provider: Optional[Dict[str, Any]] = None,
+    memory_enabled: bool = True,
 ) -> Optional[int]:
-    """Persist chat message."""
+    """Persist chat message.
+
+    ``memory_enabled=False`` (the user turned memory off for this turn) stores
+    the message but never schedules implicit long-term memory extraction, so
+    the text is not sent to the extraction LLM.
+    """
     try:
         from ...database import get_db  # lazy import to avoid circular deps
         from ...repository.chat_runs import guard_chat_run_assistant_save
@@ -1146,30 +1187,21 @@ def _save_chat_message(
                     (message_id, run_scope["run_id"]),
                 )
 
-            # Process message through chat memory middleware
-            try:
-                from ...services.memory.chat_memory_middleware import get_chat_memory_middleware
-
-                middleware = get_chat_memory_middleware()
-                memory_owner_id = owner_id
-                if not memory_owner_id:
-                    owner_row = cursor.execute(
-                        "SELECT owner_id FROM chat_sessions WHERE id = ?", (session_id,)
-                    ).fetchone()
-                    if owner_row and owner_row[0]:
-                        memory_owner_id = str(owner_row[0])
-                # Run async middleware in background (fire and forget)
-                asyncio.create_task(
-                    middleware.process_message(
-                        content=content,
-                        role=role,
-                        session_id=session_id,
-                        model_provider=model_provider,
-                        owner_id=memory_owner_id,
-                    )
+            if memory_enabled:
+                _schedule_memory_extraction(
+                    cursor,
+                    session_id=session_id,
+                    role=role,
+                    content=content,
+                    owner_id=owner_id,
+                    model_provider=model_provider,
                 )
-            except Exception as mem_err:
-                logger.warning(f"Failed to process chat memory: {mem_err}")
+            else:
+                logger.info(
+                    "[CHAT][MEMORY] implicit extraction skipped (memory disabled) session=%s role=%s",
+                    session_id,
+                    role,
+                )
             cursor.execute(
                 """
                 UPDATE chat_sessions
@@ -1257,6 +1289,7 @@ def _save_assistant_response(
     response: ChatResponse,
     *,
     owner_id: Optional[str] = None,
+    memory_enabled: bool = True,
 ) -> ChatResponse:
     """Persist assistant response."""
     if session_id and response.response:
@@ -1266,6 +1299,7 @@ def _save_assistant_response(
             response.response,
             metadata=response.metadata,
             owner_id=owner_id,
+            memory_enabled=memory_enabled,
         )
     return response
 
