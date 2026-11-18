@@ -16,6 +16,11 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+try:  # POSIX advisory locking; absent on Windows.
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore[assignment]
+
 from tool_box.context import ToolContext
 from tool_box.path_resolution import resolve_tool_path_str
 
@@ -985,48 +990,75 @@ async def _edit_file(
                     f"(limit {MAX_READ_FILE_BYTES} bytes)"
                 ),
             }
-        try:
-            original = path.read_bytes().decode("utf-8")
-        except UnicodeDecodeError:
-            return {
-                **receipt,
-                "success": False,
-                "error": "File is not valid UTF-8 text; edit supports UTF-8 text files only",
-            }
-
-        occurrences = original.count(old_text)
-        if occurrences == 0:
-            return {
-                **receipt,
-                "success": False,
-                "error": "old_text not found in file",
-                "occurrences": 0,
-            }
-        if occurrences > 1 and not replace_all:
-            return {
-                **receipt,
-                "success": False,
-                "error": (
-                    f"old_text matches {occurrences} locations; include more surrounding "
-                    "context so it matches exactly once, or set replace_all=true"
-                ),
-                "occurrences": occurrences,
-                "match_lines": _edit_match_lines(original, old_text),
-            }
-
-        replacements = occurrences if replace_all else 1
-        updated = original.replace(old_text, new_text, replacements)
-        # Bytes in, bytes out: line endings and a missing final newline survive.
-        path.write_bytes(updated.encode("utf-8"))
-        return {
-            **receipt,
-            "success": True,
-            "replacements": replacements,
-            "size": len(updated),
-            "diff": _edit_diff_snippet(original, updated, path.name),
-        }
+        # Read-modify-write runs under an exclusive advisory lock on the file
+        # itself and rewrites it in place, so two concurrent edits (other
+        # tasks, jobs, or processes) serialize instead of losing an update,
+        # and the inode, permissions and ownership are preserved.
+        return await asyncio.to_thread(
+            _edit_file_locked, path, old_text, new_text, replace_all, receipt
+        )
     except Exception as e:
         return {**receipt, "success": False, "error": str(e)}
+
+
+def _edit_file_locked(
+    path: Path,
+    old_text: str,
+    new_text: str,
+    replace_all: bool,
+    receipt: Dict[str, Any],
+) -> Dict[str, Any]:
+    with open(path, "r+b") as handle:
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            try:
+                original = handle.read().decode("utf-8")
+            except UnicodeDecodeError:
+                return {
+                    **receipt,
+                    "success": False,
+                    "error": "File is not valid UTF-8 text; edit supports UTF-8 text files only",
+                }
+
+            occurrences = original.count(old_text)
+            if occurrences == 0:
+                return {
+                    **receipt,
+                    "success": False,
+                    "error": "old_text not found in file",
+                    "occurrences": 0,
+                }
+            if occurrences > 1 and not replace_all:
+                return {
+                    **receipt,
+                    "success": False,
+                    "error": (
+                        f"old_text matches {occurrences} locations; include more surrounding "
+                        "context so it matches exactly once, or set replace_all=true"
+                    ),
+                    "occurrences": occurrences,
+                    "match_lines": _edit_match_lines(original, old_text),
+                }
+
+            replacements = occurrences if replace_all else 1
+            updated = original.replace(old_text, new_text, replacements)
+            # Bytes in, bytes out: line endings and a missing final newline survive.
+            handle.seek(0)
+            handle.write(updated.encode("utf-8"))
+            handle.truncate()
+            handle.flush()
+            os.fsync(handle.fileno())
+        finally:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    return {
+        **receipt,
+        "success": True,
+        "replacements": replacements,
+        "size": len(updated),
+        "diff": _edit_diff_snippet(original, updated, path.name),
+    }
 
 
 def _tokenize_status_name(name: str) -> Set[str]:

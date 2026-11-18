@@ -34,9 +34,7 @@ def project(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Path]:
 
     monkeypatch.setattr(path_router, "_default_router", None)
     monkeypatch.setattr(file_operations, "_get_project_root", lambda: root.resolve())
-    monkeypatch.setattr(
-        file_operations, "ALLOWED_BASE_PATHS", [str(root / "data"), str(runtime)]
-    )
+    monkeypatch.setattr(file_operations, "ALLOWED_BASE_PATHS", [str(root / "data"), str(runtime)])
     return {"root": root.resolve(), "session": session_dir.resolve()}
 
 
@@ -45,11 +43,7 @@ def _ctx() -> ToolContext:
 
 
 def _edit(path: str, old: Any, new: Any, **kwargs):
-    return asyncio.run(
-        file_operations_handler(
-            "edit", path, old_text=old, new_text=new, tool_context=_ctx(), **kwargs
-        )
-    )
+    return asyncio.run(file_operations_handler("edit", path, old_text=old, new_text=new, tool_context=_ctx(), **kwargs))
 
 
 # --- file_operations edit -------------------------------------------------
@@ -120,8 +114,10 @@ def test_edit_rejects_non_utf8(project) -> None:
 def test_edit_refuses_project_source(project) -> None:
     result = asyncio.run(
         file_operations_handler(
-            "edit", str(project["root"] / "app" / "main.py"),
-            old_text="x = 1", new_text="x = 2",
+            "edit",
+            str(project["root"] / "app" / "main.py"),
+            old_text="x = 1",
+            new_text="x = 2",
         )
     )
     assert result["success"] is False
@@ -139,9 +135,7 @@ def test_edit_is_in_tool_schema() -> None:
 
 
 def _qa(path: Path, ctx=None):
-    return asyncio.run(
-        vision_reader_handler("qa_figure", file_path=str(path), tool_context=ctx)
-    )
+    return asyncio.run(vision_reader_handler("qa_figure", file_path=str(path), tool_context=ctx))
 
 
 def test_qa_figure_empty_file_fails_without_model(monkeypatch, tmp_path) -> None:
@@ -163,13 +157,19 @@ def test_qa_figure_rejects_vector_formats(tmp_path) -> None:
 
 
 def test_qa_figure_normalizes_fenced_verdict_and_records_check(monkeypatch, tmp_path) -> None:
-    reply = "Here:\n```json\n" + json.dumps({
-        "pass": True,
-        "severity": "low",
-        "issues": [{"type": "clipped", "detail": "x label cut", "severity": "high"}],
-        "recommendations": ["increase bottom margin"],
-        "summary": "label clipped",
-    }) + "\n```"
+    reply = (
+        "Here:\n```json\n"
+        + json.dumps(
+            {
+                "pass": True,
+                "severity": "low",
+                "issues": [{"type": "clipped", "detail": "x label cut", "severity": "high"}],
+                "recommendations": ["increase bottom margin"],
+                "summary": "label clipped",
+            }
+        )
+        + "\n```"
+    )
 
     async def fake(prompt, path):
         assert "strict visual QA" in prompt
@@ -217,6 +217,92 @@ def test_figure_qa_warning_only_for_unchecked_raster_image_tabular(tmp_path) -> 
 
 def test_figure_qa_untracked_lane_gets_no_warning() -> None:
     assert submit_payload._qa_checked_figure_set({}, None) is None
-    assert submit_payload._qa_checked_figure_set(
-        {"qa_checked_figures": ["/x/a.png"]}, None
-    ) == {str(Path("/x/a.png").resolve())}
+    assert submit_payload._qa_checked_figure_set({"qa_checked_figures": ["/x/a.png"]}, None) == {
+        str(Path("/x/a.png").resolve())
+    }
+
+
+# --- edit: in-place write semantics ---------------------------------------
+
+
+def test_edit_preserves_permissions_and_inode(project) -> None:
+    target = project["session"] / "results" / "run.sh"
+    target.write_text("echo old\n", encoding="utf-8")
+    target.chmod(0o750)
+    inode = target.stat().st_ino
+    result = _edit("results/run.sh", "old", "new")
+    assert result["success"] is True, result
+    assert target.read_text(encoding="utf-8") == "echo new\n"
+    assert target.stat().st_mode & 0o777 == 0o750
+    assert target.stat().st_ino == inode
+
+
+def test_concurrent_edits_on_one_file_both_apply(project) -> None:
+    target = project["session"] / "results" / "table.txt"
+    lines = [f"row{i} = 0" for i in range(12)]
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    async def run_all():
+        return await asyncio.gather(
+            *(
+                file_operations_handler(
+                    "edit",
+                    "results/table.txt",
+                    old_text=f"row{i} = 0",
+                    new_text=f"row{i} = {i + 100}",
+                    tool_context=_ctx(),
+                )
+                for i in range(12)
+            )
+        )
+
+    results = asyncio.run(run_all())
+    assert all(r["success"] for r in results), results
+    assert target.read_text(encoding="utf-8") == "".join(f"row{i} = {i + 100}\n" for i in range(12))
+
+
+# --- figure-QA ledger across the real executor boundary -------------------
+
+
+def test_qa_ledger_survives_unified_executor_and_keys_submit_path(monkeypatch, tmp_path) -> None:
+    from app.services.deep_think.dispatch import _run_qa_checked_figures
+    from app.services.execution.tool_executor import (
+        ToolExecutionContext,
+        UnifiedToolExecutor,
+    )
+
+    async def fake(prompt, path):
+        return '{"pass": true, "severity": "low", "issues": [], "summary": "ok"}'
+
+    monkeypatch.setattr(vision_reader, "_call_qwen_vision_api", fake)
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    figure = real_dir / "fig.png"
+    figure.write_bytes(b"\x89PNG fake")
+    alias = tmp_path / "alias"
+    alias.symlink_to(real_dir, target_is_directory=True)
+
+    agent = SimpleNamespace()
+    # Native dispatch puts the agent's run ledger on the ToolContext it hands the
+    # plan-lane executor, which rebuilds its own ToolContext before the tool runs.
+    caller_ctx = ToolContext(session_id=SESSION, extra={"qa_checked_figures": _run_qa_checked_figures(agent)})
+    response = asyncio.run(
+        UnifiedToolExecutor().execute(
+            "vision_reader",
+            {"operation": "qa_figure", "file_path": str(alias / "fig.png"), "tool_context": caller_ctx},
+            context=ToolExecutionContext(session_id=SESSION),
+        )
+    )
+    assert response["success"] is True, response
+    assert agent._qa_checked_figures == [str(figure.resolve())]
+    assert _run_qa_checked_figures(agent) is agent._qa_checked_figures
+
+    # A later deliverable_submit in the same run sees the same ledger and keys
+    # the submitted output by its resolved path, so no warning for this figure.
+    submit_ctx = ToolContext(session_id=SESSION, extra={"qa_checked_figures": _run_qa_checked_figures(agent)})
+    qa = submit_payload._qa_checked_figure_set({}, submit_ctx)
+    assert qa is not None
+    item = {"module": "image_tabular"}
+    assert submit_payload._needs_figure_qa_warning(item, figure, qa) is False
+    assert submit_payload._needs_figure_qa_warning(item, alias / "fig.png", qa) is False
+    assert submit_payload._needs_figure_qa_warning(item, real_dir / "other.png", qa) is True
