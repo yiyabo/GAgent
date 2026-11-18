@@ -1766,6 +1766,7 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
                     session_id=session_id,
                     ancestor_chain=_ancestor_chain_sync,
                     owner_id=owner_id,
+                    memory_enabled=(config.session_context or {}).get("memory_enabled") is not False,
                     current_job_id=_job_id_sync,
                     work_dir=task_work_dir,
                     channel="plan_executor",

@@ -135,6 +135,7 @@ def _save_run_user_message(
         request.message,
         user_message_metadata,
         owner_id=owner_id,
+        memory_enabled=(request.context or {}).get("memory_enabled") is not False,
     )
     if isinstance(user_message_id, int):
         set_chat_run_user_message_id(run_id, user_message_id)

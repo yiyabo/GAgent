@@ -86,3 +86,50 @@ export interface QueryMemoryResponse {
   total: number;
   search_time_ms: number;
 }
+
+/** One row of `GET /mcp/memory/entries`: a stored memory as the governance drawer lists it. */
+export interface MemoryEntry {
+  id: string;
+  content: string;
+  memory_type: Memory['memory_type'];
+  importance: Memory['importance'];
+  keywords: string[];
+  tags: string[];
+  context: string;
+  created_at: string | null;
+  last_accessed: string | null;
+  retrieval_count: number;
+  embedding_generated: boolean;
+}
+
+export interface ListMemoriesParams {
+  search?: string;
+  memory_type?: Memory['memory_type'];
+  importance?: Memory['importance'];
+  limit?: number;
+  offset?: number;
+}
+
+export interface ListMemoriesResponse {
+  items: MemoryEntry[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface UpdateMemoryRequest {
+  content?: string;
+  importance?: Memory['importance'];
+  memory_type?: Memory['memory_type'];
+  tags?: string[];
+}
+
+export interface UpdateMemoryResponse {
+  success: boolean;
+  item: MemoryEntry;
+}
+
+export interface DeleteMemoryResponse {
+  success: boolean;
+  deleted_id: string;
+}

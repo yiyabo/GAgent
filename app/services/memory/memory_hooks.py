@@ -14,9 +14,11 @@ from ...models_memory import (
     SaveMemoryRequest,
 )
 from .memory_service import (
+    PLAN_TAG_PREFIX,
+    coerce_positive_id,
     get_memory_service,
+    resolve_owner_id_for_plan_task,
     resolve_owner_id_for_session,
-    resolve_owner_id_for_task,
 )
 
 logger = logging.getLogger(__name__)
@@ -34,6 +36,33 @@ class MemoryHooks:
             "last_save_time": None,
         }
 
+    @staticmethod
+    def _plan_task_owner(hook: str, plan_id: Optional[int], task_id: Optional[int]) -> Optional[str]:
+        """Resolve the owner for a plan-task hook, or ``None`` to skip the save.
+
+        Ownership comes only from the authoritative plan the task was loaded
+        from (``plan_id``); task ids are plan-local, so a bare ``task_id`` is
+        never used to guess an owner. Unknown ownership means the memory is not
+        written at all (an ownerless row would be invisible to recall anyway).
+        """
+        owner_id = resolve_owner_id_for_plan_task(plan_id, task_id)
+        if owner_id is None:
+            logger.info(
+                "Skipping %s memory: owner unknown for plan=%s task=%s",
+                hook,
+                plan_id,
+                task_id,
+            )
+        return owner_id
+
+    @staticmethod
+    def _plan_tags(tags: list, plan_id: Optional[int]) -> list:
+        """Append the ``plan:<id>`` tag that disambiguates plan-local task ids."""
+        pid = coerce_positive_id(plan_id)
+        if pid is not None:
+            tags.append(f"{PLAN_TAG_PREFIX}{pid}")
+        return tags
+
     async def on_task_complete(
         self,
         task_id: int,
@@ -41,21 +70,29 @@ class MemoryHooks:
         task_content: str,
         task_result: Optional[str] = None,
         success: bool = True,
+        plan_id: Optional[int] = None,
     ) -> Optional[str]:
         """
         Persist task execution memory after task completion.
 
         Args:
-            task_id: Task ID.
+            task_id: Plan-local task ID.
             task_name: Task name.
             task_content: Task input/instruction content.
             task_result: Optional execution output.
             success: Whether task execution succeeded.
+            plan_id: ID of the plan the task belongs to. Required to establish
+                ownership; without it (or when the plan/task pair is unknown)
+                nothing is saved.
 
         Returns:
-            Saved memory ID, or `None` when save fails.
+            Saved memory ID, or `None` when skipped or the save fails.
         """
         if not self.enabled:
+            return None
+
+        owner_id = self._plan_task_owner("task_complete", plan_id, task_id)
+        if owner_id is None:
             return None
 
         try:
@@ -78,6 +115,7 @@ class MemoryHooks:
                 tags.append("success")
             else:
                 tags.append("failed")
+            self._plan_tags(tags, plan_id)
 
             request = SaveMemoryRequest(
                 content=content,
@@ -85,7 +123,7 @@ class MemoryHooks:
                 importance=importance,
                 tags=tags,
                 related_task_id=task_id,
-                owner_id=resolve_owner_id_for_task(task_id),
+                owner_id=owner_id,
             )
 
             response = await self.memory_service.save_memory(request)
@@ -152,6 +190,7 @@ class MemoryHooks:
         error_type: str,
         context: Optional[Dict[str, Any]] = None,
         task_id: Optional[int] = None,
+        plan_id: Optional[int] = None,
     ) -> Optional[str]:
         """
         Persist runtime error information to memory.
@@ -160,12 +199,19 @@ class MemoryHooks:
             error_message: Error message text.
             error_type: Error type/category.
             context: Optional structured context.
-            task_id: Optional related task ID.
+            task_id: Optional related plan-local task ID.
+            plan_id: ID of the plan the error belongs to. Required to establish
+                ownership; without it (or when the plan/task pair is unknown)
+                nothing is saved.
 
         Returns:
-            Saved memory ID, or `None`.
+            Saved memory ID, or `None` when skipped or the save fails.
         """
         if not self.enabled:
+            return None
+
+        owner_id = self._plan_task_owner("error", plan_id, task_id)
+        if owner_id is None:
             return None
 
         try:
@@ -183,9 +229,9 @@ class MemoryHooks:
                 content=content,
                 memory_type=MemoryType.EXPERIENCE,
                 importance=ImportanceLevel.HIGH,
-                tags=["error", error_type],
+                tags=self._plan_tags(["error", error_type], plan_id),
                 related_task_id=task_id,
-                owner_id=resolve_owner_id_for_task(task_id),
+                owner_id=owner_id,
             )
 
             response = await self.memory_service.save_memory(request)
@@ -246,19 +292,27 @@ class MemoryHooks:
         task_id: int,
         evaluation_result: Dict[str, Any],
         score: float,
+        plan_id: Optional[int] = None,
     ) -> Optional[str]:
         """
         Persist task evaluation result to memory.
 
         Args:
-            task_id: Task ID.
+            task_id: Plan-local task ID.
             evaluation_result: Evaluation payload.
             score: Numeric evaluation score.
+            plan_id: ID of the plan the task belongs to. Required to establish
+                ownership; without it (or when the plan/task pair is unknown)
+                nothing is saved.
 
         Returns:
-            Saved memory ID, or `None`.
+            Saved memory ID, or `None` when skipped or the save fails.
         """
         if not self.enabled:
+            return None
+
+        owner_id = self._plan_task_owner("evaluation", plan_id, task_id)
+        if owner_id is None:
             return None
 
         try:
@@ -275,9 +329,9 @@ class MemoryHooks:
                 content=content,
                 memory_type=MemoryType.EVALUATION,
                 importance=importance,
-                tags=["evaluation", f"score:{score:.2f}"],
+                tags=self._plan_tags(["evaluation", f"score:{score:.2f}"], plan_id),
                 related_task_id=task_id,
-                owner_id=resolve_owner_id_for_task(task_id),
+                owner_id=owner_id,
             )
 
             response = await self.memory_service.save_memory(request)

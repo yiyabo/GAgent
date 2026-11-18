@@ -37,6 +37,14 @@ class ToolContext:
     job_id: Optional[str] = None
     owner_id: Optional[str] = None
 
+    # --- privacy ---
+    memory_enabled: bool = True
+    """False when the user turned long-term memory off for this chat turn.
+
+    Set by the chat tool lanes from the server-side turn context; memory tools
+    must refuse to read or write the user's memories while it is False.
+    """
+
     # --- environment ---
     work_dir: str = ""
     data_dir: str = ""

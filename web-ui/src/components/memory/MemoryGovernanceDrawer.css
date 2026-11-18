@@ -1,0 +1,124 @@
+/* Memory governance drawer: every colour, radius and size comes from tokens.css. */
+
+.memory-gov-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.memory-gov-total.ant-badge .ant-badge-count {
+  background: var(--color-action);
+  color: var(--color-on-action);
+  box-shadow: none;
+}
+
+.memory-gov-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.memory-gov-filters {
+  display: flex;
+  gap: 8px;
+}
+
+.memory-gov-filters .ant-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.memory-gov-compose,
+.memory-gov-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+  padding: 12px;
+}
+
+.memory-gov-compose {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+  background: var(--surface-sunken);
+}
+
+.memory-gov-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.memory-gov-card:hover {
+  border-color: var(--border-default);
+}
+
+.memory-gov-card-content {
+  margin-bottom: 8px;
+  color: var(--text-primary);
+  font-size: var(--fs-small);
+  line-height: var(--lh-body);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.memory-gov-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.memory-gov-card-meta .ant-tag {
+  margin-inline-end: 0;
+}
+
+.memory-gov-recalled {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.memory-gov-recalled,
+.memory-gov-created {
+  color: var(--text-secondary);
+  font-size: var(--fs-caption);
+}
+
+.memory-gov-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.memory-gov-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.memory-gov-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.memory-gov-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.memory-gov-state {
+  padding: 32px 0;
+  text-align: center;
+}
+
+.memory-gov-load-more {
+  display: flex;
+  justify-content: center;
+  margin-top: 12px;
+}
