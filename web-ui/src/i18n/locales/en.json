@@ -1894,6 +1894,8 @@
     "recommendedSuffix": " (recommended default)",
     "otherPrefix": "Other: ",
     "sendFailed": "Could not send your answers: {{detail}}",
-    "assumptionsTitle": "Plan assumptions (unconfirmed)"
+    "assumptionsTitle": "Plan assumptions (unconfirmed)",
+    "contractTitle": "Research contract (preserved during execution)",
+    "contractSources": "Source preferences: {{sources}}"
   }
 }

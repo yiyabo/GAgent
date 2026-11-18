@@ -1894,6 +1894,8 @@
     "recommendedSuffix": "（采用推荐）",
     "otherPrefix": "其他：",
     "sendFailed": "无法发送你的回答：{{detail}}",
-    "assumptionsTitle": "计划假设（尚未确认）"
+    "assumptionsTitle": "计划假设（尚未确认）",
+    "contractTitle": "研究契约（执行时持续保留）",
+    "contractSources": "来源偏好：{{sources}}"
   }
 }

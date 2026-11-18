@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import asyncio
+import json
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -13,8 +13,8 @@ from app.services.plans.decomposition_jobs import (
     set_current_job,
 )
 from app.services.plans.dependency_enrichment import check_artifact_readiness
-from app.services.plans.plan_executor import ExecutionConfig
 from app.services.plans.execution_budget import bounded_plan_job
+from app.services.plans.plan_executor import ExecutionConfig
 from app.services.run_budget import RunDeadlineExceeded, check_run_active
 
 from .dependency_plan import (
@@ -31,6 +31,46 @@ def _facade() -> Any:
     from .. import plan_routes as facade
 
     return facade
+
+
+def _research_session_context(
+    *,
+    plan_id: int,
+    session_id: str | None,
+    owner_id: str | None,
+    base: dict[str, Any],
+) -> dict[str, Any]:
+    """Restore the persisted user objective and owner-scoped evidence for background jobs."""
+    from app.services.plans.research_contract import (
+        merge_owner_history,
+        with_research_contract,
+    )
+
+    try:
+        metadata = _facade()._plan_repo.get_plan_tree(plan_id).metadata
+    except Exception as exc:
+        logger.warning("Research contract lookup failed for plan %s: %s", plan_id, exc)
+        return base
+    contract = metadata.get("research_contract")
+    if not isinstance(contract, dict):
+        return base
+    history: list[dict[str, Any]] = []
+    if session_id and owner_id:
+        try:
+            from app.database import get_db
+
+            with get_db() as conn:
+                rows = conn.execute(
+                    """SELECT m.role, m.content FROM chat_messages m
+                       JOIN chat_sessions s ON s.id=m.session_id
+                       WHERE m.session_id=? AND s.owner_id=? AND m.role IN ('user','assistant')
+                       ORDER BY m.id DESC LIMIT 24""",
+                    (session_id, owner_id),
+                ).fetchall()
+            history = [dict(row) for row in reversed(rows)]
+        except Exception as exc:
+            logger.warning("Owner-scoped Plan history lookup failed for %s: %s", session_id, exc)
+    return with_research_contract(base, merge_owner_history(contract, history))
 
 
 def _run_task_audit_repair_after_execution(
@@ -68,7 +108,7 @@ def _publish_deliverables_after_audit_repair(
     *,
     plan_id: int,
     task_id: int,
-    session_id: Optional[str],
+    session_id: str | None,
 ) -> None:
     """Publish contract deliverables when audit repair promotes a task to completed."""
     if not session_id:
@@ -318,7 +358,7 @@ def _run_task_chain_job(
         *,
         current_step: Optional[int] = None,
         current_task_id: Optional[int] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         done_steps = len(executed) + len(failed) + len(skipped) + len(reused)
         progress_percent = 0
         if total_steps > 0:
@@ -399,6 +439,12 @@ def _run_task_chain_job(
         if owner_id:
             session_ctx["owner_id"] = owner_id
 
+        session_ctx = _research_session_context(
+            plan_id=plan_id,
+            session_id=session_id,
+            owner_id=owner_id,
+            base=session_ctx,
+        )
         task_order = list(task_order)
         known_ids = _plan_node_ids(plan_id)
         for idx, task_id in enumerate(task_order, start=1):
@@ -646,7 +692,7 @@ def _run_full_plan_job(
         *,
         current_step: Optional[int] = None,
         current_task_id: Optional[int] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         done_steps = len(executed) + len(failed) + len(skipped)
         overall_done_steps = min(overall_steps, baseline_completed_steps + completed_steps)
         progress_percent = 0
@@ -717,6 +763,14 @@ def _run_full_plan_job(
             "deep_think_enabled": bool(deep_think),
             "paper_mode": bool(paper_mode),
         }
+        if owner_id:
+            session_ctx["owner_id"] = owner_id
+        session_ctx = _research_session_context(
+            plan_id=plan_id,
+            session_id=session_id,
+            owner_id=owner_id,
+            base=session_ctx,
+        )
 
         task_order = list(task_order)
         known_ids = _plan_node_ids(plan_id)
@@ -1035,7 +1089,7 @@ def _run_full_plan_job(
             except (RunDeadlineExceeded, asyncio.CancelledError):
                 raise
             except Exception as exc:
-                repair_result: Optional[Dict[str, Any]] = None
+                repair_result: dict[str, Any] = {}
                 failure_payload = {
                     "status": "failed",
                     "content": f"Task execution raised an exception: {exc}",
@@ -1109,7 +1163,7 @@ def _run_full_plan_job(
                 result_status=result.status,
                 session_id=session_id,
                 owner_id=owner_id,
-            )
+            ) or {}
             audit_repairs[str(task_id)] = repair_result
             final_status = _status_after_audit_repair(result.status, repair_result)
 

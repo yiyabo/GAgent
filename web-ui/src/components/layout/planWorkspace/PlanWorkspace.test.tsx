@@ -64,6 +64,18 @@ describe('plan workspace navigation and async isolation', () => {
     expect(screen.queryByRole('button', {name: /^收起$|^展开（/})).not.toBeInTheDocument();
     expect(screen.queryByRole('separator', {name: /计划概览/})).not.toBeInTheDocument();
   });
+  it('shows the persisted research objective and source preferences', async () => {
+    const withContract = tree(1);
+    withContract.metadata = {research_contract: {
+      objective: '保留完整研究目标与科学约束',
+      source_preferences: ['PhageScope', 'NCBI', 'PubMed'],
+    }};
+    api.getPlanTree.mockResolvedValue(withContract);
+    mount();
+    expect(await screen.findByText('研究契约（执行时持续保留）')).toBeInTheDocument();
+    expect(screen.getByText('保留完整研究目标与科学约束')).toBeInTheDocument();
+    expect(screen.getByText(/PhageScope \/ NCBI \/ PubMed/)).toBeInTheDocument();
+  });
   it('shows review work separately from completed execution tasks', async () => {
     const pendingReview = tree(1);
     pendingReview.nodes['2'].status = 'needs_review';
