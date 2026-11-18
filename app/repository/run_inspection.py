@@ -151,12 +151,15 @@ def _find_plan_task_job(conn: sqlite3.Connection, task_id: int, job_id: str | No
             WHERE job_id = ? AND job_type = 'plan_execute'
               AND (
                 target_task_id = ?
-                OR json_extract(metadata_json, '$.task_id') = ?
-                OR json_extract(stats_json, '$.task_id') = ?
+                OR (json_type(metadata_json, '$.task_id') IN ('integer', 'text')
+                    AND CAST(json_extract(metadata_json, '$.task_id') AS TEXT) = CAST(? AS TEXT))
+                OR (json_type(stats_json, '$.task_id') IN ('integer', 'text')
+                    AND CAST(json_extract(stats_json, '$.task_id') AS TEXT) = CAST(? AS TEXT))
                 OR EXISTS (
                   SELECT 1 FROM decomposition_job_logs
                   WHERE decomposition_job_logs.job_id = decomposition_jobs.job_id
-                    AND json_extract(decomposition_job_logs.metadata_json, '$.task_id') = ?
+                    AND (json_type(decomposition_job_logs.metadata_json, '$.task_id') IN ('integer', 'text')
+                        AND CAST(json_extract(decomposition_job_logs.metadata_json, '$.task_id') AS TEXT) = CAST(? AS TEXT))
                 )
               )
             """,
@@ -174,11 +177,14 @@ def _find_plan_task_job(conn: sqlite3.Connection, task_id: int, job_id: str | No
           AND (
             job_id IN (
               SELECT job_id FROM decomposition_job_logs
-              WHERE json_extract(metadata_json, '$.task_id') = ?
+              WHERE (json_type(metadata_json, '$.task_id') IN ('integer', 'text')
+                  AND CAST(json_extract(metadata_json, '$.task_id') AS TEXT) = CAST(? AS TEXT))
             )
             OR target_task_id = ?
-            OR json_extract(metadata_json, '$.task_id') = ?
-            OR json_extract(stats_json, '$.task_id') = ?
+            OR (json_type(metadata_json, '$.task_id') IN ('integer', 'text')
+                AND CAST(json_extract(metadata_json, '$.task_id') AS TEXT) = CAST(? AS TEXT))
+            OR (json_type(stats_json, '$.task_id') IN ('integer', 'text')
+                AND CAST(json_extract(stats_json, '$.task_id') AS TEXT) = CAST(? AS TEXT))
           )
         ORDER BY COALESCE(started_at, created_at) DESC, created_at DESC
         LIMIT 1
@@ -235,7 +241,8 @@ def load_plan_task_inspection_inputs(plan_id: int, task_id: int, job_id: str | N
                 SELECT id, timestamp, level, message, metadata_json
                 FROM decomposition_job_logs
                 WHERE job_id = ?
-                  AND json_extract(metadata_json, '$.task_id') = ?
+                  AND (json_type(metadata_json, '$.task_id') IN ('integer', 'text')
+                      AND CAST(json_extract(metadata_json, '$.task_id') AS TEXT) = CAST(? AS TEXT))
                   AND COALESCE(json_extract(metadata_json, '$.sub_type'), '') != 'thinking_delta'
                 ORDER BY id DESC
                 LIMIT ?
@@ -254,7 +261,8 @@ def load_plan_task_inspection_inputs(plan_id: int, task_id: int, job_id: str | N
                 """
                 SELECT COALESCE(json_extract(metadata_json, '$.sub_type'), level) AS kind, COUNT(*) AS n
                 FROM decomposition_job_logs
-                WHERE job_id = ? AND json_extract(metadata_json, '$.task_id') = ?
+                WHERE job_id = ? AND (json_type(metadata_json, '$.task_id') IN ('integer', 'text')
+                    AND CAST(json_extract(metadata_json, '$.task_id') AS TEXT) = CAST(? AS TEXT))
                 GROUP BY kind
                 """,
                 params,
@@ -273,9 +281,9 @@ def load_plan_task_inspection_inputs(plan_id: int, task_id: int, job_id: str | N
                            prompt_tokens, completion_tokens, total_tokens,
                            cache_read_tokens, duration_ms, estimated_cost, cost_currency
                     FROM llm_usage_log
-                    WHERE run_id = ? OR run_id LIKE ? || ':%'
+                    WHERE run_id = ? OR run_id GLOB ?
                     """,
-                    (run_id, run_id),
+                    (run_id, f"{run_id}:*"),
                 ).fetchall()
             ]
     except sqlite3.OperationalError as exc:

@@ -263,7 +263,20 @@ def test_pinned_job_must_belong_to_task(env) -> None:
     # Matches by id prefix/string only must not count (exact integer ids).
     shard.execute(
         "INSERT INTO decomposition_jobs VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-        ("job_near", "plan_execute", "x", TASK_ID * 10, None, "done", None, "{}", "{}", "2026-11-18", "2026-11-18", None),
+        (
+            "job_near",
+            "plan_execute",
+            "x",
+            TASK_ID * 10,
+            None,
+            "done",
+            None,
+            "{}",
+            "{}",
+            "2026-11-18",
+            "2026-11-18",
+            None,
+        ),
     )
     _log(shard, "job_near", "2026-11-18T02:00:00", {"task_id": TASK_ID + 100, "sub_type": "thinking_step"})
     shard.commit()
@@ -296,3 +309,30 @@ def test_log_projection_is_bounded_to_newest_rows(env, monkeypatch) -> None:
     assert len(seqs) == 2 and seqs == sorted(seqs)
     assert inputs["logs"][-1][2]["level"] == "error"  # newest row kept
     assert _call()["truncated"]["logs"] is True
+
+
+@pytest.mark.parametrize("job_id", [None, "job_new"])
+def test_exact_string_task_id_matches_integer_task(env, job_id) -> None:
+    shard, main = env
+    _seed_executed(shard, main)
+    shard.execute(
+        "UPDATE decomposition_job_logs SET metadata_json = json_set(metadata_json, '$.task_id', ?) "
+        "WHERE json_extract(metadata_json, '$.task_id') = ?",
+        (str(TASK_ID), TASK_ID),
+    )
+    for other_id in ("30", "03", "3.0", "3abc", 3.0):
+        _log(shard, "job_new", "later", {"task_id": other_id, "sub_type": "thinking_delta"})
+    shard.commit()
+    payload = _call(job_id=job_id)
+    assert payload["run"]["job_id"] == "job_new"
+    assert payload["summary"]["streaming_chunks"] == 5
+    assert [step["kind"] for step in payload["steps"]] == ["reasoning", "tool"]
+
+
+def test_usage_attempt_prefix_is_literal(env) -> None:
+    shard, main = env
+    _seed_executed(shard, main)
+    main.execute("INSERT INTO llm_usage_log (run_id,total_tokens) VALUES (?,?)", ("planX7YtaskZ3:attempt", 321))
+    payload = _call()
+    assert payload["usage"]["total_tokens"] == 140
+    assert payload["usage"]["calls"] == 2
