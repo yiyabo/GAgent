@@ -177,9 +177,13 @@ async def delete_session(session_id: str):
     try:
         with get_db() as conn:
             # Check if session exists
-            cursor = conn.execute("SELECT id FROM chat_sessions WHERE id = ?", (session_id,))
-            if not cursor.fetchone():
+            cursor = conn.execute("SELECT id, owner_id FROM chat_sessions WHERE id = ?", (session_id,))
+            session_row = cursor.fetchone()
+            if not session_row:
                 raise HTTPException(status_code=404, detail="Session not found")
+            # Memory cleanup is scoped to the session's recorded owner; without
+            # one, no owner-scoped memories exist to cascade.
+            session_owner_id = str(session_row[1]) if session_row[1] else ""
             
             # Delete all tasks in the session (CASCADE will handle related data)
             task_cursor = conn.execute("DELETE FROM tasks WHERE session_id = ?", (session_id,))
@@ -197,7 +201,7 @@ async def delete_session(session_id: str):
             try:
                 from ..services.memory.memory_service import get_memory_service
 
-                get_memory_service().delete_memories_for_session(session_id)
+                get_memory_service().delete_memories_for_session(session_id, session_owner_id)
             except Exception as mem_exc:
                 logger.warning("Failed to delete memories for %s: %s", session_id, mem_exc)
 

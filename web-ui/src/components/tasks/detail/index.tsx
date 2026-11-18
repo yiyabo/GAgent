@@ -28,6 +28,7 @@ import type {
 } from '@/types';
 import { dispatchPlanSyncEvent, shouldHandlePlanSyncEvent } from '@utils/planSyncEvents';
 import JobLogPanel from '@components/chat/JobLogPanel';
+import InspectTaskRunButton from '@components/chat/runInspector/InspectTaskRunButton';
 import { TaskDrawerContent } from './TaskDetailSections';
 import TaskExecuteModal from './TaskExecuteModal';
 import { useCallbackScope } from './useCallbackScope';
@@ -442,6 +443,16 @@ const TaskDetailDrawer: React.FC = () => {
       maskClosable
       extra={
         <Space size={4}>
+          {activeTask && (
+            <InspectTaskRunButton
+              size="middle"
+              planId={currentPlanId}
+              taskId={activeTask.id}
+              taskName={activeTask.name}
+              status={activeTask.status}
+              executionResult={activeTask.execution_result}
+            />
+          )}
           <Button
             type="primary"
             icon={<PlayCircleOutlined />}

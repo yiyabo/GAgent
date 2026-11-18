@@ -1,4 +1,7 @@
+import type { TFn } from '@/i18n/useT';
 import type {
+  ChatRunInspectionTarget,
+  PlanTaskRunInspectionTarget,
   RunInspection,
   RunInspectionStep,
   RunInspectionTarget,
@@ -6,16 +9,48 @@ import type {
 
 export type StepFilter = 'all' | 'tools' | 'failures';
 
-/** Resolve which run produced an assistant message: live id first, then the persisted message id. */
-export function resolveRunTarget(metadata: Record<string, unknown> | undefined | null): RunInspectionTarget | null {
+const DIRECT_CHAT_RUN_KEYS = ['chat_run_id', 'deep_think_job_id'] as const;
+const MESSAGE_ID_KEYS = ['backend_id', 'message_id'] as const;
+
+function positiveInteger(value: unknown): number | null {
+  const parsed = typeof value === 'string' && /^\d+$/.test(value.trim()) ? Number(value.trim()) : value;
+  return typeof parsed === 'number' && Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+/**
+ * Resolve which run produced an assistant message: explicit chat/deep-think run ids (or dt_* run_id)
+ * first, then persisted message id, then any fallback run_id when no message id is present.
+ */
+export function resolveRunTarget(metadata: Record<string, unknown> | undefined | null): ChatRunInspectionTarget | null {
   if (!metadata) return null;
-  for (const key of ['chat_run_id', 'deep_think_job_id'] as const) {
+  for (const key of DIRECT_CHAT_RUN_KEYS) {
     const value = metadata[key];
-    if (typeof value === 'string' && value.startsWith('dt_')) return { run_id: value };
+    if (typeof value === 'string' && value.trim()) return { run_id: value.trim() };
   }
-  const backendId = metadata.backend_id;
-  if (typeof backendId === 'number' && Number.isInteger(backendId) && backendId > 0) return { message_id: backendId };
+  const rawRunId = typeof metadata.run_id === 'string' ? metadata.run_id.trim() : '';
+  if (rawRunId.startsWith('dt_')) return { run_id: rawRunId };
+  for (const key of MESSAGE_ID_KEYS) {
+    const id = positiveInteger(metadata[key]);
+    if (id !== null) return { message_id: id };
+  }
+  if (rawRunId) return { run_id: rawRunId };
   return null;
+}
+
+export function isPlanTaskTarget(target: RunInspectionTarget | null | undefined): target is PlanTaskRunInspectionTarget {
+  return Boolean(target && 'planId' in target && 'taskId' in target);
+}
+
+/** A task has something to inspect once it has left `pending` or has recorded output. */
+export function taskHasRun(task: { status?: string | null; execution_result?: string | null }): boolean {
+  return (typeof task.status === 'string' && task.status !== '' && task.status !== 'pending') || Boolean(task.execution_result);
+}
+
+/** "1 step · 1 tool step" / "3 steps · 2 tool steps", with the plural chosen per count. */
+export function formatStepCounts(t: TFn, steps: number, toolSteps: number): string {
+  const stepText = t(steps === 1 ? 'runInspector.stepCountOne' : 'runInspector.stepCountOther', { count: steps });
+  const toolText = t(toolSteps === 1 ? 'runInspector.toolStepCountOne' : 'runInspector.toolStepCountOther', { count: toolSteps });
+  return `${stepText} · ${toolText}`;
 }
 
 export function filterSteps(steps: RunInspectionStep[], filter: StepFilter, tool: string | null): RunInspectionStep[] {

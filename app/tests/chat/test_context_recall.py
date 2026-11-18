@@ -44,10 +44,16 @@ def test_scopes_apply_before_limits_and_user_facts_survive(recall_db):
     note('profile',content='Always answer in Chinese',importance='high')
     for i in range(90): note(f'irrelevant-{i}','other')
     selected = recall('a','lysin alignment')['memories']
-    assert {row['id'] for row in selected} == {'same','project','profile'}
-    assert {row['scope'] for row in selected} == {'session','project','user'}
+    # Scoped notes and durable profile facts outrank owner-wide notes from other sessions.
+    assert {row['id'] for row in selected[:3]} == {'same','project','profile'}
+    assert {row['scope'] for row in selected[:3]} == {'session','project','user'}
+    # Cross-session recall stays owner-isolated: another user's note never leaks.
+    assert 'stranger' not in {row['id'] for row in selected}
+    assert {row['scope'] for row in selected[3:]} <= {'owner'}
     note('local','local'); note('local2','local2')
-    assert {row['id'] for row in recall('local','lysin')['memories']} == {'local','profile'}
+    local = recall('local','lysin')['memories']
+    assert {row['id'] for row in local[:2]} == {'local','profile'}
+    assert 'stranger' not in {row['id'] for row in local}
 
 
 def test_original_history_has_evidence_and_excludes_current_turn(recall_db):

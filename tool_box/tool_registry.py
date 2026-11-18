@@ -37,6 +37,7 @@ from .tools_impl import (
     execute_code_tool,
     delegate_task_tool,
     load_skill_tool,
+    memory_operation_tool,
     vision_reader_tool,
     web_search_tool,
 )
@@ -96,6 +97,10 @@ _TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     },
     "url_fetch": {
         "search_hint": "download public url link file http https fetch",
+    },
+    "memory_operation": {
+        # Not read-only: save/update/forget mutate the user's memory store.
+        "search_hint": "memory remember recall preference fact forget long-term user profile",
     },
     "load_skill": {
         "is_read_only": True,
@@ -198,6 +203,7 @@ _STANDARD_TOOLS: List[Dict[str, Any]] = [
     execute_code_tool,
     delegate_task_tool,
     load_skill_tool,
+    memory_operation_tool,
 ]
 
 # Tools that need special field mapping

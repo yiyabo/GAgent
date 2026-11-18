@@ -41,6 +41,7 @@ import VirtualList, { ListRef } from 'rc-virtual-list';
 import { isAllowedUploadFile } from '@/constants/uploadFileTypes';
 import { useT } from '@/i18n/useT';
 import { describeUploadError } from '@/utils/uploadError';
+import MemoryGovernanceDrawer from '@components/memory/MemoryGovernanceDrawer';
 
 /** FastAPI/axios errors often put the reason in `response.data.detail`; BaseApi may not surface it on `Error.message`. */
 function httpErrorDetail(err: unknown, fallback: string): { status?: number; detail: string } {
@@ -321,6 +322,7 @@ const ChatMainArea: React.FC = () => {
   const currentPlan = useTasksStore((s) => s.currentPlan);
   const [inputText, setInputText] = useState('');
   const [steerSending, setSteerSending] = useState(false);
+  const [memoryDrawerOpen, setMemoryDrawerOpen] = useState(false);
 
   const uploadsInFlight = useChatStore((s) =>
     (s.uploadingFiles ?? []).filter((u) => u.sessionKey === s.currentSession?.id).length,
@@ -616,6 +618,15 @@ const ChatMainArea: React.FC = () => {
                 }}
               />
             </Tooltip>
+            <Tooltip title={t('memory.governance.open')}>
+              <Button
+                type="text"
+                size="small"
+                icon={<DatabaseOutlined />}
+                aria-label={t('memory.governance.open')}
+                onClick={() => setMemoryDrawerOpen(true)}
+              />
+            </Tooltip>
           </div>
         </div>
       )}
@@ -751,6 +762,8 @@ const ChatMainArea: React.FC = () => {
           </div>
         </div>
       )}
+
+      <MemoryGovernanceDrawer open={memoryDrawerOpen} onClose={() => setMemoryDrawerOpen(false)} />
     </div>
   );
 };

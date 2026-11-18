@@ -1,14 +1,19 @@
 """One bounded recall envelope for chat, DeepThink and plan executors.
 
-Recall reads existing evidence; it does not learn model weights, spend tokens on
-embedding calls, or turn a historical assistant claim into a verified result.
+Recall reads existing evidence; it does not learn model weights or turn a
+historical assistant claim into a verified result. Ranking is hybrid: keyword
+overlap plus (when the owner has stored embeddings) a short-timeout vector
+cosine, with clean keyword-only fallback when embeddings are unavailable.
 """
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import re
+import threading
+import time
 from typing import Any
 
 from app.repository import context_recall as repository
@@ -16,6 +21,15 @@ from app.services.prompt_policy import REFERENCE_SCOPE_POLICY
 
 logger = logging.getLogger(__name__)
 MAX_CONTEXT_CHARS = 6500
+VECTOR_TIMEOUT_S = 2.0
+VECTOR_BREAKER_COOLDOWN_S = 60.0
+MAX_OWNER_SCOPE_NOTES = 2
+_SCOPE_BOOST = {"session": 1.0, "project": 0.6, "user": 0.4, "owner": 0.0}
+_EMBED_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="recall-embed")
+# After a slow/failed embedding call, skip vector scoring for a cooldown so a
+# degraded provider cannot add VECTOR_TIMEOUT_S to every turn or pin the pool.
+_breaker_lock = threading.Lock()
+_breaker_open_until = 0.0
 _RECALL_CUE = re.compile(r"上次|之前|以前|昨天|前天|上周|上个月|历史|记得|回顾|曾经|earlier|previous|last (?:time|week|month)|yesterday|remember", re.I)
 _STOP = {"the", "and", "for", "with", "from", "this", "that", "please", "what", "was", "were", "have", "我们", "一下", "什么", "这个", "那个", "帮我", "看看", "结果", "任务", "项目"}
 
@@ -34,6 +48,54 @@ def _score(content: str, terms: list[str]) -> int:
     return sum(term in text for term in terms)
 
 
+def _query_embedding(query: str) -> list[float] | None:
+    global _breaker_open_until
+    with _breaker_lock:
+        if time.monotonic() < _breaker_open_until:
+            return None
+    try:
+        from app.services.embeddings import get_embeddings_service
+
+        service = get_embeddings_service()
+        future = _EMBED_POOL.submit(service.get_single_embedding, query[:2000])
+        vector = future.result(timeout=VECTOR_TIMEOUT_S)
+    except Exception as exc:  # offline / timeout / misconfigured -> keyword-only
+        logger.debug("recall embedding unavailable: %s", type(exc).__name__)
+        with _breaker_lock:
+            _breaker_open_until = time.monotonic() + VECTOR_BREAKER_COOLDOWN_S
+        return None
+    return list(vector) if vector else None
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    if len(a) != len(b) or not a:
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(y * y for y in b) ** 0.5
+    return dot / (na * nb) if na and nb else 0.0
+
+
+def vector_scores(owner_id: str, query: str, rows: list[dict]) -> dict[str, float]:
+    """Cosine similarity per main-store candidate; empty when embeddings are absent."""
+    ids = [str(r["id"]) for r in rows if r.get("source_store") == "main"]
+    stored = repository.owner_embeddings(owner_id, ids)
+    if not stored:
+        return {}
+    query_vec = _query_embedding(query)
+    if not query_vec:
+        return {}
+    scores: dict[str, float] = {}
+    for memory_id, raw in stored.items():
+        try:
+            vector = json.loads(raw) if isinstance(raw, str) else raw
+        except (ValueError, TypeError):
+            continue
+        if isinstance(vector, list):
+            scores[memory_id] = max(0.0, _cosine(query_vec, [float(v) for v in vector]))
+    return scores
+
+
 def recall(session_id: str | None, query: str, *, enabled: bool = True, client_message_id: str | None = None, history: bool | None = None) -> dict:
     result: dict = {"version": 1, "memories": [], "history": []}
     if not enabled or not session_id:
@@ -45,7 +107,28 @@ def recall(session_id: str | None, query: str, *, enabled: bool = True, client_m
     terms = query_terms(query)
     notes = [row for row in repository.memory_candidates(scope, terms)
              if not (row["source_session_id"] == session_id and row["content"].strip() in {query.strip(), "[user] " + query.strip()})]
-    notes.sort(key=lambda row: (_score(row["content"] + str(row.get("keywords") or ""), terms), row.get("importance") in {"critical", "high"}, str(row.get("created_at") or "")), reverse=True)
+    vectors = vector_scores(scope["owner_id"], query, notes)
+    denom = max(len(terms), 1)
+
+    def _rank(row: dict) -> tuple:
+        keyword = _score(row["content"] + str(row.get("keywords") or ""), terms) / denom
+        hybrid = keyword + vectors.get(str(row["id"]), 0.0) + _SCOPE_BOOST.get(row["scope"], 0.0)
+        return (round(hybrid, 6), row.get("importance") in {"critical", "high"}, str(row.get("created_at") or ""))
+
+    notes.sort(key=_rank, reverse=True)
+    # Notes from the owner's unrelated sessions/projects must actually match the
+    # query (keyword or vector) and may fill at most MAX_OWNER_SCOPE_NOTES slots.
+    owner_kept = 0
+    bounded = []
+    for row in notes:
+        if row["scope"] == "owner":
+            keyword_hit = _score(row["content"] + str(row.get("keywords") or ""), terms) > 0
+            relevant = keyword_hit or vectors.get(str(row["id"]), 0.0) > 0.0
+            if not relevant or owner_kept >= MAX_OWNER_SCOPE_NOTES:
+                continue
+            owner_kept += 1
+        bounded.append(row)
+    notes = bounded
     profile = [row for row in notes if row['scope'] == 'user' and row['importance'] in {'critical','high'}][:2]
     notes = profile + [row for row in notes if row not in profile]
     seen = set()
@@ -57,6 +140,12 @@ def recall(session_id: str | None, query: str, *, enabled: bool = True, client_m
         result["memories"].append({"id": row["id"], "content": row["content"][:900], "memory_type": row["memory_type"], "scope": row["scope"], "session_id": row["source_session_id"], "source_store": row["source_store"], "importance": row["importance"], "created_at": str(row.get("created_at") or "")})
         if len(result["memories"]) == 5:
             break
+    recalled_main = [m["id"] for m in result["memories"] if m["source_store"] == "main"]
+    if recalled_main:
+        try:
+            repository.mark_recalled(scope["owner_id"], recalled_main)
+        except Exception as exc:  # usage stats must never break recall
+            logger.debug("retrieval_count update skipped: %s", type(exc).__name__)
     if history is True or (history is None and _RECALL_CUE.search(query)):
         rows = repository.history_candidates(scope, terms, client_message_id=client_message_id, current_message=query if history is not True else None)
         rows.sort(key=lambda row: (_score(row["content"], terms), row["id"]), reverse=True)

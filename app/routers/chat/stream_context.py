@@ -207,6 +207,7 @@ async def build_agent_for_chat_request(
                 request.message,
                 user_message_metadata or None,
                 model_provider=context.get("model_provider"),
+                memory_enabled=context.get("memory_enabled") is not False,
             )
         session_settings = _get_session_settings(request.session_id)
         runtime_context = _load_session_runtime_context(request.session_id)

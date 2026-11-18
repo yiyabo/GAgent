@@ -550,6 +550,7 @@ class _DeepThinkMethods:
                     session_id=session_context.get("session_id"),
                     ancestor_chain=task_ancestor_chain,
                     owner_id=session_context.get("owner_id"),
+                    memory_enabled=session_context.get("memory_enabled") is not False,
                     current_job_id=_job_id_for_stream,
                     work_dir=task_work_dir,
                     channel="plan_executor",

@@ -57,6 +57,7 @@ ALL_NATIVE_TOOLS = [
     "lightrag_query",
     "literature_pipeline",
     "load_skill",
+    "memory_operation",
     "manuscript_writer",
     "ncbi_search",
     "phagescope",

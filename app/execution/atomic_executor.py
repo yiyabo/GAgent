@@ -300,6 +300,9 @@ class AtomicExecutor:
         
         task_name = task.get("name", "Unnamed Task")
         task_content = task.get("content", "")
+        # Task ids are plan-local; memory ownership is established only from the
+        # plan the task was loaded from. Without it the hooks skip the save.
+        plan_id = task.get("plan_id") if isinstance(task, dict) else None
         
         try:
             context_refs = self._parse_context_refs(task.get("context_refs"))
@@ -356,7 +359,8 @@ class AtomicExecutor:
                         task_name=task_name,
                         task_content=task_content,
                         task_result=response,
-                        success=True
+                        success=True,
+                        plan_id=plan_id,
                     )
                 )
             except Exception as mem_err:
@@ -380,7 +384,8 @@ class AtomicExecutor:
                         error_message=str(exc),
                         error_type=type(exc).__name__,
                         context={"task_name": task_name, "task_content": task_content},
-                        task_id=task_id
+                        task_id=task_id,
+                        plan_id=plan_id,
                     )
                 )
             except Exception as mem_err:

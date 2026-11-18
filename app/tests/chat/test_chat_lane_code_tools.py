@@ -489,9 +489,9 @@ def test_summaries_describe_the_three_tools() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_generic_execution_set_covers_exactly_the_three_tools() -> None:
+def test_generic_execution_set_covers_exactly_the_context_tools() -> None:
     assert action_handlers._GENERIC_EXECUTION_TOOLS == frozenset(
-        {"execute_code", "delegate_task", "load_skill"}
+        {"execute_code", "delegate_task", "load_skill", "memory_operation"}
     )
 
 

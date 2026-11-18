@@ -261,6 +261,7 @@ async def _run_explicit_task_execution(
                 "assistant",
                 summary,
                 metadata=final_payload["payload"]["metadata"],
+                memory_enabled=(getattr(agent, "extra_context", None) or {}).get("memory_enabled") is not False,
             )
         except Exception:
             pass
@@ -516,7 +517,10 @@ async def execute_chat_run(run_id: str) -> None:
         if accepted:
             mark_chat_run_finished(run_id, "failed", error=message, worker_id=worker_id)
         if accepted and request is not None and request.session_id:
-            _save_chat_message(request.session_id, "assistant", message, metadata=metadata)
+            _save_chat_message(
+                request.session_id, "assistant", message, metadata=metadata,
+                memory_enabled=(request.context or {}).get("memory_enabled") is not False,
+            )
         _capture_quality_snapshot(run_id)
     try:
         row = get_chat_run(run_id)

@@ -61,6 +61,10 @@ export interface RunInspection {
     assistant_message_id?: number | null;
     message?: string | null;
     context_flags: Record<string, boolean>;
+    /** Present when the run was resolved from a plan task (`GET /plans/{plan_id}/tasks/{task_id}/run-inspection`). */
+    plan_id?: number | null;
+    task_id?: number | null;
+    task_name?: string | null;
   };
   summary: {
     steps: number;
@@ -87,11 +91,24 @@ export interface RunInspection {
     cost_currency?: string | null;
     models: string[];
     by_purpose: RunInspectionUsageGroup[];
+    /** Plan tasks: the ledger is keyed by task, so totals span every attempt. */
+    scope?: 'run' | 'plan_task_all_attempts';
   };
-  truncated: { steps: boolean; artifacts: boolean };
+  truncated: { steps: boolean; artifacts: boolean; logs?: boolean };
 }
 
-export interface RunInspectionTarget {
+/** A chat run, addressed by its run id or by the persisted assistant message it produced. */
+export interface ChatRunInspectionTarget {
   run_id?: string;
   message_id?: number;
 }
+
+/** The latest (or a specific `jobId`) run that executed one plan task; needs no chat session. */
+export interface PlanTaskRunInspectionTarget {
+  planId: number;
+  taskId: number;
+  jobId?: string;
+  taskName?: string;
+}
+
+export type RunInspectionTarget = ChatRunInspectionTarget | PlanTaskRunInspectionTarget;
