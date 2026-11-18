@@ -1001,6 +1001,27 @@ async def _edit_file(
         return {**receipt, "success": False, "error": str(e)}
 
 
+def _acquire_exclusive_lock(fd: int, timeout_sec: float = 15.0) -> None:
+    if fcntl is None:
+        return
+    import errno
+    import time
+
+    deadline = time.monotonic() + timeout_sec
+    delay = 0.005
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except OSError as exc:
+            if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                raise
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"Timed out waiting {timeout_sec:.1f}s for exclusive file lock") from exc
+            time.sleep(delay)
+            delay = min(0.05, delay * 1.5)
+
+
 def _edit_file_locked(
     path: Path,
     old_text: str,
@@ -1008,10 +1029,25 @@ def _edit_file_locked(
     replace_all: bool,
     receipt: Dict[str, Any],
 ) -> Dict[str, Any]:
-    with open(path, "r+b") as handle:
-        if fcntl is not None:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    import stat
+
+    open_flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    raw_fd = os.open(path, open_flags)
+    with os.fdopen(raw_fd, "r+b") as handle:
+        _acquire_exclusive_lock(handle.fileno())
         try:
+            st = os.fstat(handle.fileno())
+            if not stat.S_ISREG(st.st_mode):
+                return {**receipt, "success": False, "error": "Path is not a regular file"}
+            if st.st_size > MAX_READ_FILE_BYTES:
+                return {
+                    **receipt,
+                    "success": False,
+                    "error": (
+                        f"File too large to edit: {st.st_size} bytes "
+                        f"(limit {MAX_READ_FILE_BYTES} bytes)"
+                    ),
+                }
             try:
                 original = handle.read().decode("utf-8")
             except UnicodeDecodeError:
@@ -1059,7 +1095,6 @@ def _edit_file_locked(
         "size": len(updated),
         "diff": _edit_diff_snippet(original, updated, path.name),
     }
-
 
 def _tokenize_status_name(name: str) -> Set[str]:
     return {token for token in re.split(r"[^a-z0-9]+", name.lower()) if token}

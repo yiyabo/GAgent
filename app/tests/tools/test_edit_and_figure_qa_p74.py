@@ -183,7 +183,7 @@ def test_qa_figure_normalizes_fenced_verdict_and_records_check(monkeypatch, tmp_
     assert result["success"] is True
     # A high-severity issue overrides the optimistic pass.
     assert result["pass"] is False and result["severity"] == "high"
-    assert ctx.extra["qa_checked_figures"] == [str(figure.resolve())]
+    assert "qa_checked_figures" not in ctx.extra
 
 
 def test_qa_figure_unparseable_reply(monkeypatch, tmp_path) -> None:
@@ -306,3 +306,41 @@ def test_qa_ledger_survives_unified_executor_and_keys_submit_path(monkeypatch, t
     assert submit_payload._needs_figure_qa_warning(item, figure, qa) is False
     assert submit_payload._needs_figure_qa_warning(item, alias / "fig.png", qa) is False
     assert submit_payload._needs_figure_qa_warning(item, real_dir / "other.png", qa) is True
+
+
+
+def test_chat_tool_context_shares_qa_checked_figures_across_calls(monkeypatch, tmp_path) -> None:
+    from app.routers.chat.action_handlers import _build_chat_tool_context
+
+    monkeypatch.setattr(
+        "app.services.session_paths.get_runtime_session_dir",
+        lambda session_id, create=True: tmp_path / session_id,
+    )
+    agent = SimpleNamespace(session_id=SESSION, extra_context={})
+    vision_ctx = _build_chat_tool_context(agent, "vision_reader")
+    submit_ctx = _build_chat_tool_context(agent, "deliverable_submit")
+    assert vision_ctx is not None and submit_ctx is not None
+    assert vision_ctx.extra["qa_checked_figures"] is submit_ctx.extra["qa_checked_figures"]
+
+    unchecked = tmp_path / "unchecked.png"
+    unchecked.write_bytes(b"\x89PNG fake")
+    item = {"module": "image_tabular"}
+    qa_before = submit_payload._qa_checked_figure_set({}, submit_ctx)
+    assert qa_before is not None and qa_before == set()
+    assert submit_payload._needs_figure_qa_warning(item, unchecked, qa_before) is True
+
+    vision_ctx.extra["qa_checked_figures"].append(str(unchecked.resolve()))
+    qa_after = submit_payload._qa_checked_figure_set({}, submit_ctx)
+    assert qa_after is not None
+    assert submit_payload._needs_figure_qa_warning(item, unchecked, qa_after) is False
+
+
+def test_edit_rejects_symlink_target_without_following(project) -> None:
+    outside = project["root"] / "outside_secret.txt"
+    outside.write_text("secret = 1\n", encoding="utf-8")
+    link = project["session"] / "results" / "link.txt"
+    link.symlink_to(outside)
+
+    result = _edit("results/link.txt", "secret = 1", "secret = 2")
+    assert result["success"] is False
+    assert outside.read_text(encoding="utf-8") == "secret = 1\n"

@@ -88,7 +88,7 @@ def _refresh_summary_anchors(messages: List[Dict[str, Any]], anchors_block: str)
         content = message.get("content")
         if not isinstance(content, str) or not content.startswith(SUMMARY_PREFIX):
             continue
-        position = content.find(ANCHOR_HEADER)
+        position = content.rfind(ANCHOR_HEADER)
         if position < 0:
             continue
         refreshed = content[:position] + anchors_block
@@ -616,7 +616,8 @@ class ContextWindowManager:
             for call in message.get("tool_calls") or []:
                 if not isinstance(call, dict) or not call.get("id"):
                     continue
-                function = call.get("function") if isinstance(call.get("function"), dict) else {}
+                raw_fn = call.get("function")
+                function = raw_fn if isinstance(raw_fn, dict) else {}
                 names[str(call["id"])] = str(
                     function.get("name") or call.get("name") or "tool"
                 )
@@ -684,7 +685,7 @@ class ContextWindowManager:
             content = message.get("content")
             if not isinstance(content, str) or len(content) < _DEDUPE_MIN_CHARS:
                 continue
-            digest = hashlib.md5(content.encode("utf-8", "replace")).hexdigest()
+            digest = hashlib.sha256(content.encode("utf-8", "replace")).hexdigest()
             if digest in seen:
                 tool_name = names.get(str(message.get("tool_call_id") or ""), "tool")
                 result[index] = {

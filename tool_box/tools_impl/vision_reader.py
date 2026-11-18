@@ -895,7 +895,8 @@ async def _qa_figure(
             raw_response=str(reply or "")[:2000],
         )
     verdict = _normalize_qa_verdict(parsed)
-    _record_qa_checked_figure(tool_context, abs_path)
+    if verdict["pass"]:
+        _record_qa_checked_figure(tool_context, abs_path)
     return {
         "tool": "vision_reader",
         "success": True,
@@ -909,8 +910,8 @@ async def _qa_figure(
 
 async def vision_reader_handler(
     operation: str,
-    file_path: str = None,
-    image_path: str = None,  # Alias for backward compatibility
+    file_path: str | None = None,
+    image_path: str | None = None,  # Alias for backward compatibility
     page_numbers: Optional[list[int]] = None,
     page_number: Optional[int] = None,
     region: Optional[Dict[str, float]] = None,

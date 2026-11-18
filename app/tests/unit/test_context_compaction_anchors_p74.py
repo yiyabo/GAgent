@@ -141,3 +141,38 @@ def test_reclaim_commit_path_refreshes_anchors() -> None:
     )
     assert result is not messages
     assert result[1]["content"].endswith(anchor_text(anchors))
+
+
+
+def test_reclaim_replaces_only_trailing_anchor_block_when_earlier_echoed() -> None:
+    echoed = (
+        f"{SUMMARY_PREFIX}\n"
+        f"Earlier note quoting {ANCHOR_HEADER}\n"
+        "- Request: old\n\n"
+        "Newer factual findings after compaction\n\n"
+        + anchor_text({"produced_paths": ["a.png"]})
+    )
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": echoed}]
+    fresh = anchor_text({"produced_paths": ["a.png", "b.png"]})
+    out = _refresh_summary_anchors(messages, fresh)
+    assert "Newer factual findings after compaction" in out[1]["content"]
+    assert out[1]["content"].endswith(fresh)
+
+
+def test_compaction_anchors_keep_newest_produced_paths_and_load_plan_assumptions(monkeypatch) -> None:
+    from app.services.context.request_budget import MAX_ANCHOR_PRODUCED_PATHS
+
+    many = [f"results/item_{i}.png" for i in range(MAX_ANCHOR_PRODUCED_PATHS + 6)]
+    agent = _agent(produced=many, profile={"current_plan_id": 42})
+
+    class _FakeRepo:
+        def get_plan_tree(self, plan_id: int):
+            assert plan_id == 42
+            return SimpleNamespace(metadata={"assumptions": ["Default host: E. coli K-12"]})
+
+    monkeypatch.setattr("app.repository.plan_repository.PlanRepository", _FakeRepo)
+    anchors = compaction_anchors(agent, "run task", {}, [])
+    assert len(anchors["produced_paths"]) == MAX_ANCHOR_PRODUCED_PATHS
+    assert anchors["produced_paths"][-1] == f"results/item_{MAX_ANCHOR_PRODUCED_PATHS + 5}.png"
+    assert anchors["produced_paths"][0] == "results/item_6.png"
+    assert anchors["assumptions"] == ["Default host: E. coli K-12"]
