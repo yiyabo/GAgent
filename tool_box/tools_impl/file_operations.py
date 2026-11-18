@@ -19,8 +19,8 @@ from tool_box.path_resolution import resolve_tool_path_str
 logger = logging.getLogger(__name__)
 
 # Security configuration
-MAX_READ_CHARS = 100_000   # 100K character cap (~25K-50K tokens)
-MAX_READ_LINES = 2_000     # 2K line cap (covers most source files)
+MAX_READ_CHARS = 100_000  # 100K character cap (~25K-50K tokens)
+MAX_READ_LINES = 2_000  # 2K line cap (covers most source files)
 MAX_READ_FILE_BYTES = 50 * 1024 * 1024
 MAX_COPY_MOVE_FILE_BYTES = 500 * 1024 * 1024
 MAX_PROFILE_SCAN_ENTRIES = 50_000
@@ -88,6 +88,7 @@ def _redirect_session_workspace_path(
         redirected,
     )
     return str(redirected)
+
 
 _PROJECT_ARTIFACT_SUBDIRS = frozenset({"runtime", "results", "data", "log", "output"})
 
@@ -158,15 +159,17 @@ def _path_is_within(candidate: Path, base: Path) -> bool:
         return False
 
 
-_SESSION_RESERVED_TOPLEVEL = frozenset({
-    "raw_files",
-    "uploads",
-    "deliverables",
-    "tool_outputs",
-    "results",
-    "workspace",
-    "_scratch",
-})
+_SESSION_RESERVED_TOPLEVEL = frozenset(
+    {
+        "raw_files",
+        "uploads",
+        "deliverables",
+        "tool_outputs",
+        "results",
+        "workspace",
+        "_scratch",
+    }
+)
 
 
 def _disallowed_project_source_write_error(resolved: Path) -> Optional[str]:
@@ -255,6 +258,10 @@ def _redirect_mutation_path_to_session(
 
     session_dir = _session_dir_from_context(tool_context)
     if session_dir is not None:
+        # An absolute destination already inside the assigned session output
+        # directory is stable across both normalization passes.
+        if base != session_dir and base.is_relative_to(session_dir) and resolved.is_relative_to(base):
+            return str(resolved)
         try:
             rel_session = resolved.relative_to(session_dir)
         except ValueError:
@@ -589,18 +596,22 @@ def _validate_copy_move_size(file_path: str) -> Tuple[bool, str]:
 # as a directory) instead of ``{session}/raw_files/<filename>`` — without
 # this guard ``shutil.copy2`` would create a regular file at the reserved
 # path and break PathRouter and all downstream plan execution.
-_RESERVED_DIR_NAMES = frozenset({
-    "raw_files",
-    "uploads",
-    "deliverables",
-    "tool_outputs",
-    "workspace",
-    "results",
-})
+_RESERVED_DIR_NAMES = frozenset(
+    {
+        "raw_files",
+        "uploads",
+        "deliverables",
+        "tool_outputs",
+        "workspace",
+        "results",
+    }
+)
 
 
 def _redirect_reserved_dir_destination(
-    src_path: Path, dest_path: Path, op_name: str,
+    src_path: Path,
+    dest_path: Path,
+    op_name: str,
 ) -> Path:
     if not src_path.is_file():
         return dest_path
@@ -612,7 +623,9 @@ def _redirect_reserved_dir_destination(
     logger.warning(
         "%s destination '%s' matches a reserved directory name but does not "
         "exist; treating it as a directory and redirecting to '%s'",
-        op_name, dest_path, redirected,
+        op_name,
+        dest_path,
+        redirected,
     )
     return redirected
 
@@ -686,15 +699,21 @@ async def file_operations_handler(
             else None
         )
         if operation == "write":
-            resolved_path = _redirect_mutation_path_to_session(
-                resolved_path,
-                tool_context=tool_context,
-            ) or resolved_path
+            resolved_path = (
+                _redirect_mutation_path_to_session(
+                    resolved_path,
+                    tool_context=tool_context,
+                )
+                or resolved_path
+            )
         if operation in {"copy", "move"} and resolved_destination:
-            resolved_destination = _redirect_mutation_path_to_session(
-                resolved_destination,
-                tool_context=tool_context,
-            ) or resolved_destination
+            resolved_destination = (
+                _redirect_mutation_path_to_session(
+                    resolved_destination,
+                    tool_context=tool_context,
+                )
+                or resolved_destination
+            )
 
         if operation == "read":
             return await _read_file(resolved_path, tool_context=tool_context)
@@ -708,11 +727,21 @@ async def file_operations_handler(
             return await _delete_path(resolved_path, tool_context=tool_context)
         elif operation == "copy":
             if resolved_destination is None:
-                return {"operation": "copy", "path": resolved_path, "success": False, "error": "destination is required"}
+                return {
+                    "operation": "copy",
+                    "path": resolved_path,
+                    "success": False,
+                    "error": "destination is required",
+                }
             return await _copy_path(resolved_path, resolved_destination, tool_context=tool_context)
         elif operation == "move":
             if resolved_destination is None:
-                return {"operation": "move", "path": resolved_path, "success": False, "error": "destination is required"}
+                return {
+                    "operation": "move",
+                    "path": resolved_path,
+                    "success": False,
+                    "error": "destination is required",
+                }
             return await _move_path(resolved_path, resolved_destination, tool_context=tool_context)
         elif operation == "exists":
             return await _check_exists(resolved_path, tool_context=tool_context)
@@ -726,7 +755,12 @@ async def file_operations_handler(
         return {"operation": operation, "path": path, "success": False, "error": str(e)}
 
 
-async def _read_file(file_path: str, max_chars: Optional[int] = None, max_lines: Optional[int] = None, tool_context: Optional[ToolContext] = None) -> Dict[str, Any]:
+async def _read_file(
+    file_path: str,
+    max_chars: Optional[int] = None,
+    max_lines: Optional[int] = None,
+    tool_context: Optional[ToolContext] = None,
+) -> Dict[str, Any]:
     """Read file content with security validation and output limits
 
     Args:
@@ -774,7 +808,7 @@ async def _read_file(file_path: str, max_chars: Optional[int] = None, max_lines:
                 lines.append(line)
                 total_chars += len(line)
 
-            content = ''.join(lines)
+            content = "".join(lines)
 
         result = {
             "operation": "read",
@@ -1046,7 +1080,7 @@ def _sample_suffix_counts(names: Set[str]) -> Dict[str, int]:
 
 def _normalize_child_file_pattern(sample_name: str, file_name: str) -> str:
     if sample_name and file_name.startswith(sample_name):
-        return "<sample>" + file_name[len(sample_name):]
+        return "<sample>" + file_name[len(sample_name) :]
     return file_name
 
 
@@ -1083,7 +1117,9 @@ def _summarize_status_directory_structure(root: Path, names: Set[str]) -> Dict[s
         "complete_scan": len(scan_names) == len(sorted_names),
         "scan_limit": MAX_RECONCILIATION_STRUCTURE_SCAN_DIRS,
         "file_count_distribution": dict(sorted(file_count_distribution.items(), key=lambda item: int(item[0]))),
-        "child_dir_count_distribution": dict(sorted(child_dir_count_distribution.items(), key=lambda item: int(item[0]))),
+        "child_dir_count_distribution": dict(
+            sorted(child_dir_count_distribution.items(), key=lambda item: int(item[0]))
+        ),
         "all_scanned_have_same_file_count": len(file_count_distribution) == 1 and bool(file_count_distribution),
         "common_file_patterns": common_patterns,
         "scan_errors": scan_errors,
@@ -1159,19 +1195,27 @@ def _build_status_reconciliation(
     guidance: List[str] = []
     if counts["status_entries_missing_directories"]:
         evidence_relations.append("status_entries_without_matching_directories")
-        guidance.append("Explain status/directory count mismatches using missing matching directories, not inferred retries/reruns unless duplicates or overlaps support that.")
+        guidance.append(
+            "Explain status/directory count mismatches using missing matching directories, not inferred retries/reruns unless duplicates or overlaps support that."
+        )
     if counts["sample_dirs_without_status"]:
         evidence_relations.append("directories_without_status_entries")
         guidance.append("Some sample-candidate directories are absent from high-confidence status manifests.")
     if counts["success_failure_overlap"]:
         evidence_relations.append("success_failure_status_overlap")
-        guidance.append("Some IDs appear in both success and failure manifests; do not treat status counts as disjoint without noting the overlap.")
+        guidance.append(
+            "Some IDs appear in both success and failure manifests; do not treat status counts as disjoint without noting the overlap."
+        )
     if counts["duplicate_success_entries"] or counts["duplicate_failure_entries"]:
         evidence_relations.append("duplicate_status_entries")
         guidance.append("Duplicate status entries were observed; distinguish line counts from unique IDs.")
     if counts["status_unique_total"] != counts["sample_candidate_directories"]:
         evidence_relations.append("status_unique_total_differs_from_sample_candidate_directories")
-    if not counts["success_failure_overlap"] and not counts["duplicate_success_entries"] and not counts["duplicate_failure_entries"]:
+    if (
+        not counts["success_failure_overlap"]
+        and not counts["duplicate_success_entries"]
+        and not counts["duplicate_failure_entries"]
+    ):
         evidence_relations.append("no_duplicate_or_success_failure_overlap_detected")
 
     reconciliation: Dict[str, Any] = {
@@ -1249,9 +1293,9 @@ def _build_evidence_envelope(
                 "entry_count": item.get("entry_count"),
                 "count_source": item.get("count_source"),
                 "count_confidence": item.get("count_confidence"),
-                "sample_values": item.get("sample_values", [])[:5]
-                if isinstance(item.get("sample_values"), list)
-                else [],
+                "sample_values": (
+                    item.get("sample_values", [])[:5] if isinstance(item.get("sample_values"), list) else []
+                ),
             }
             for item in status_files[:MAX_PROFILE_STATUS_FILES]
         ]
@@ -1278,17 +1322,25 @@ def _build_evidence_envelope(
     if completeness_status in {"partial", "unknown"}:
         guidance.append("Do not claim every/all items succeeded unless a complete manifest or status file supports it.")
     if envelope["enumeration"]["omitted_children"]:
-        guidance.append("Listing evidence is sampled/compacted; qualify global claims unless counts/status files support them.")
+        guidance.append(
+            "Listing evidence is sampled/compacted; qualify global claims unless counts/status files support them."
+        )
     if any(str(item.get("kind") or "") == "failure" for item in status_files):
         guidance.append("Failure status files were observed; report them explicitly and avoid all-success claims.")
     if directory_classification and directory_classification.get("status_directories"):
-        guidance.append("Direct child count includes status/progress directories; do not report it as verified sample-directory count.")
+        guidance.append(
+            "Direct child count includes status/progress directories; do not report it as verified sample-directory count."
+        )
     raw_status_counts = envelope.get("status_counts")
     status_counts = raw_status_counts if isinstance(raw_status_counts, dict) else {}
     status_total = status_counts.get("status_file_total")
-    sample_candidates = directory_classification.get("sample_candidate_directories") if directory_classification else None
+    sample_candidates = (
+        directory_classification.get("sample_candidate_directories") if directory_classification else None
+    )
     if isinstance(status_total, int) and isinstance(sample_candidates, int) and status_total != sample_candidates:
-        guidance.append("Status-file total differs from sample-candidate directory count; reconciliation is required before claiming total samples.")
+        guidance.append(
+            "Status-file total differs from sample-candidate directory count; reconciliation is required before claiming total samples."
+        )
     if reconciliation:
         for item in reconciliation.get("claim_guidance") or []:
             text = str(item or "").strip()
@@ -1297,7 +1349,9 @@ def _build_evidence_envelope(
     return envelope
 
 
-async def _profile_file(file_path: str, *, operation: str = "profile", tool_context: Optional[ToolContext] = None) -> Dict[str, Any]:
+async def _profile_file(
+    file_path: str, *, operation: str = "profile", tool_context: Optional[ToolContext] = None
+) -> Dict[str, Any]:
     """Return a compact profile for a single file when profile/census receives a file path."""
     try:
         is_safe, error_msg = _validate_path_security(file_path, enforce_file_size_limit=True, tool_context=tool_context)
@@ -1348,7 +1402,9 @@ async def _profile_file(file_path: str, *, operation: str = "profile", tool_cont
         return {"operation": operation, "path": file_path, "success": False, "error": str(e)}
 
 
-async def _list_directory(dir_path: str, pattern: Optional[str] = None, tool_context: Optional[ToolContext] = None) -> Dict[str, Any]:
+async def _list_directory(
+    dir_path: str, pattern: Optional[str] = None, tool_context: Optional[ToolContext] = None
+) -> Dict[str, Any]:
     """List directory contents"""
     try:
         is_safe, error_msg = _validate_path_security(dir_path, tool_context=tool_context)
@@ -1528,7 +1584,9 @@ async def _profile_directory(
             "sample_candidate_directories": sample_candidate_directories,
             "status_directories": status_directory_count,
             "status_directory_names": status_directory_names,
-            "sample_candidate_names_sample": sorted(str(name) for name in sample_candidate_names if name)[:MAX_PROFILE_CHILD_SAMPLE],
+            "sample_candidate_names_sample": sorted(str(name) for name in sample_candidate_names if name)[
+                :MAX_PROFILE_CHILD_SAMPLE
+            ],
             "classification_basis": "name/status-file heuristic",
         }
         reconciliation = _build_status_reconciliation(
@@ -1577,7 +1635,9 @@ async def _profile_directory(
             rec_counts = raw_rec_counts if isinstance(raw_rec_counts, dict) else {}
             missing = rec_counts.get("status_entries_missing_directories")
             if isinstance(missing, int) and missing:
-                summary_parts.append(f"reconciliation shows {missing} status ID(s) without matching sample-candidate directories")
+                summary_parts.append(
+                    f"reconciliation shows {missing} status ID(s) without matching sample-candidate directories"
+                )
         return {
             "operation": operation,
             "path": dir_path,
@@ -1824,14 +1884,29 @@ file_operations_tool = {
                 "description": "Operation type; profile/census accept directories and return metadata for single files.",
                 "enum": ["read", "write", "list", "profile", "census", "delete", "copy", "move", "exists", "info"],
             },
-            "path": {"type": "string", "description": "Target file or directory path. Prefer relative paths or bare filenames for task outputs; avoid absolute session workspace paths for final deliverables."},
+            "path": {
+                "type": "string",
+                "description": "Target file or directory path. Prefer relative paths or bare filenames for task outputs; avoid absolute session workspace paths for final deliverables.",
+            },
             "content": {"type": "string", "description": "Content to write (required for write operation)"},
-            "destination": {"type": "string", "description": "Destination path (required for copy/move operations). Prefer task-relative destinations for final outputs."},
-            "pattern": {"type": "string", "description": "File matching pattern (optional for list/profile/census operation)"},
+            "destination": {
+                "type": "string",
+                "description": "Destination path (required for copy/move operations). Prefer task-relative destinations for final outputs.",
+            },
+            "pattern": {
+                "type": "string",
+                "description": "File matching pattern (optional for list/profile/census operation)",
+            },
         },
         "required": ["operation", "path"],
     },
     "handler": file_operations_handler,
     "tags": ["file", "filesystem", "read", "write", "management"],
-    "examples": ["Read configuration file", "Create new document", "List directory contents", "Profile a directory before global completion claims", "Copy file to backup directory"],
+    "examples": [
+        "Read configuration file",
+        "Create new document",
+        "List directory contents",
+        "Profile a directory before global completion claims",
+        "Copy file to backup directory",
+    ],
 }

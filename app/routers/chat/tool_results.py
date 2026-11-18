@@ -759,6 +759,33 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
                     compact_trace[key] = value.strip()
             if compact_trace:
                 sanitized["trace_ref"] = compact_trace
+        subagent_runs = raw_result.get("subagent_runs")
+        if isinstance(subagent_runs, list) and subagent_runs:
+            compact_runs: List[Dict[str, Any]] = []
+            for run in subagent_runs[:6]:
+                if not isinstance(run, dict):
+                    continue
+                compact_run: Dict[str, Any] = {}
+                for key in ("subrun_id", "child_run_id", "role", "status", "error", "workspace"):
+                    value = run.get(key)
+                    if isinstance(value, str) and value.strip():
+                        compact_run[key] = _trim_text(value.strip(), limit=300)
+                for key in ("iterations", "duration_ms"):
+                    if isinstance(run.get(key), (int, float)):
+                        compact_run[key] = run.get(key)
+                run_summary = run.get("summary")
+                if isinstance(run_summary, str) and run_summary.strip():
+                    compact_run["summary"] = _trim_text(run_summary, limit=1000)
+                run_paths = run.get("artifact_paths")
+                if isinstance(run_paths, list):
+                    compact_run["artifact_paths"] = [
+                        item.strip().replace("\\", "/")
+                        for item in run_paths[:20]
+                        if isinstance(item, str) and item.strip()
+                    ]
+                compact_runs.append(compact_run)
+            if compact_runs:
+                sanitized["subagent_runs"] = compact_runs
         return sanitized
 
     if tool_name == "load_skill" and isinstance(raw_result, dict):

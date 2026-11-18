@@ -1166,38 +1166,44 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
         # 描述与参数镜像 tool_box/tools_impl/delegate_task.py 的基础定义（有意保持同步，
         # 由 test_native_tool_schemas.py 的漂移锁 test_drift_merged_entries_track_impl_truth 钉住零漂移）。
         "description": (
-            "Hand one self-contained, long-horizon workflow to an ISOLATED sub-agent and "
-            "get back only a summary plus artifact paths. The sub-agent runs in its own "
-            "session with its own tool loop: it does not see this conversation, and its "
-            "transcript never enters your context. Use it when the work is long, "
-            "self-contained, and you do not need to watch the intermediate steps "
-            "(multi-file refactors, audit-and-repair passes, bulk literature or accession "
-            "sweeps, 'take this dataset and produce X end to end'). "
+            "Hand one self-contained document workflow to an ISOLATED sub-agent and get "
+            "back only a summary plus artifact paths. The sub-agent runs its own tool loop: "
+            "it does not see this conversation, and its transcript never enters your context. "
+            "Sub-agents work on local documents only: they list and read text files, PDFs and "
+            "images in the session workspace and (role 'worker') write new files into their "
+            "own scratch folder; they have no shell, code execution, web, database, sequence "
+            "or bio tools. Use it for long, self-contained reading and writing you do not need "
+            "to watch (summarising a folder of reports, cross-checking several documents, "
+            "drafting a document from given inputs). "
             "Division of labor: delegate_task (this tool) is THE delegation surface — it "
-            "hands a whole GOAL to an isolated coding sub-agent (which writes and debugs "
-            "the code in its own run) and shows only the result; execute_code is YOU "
-            "writing Python that calls tools as functions in a kernel you keep using — "
-            "the cheap default for anything one script can do. "
-            "Do NOT use delegate_task when: one tool call or two already answers the "
-            "question (call them directly); you must read or judge the intermediate "
-            "results yourself (use the tools, or execute_code when you need fan-out); you "
-            "need to reuse the current kernel's state (use execute_code); the goal is "
-            "'write code that does X' and you want the code itself back (write it with "
-            "execute_code); the goal is read-only checking, counting/printing, or "
-            "verifying results you already have (that takes seconds here and a whole "
-            "agent run there); or the goal depends on implicit context from this "
-            "conversation that you cannot write down in goal. Calls run one at a time — "
-            "there is no parallel fan-out. "
-            "Good: goal='Audit every Python file under data/pipeline for calls to the "
-            "removed pandas.append API, fix them, and report the changed files', "
-            "deliverable='patched files + a markdown report listing every change', "
-            "context_paths=['data/pipeline']. "
-            "Bad: goal='count the rows in data/submissions.csv' — file_operations or "
-            "result_interpreter answers that in one call, while delegating pays a full "
-            "agent run for a one-line answer. "
-            "Returns summary (hard-capped), artifact_paths, usage, and trace_ref; raw CLI "
-            "stdout/stderr is never returned, so inspect the run through trace_ref "
-            "(run id plus absolute log paths) when you really need the detail."
+            "hands a whole GOAL to an isolated sub-agent and shows only the result; "
+            "execute_code is YOU writing Python that calls tools as functions in a kernel you "
+            "keep using — the cheap default for anything one script can do and the lane for "
+            "any computation. "
+            "Do NOT use delegate_task when: one tool call or two already answers the question "
+            "(call them directly); you must read or judge the intermediate results yourself; "
+            "the goal needs code, network, sequence or database tools (sub-agents do not have "
+            "them); or the goal depends on implicit context from this conversation that you "
+            "cannot write down in goal. "
+            "Parallel fan-out: pass tasks=[{goal, role?, deliverable?, context_paths?}, ...] "
+            "(1-6 independent items) instead of goal to run several sub-agents concurrently "
+            "(at most 4 at once by default); each child result comes back in subagent_runs, "
+            "and one child failing never affects its siblings. "
+            "Roles: 'scout' (read-only: list and read files), 'researcher' (read-only: read "
+            "and profile documents), 'worker' (default: read the inputs and write new files "
+            "into its scratch folder), 'verifier' (read-only checking of produced documents, "
+            "figures and scanned pages, including vision). "
+            "context_paths name the session-workspace files or directories a sub-agent may "
+            "read; a missing or out-of-workspace entry refuses the whole call. "
+            "Good: goal='Read the meeting notes under notes/ and write a one-page summary of "
+            "the decisions and open questions to summary.md', deliverable='summary.md with "
+            "Decisions and Open questions sections', context_paths=['notes']. "
+            "Bad: goal='count the rows in data/submissions.csv' — file_operations answers that "
+            "in one call, while delegating pays a full agent run for a one-line answer. "
+            "With DELEGATE_TASK_BACKEND=cli a single goal goes to the legacy coding sub-agent "
+            "instead and role/tasks are refused. "
+            "Returns summary (hard-capped), artifact_paths, usage, trace_ref and, for native "
+            "sub-agents, subagent_runs; raw sub-agent transcripts are never returned."
         ),
         "parameters": {
             "type": "object",
@@ -1223,13 +1229,44 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
                     "items": {"type": "string"},
                     "maxItems": 20,
                     "description": (
-                        "Optional directories the sub-agent may READ (absolute or "
-                        "project-root-relative). Pass directories, not single files; "
-                        "non-directory or non-existent entries are ignored by the runtime."
+                        "Optional inputs the sub-agent may READ. Native sub-agents: files or "
+                        "directories relative to the session workspace; every entry must exist inside "
+                        "it, otherwise the whole call is refused. CLI backend: directories (absolute or "
+                        "project-root-relative)."
                     ),
                 },
+                "role": {
+                    "type": "string",
+                    "enum": ["scout", "researcher", "worker", "verifier"],
+                    "description": (
+                        "Optional sub-agent role for single-goal mode (default 'worker'): "
+                        "scout | researcher | worker | verifier."
+                    ),
+                },
+                "tasks": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 6,
+                    "description": (
+                        "Parallel fan-out: independent sub-agent briefs run concurrently. "
+                        "Pass either goal or tasks, not both."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "goal": {"type": "string"},
+                            "role": {"type": "string", "enum": ["scout", "researcher", "worker", "verifier"]},
+                            "deliverable": {"type": "string"},
+                            "context_paths": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "maxItems": 20,
+                            },
+                        },
+                        "required": ["goal"],
+                    },
+                },
             },
-            "required": ["goal"],
         },
     },
     "terminal_session": {

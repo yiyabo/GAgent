@@ -489,6 +489,8 @@ async def test_delegate_task_reports_a_cancelled_status(
     from tool_box.tools_impl import delegate_task as delegate_task_module
 
     monkeypatch.setenv("DELEGATE_TASK_ENABLED", "1")
+    # Legacy CLI lane contract (native is the default backend since p75).
+    monkeypatch.setenv("DELEGATE_TASK_BACKEND", "cli")
 
     class _Executor:
         def execute(self, _spec, **_kwargs):

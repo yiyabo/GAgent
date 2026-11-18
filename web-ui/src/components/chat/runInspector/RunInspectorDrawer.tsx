@@ -4,7 +4,7 @@ import { Alert, Button, Collapse, Descriptions, Drawer, Empty, Segmented, Select
 import { DownloadOutlined, ReloadOutlined } from '@ant-design/icons';
 import { chatApi } from '@api/chat';
 import { useT } from '@/i18n/useT';
-import type { RunInspectionStep, RunInspectionTarget } from '@/types/runInspection';
+import type { RunInspectionChildRun, RunInspectionStep, RunInspectionTarget } from '@/types/runInspection';
 import {
   exportBlob,
   exportFileName,
@@ -56,6 +56,45 @@ const StepTitle: React.FC<{ step: RunInspectionStep }> = ({ step }) => {
       <Text type="secondary">{formatDuration(step.duration_ms)}</Text>
       {step.label && <Text ellipsis style={{ maxWidth: 360 }}>{step.label}</Text>}
     </Space>
+  );
+};
+
+/** Short, readable handle for a child run id like ``chat_run_42:sub_ab12cd34ef56``. */
+const childRunLabel = (runId: string): string => {
+  const marker = runId.lastIndexOf(':sub_');
+  const suffix = marker >= 0 ? runId.slice(marker + 5) : runId;
+  return suffix.length > 8 ? suffix.slice(-8) : suffix;
+};
+
+const childRole = (child: RunInspectionChildRun): string => {
+  const purpose = child.call_purposes?.find((value) => value.startsWith('subagent_')) ?? child.call_purposes?.[0];
+  return purpose ? purpose.replace(/^subagent_/, '') : '—';
+};
+
+const ChildRunsSection: React.FC<{ childRuns: RunInspectionChildRun[] }> = ({ childRuns }) => {
+  const t = useT();
+  return (
+    <div data-testid="run-inspector-child-runs">
+      <Text strong>{t('runInspector.subagents', { count: childRuns.length })}</Text>
+      <ul style={{ paddingLeft: 18, marginTop: 8 }}>
+        {childRuns.map((child) => (
+          <li key={child.child_run_id}>
+            <Text code title={child.child_run_id}>{childRunLabel(child.child_run_id)}</Text>
+            <Tag style={{ marginLeft: 8 }}>{childRole(child)}</Tag>
+            <Text type="secondary">
+              {t('runInspector.usageRow', {
+                calls: child.call_count,
+                tokens: formatTokens(child.total_tokens),
+                duration: formatDuration(child.duration_ms),
+              })}
+            </Text>
+            {(child.error_calls ?? 0) > 0 && (
+              <Tag color="red" style={{ marginLeft: 8 }}>{t('runInspector.failedCalls', { count: child.error_calls })}</Tag>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 };
 
@@ -239,6 +278,8 @@ const RunInspectorDrawer: React.FC<RunInspectorDrawerProps> = ({ open, sessionId
               </ul>
             </div>
           )}
+
+          {(inspection.child_runs?.length ?? 0) > 0 && <ChildRunsSection childRuns={inspection.child_runs ?? []} />}
 
           <Text type="secondary" style={{ fontSize: 12 }}>
             {t('runInspector.streamingNote', {

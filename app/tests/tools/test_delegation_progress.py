@@ -443,6 +443,8 @@ async def test_delegate_task_hands_the_progress_channel_to_the_executor(
     from tool_box.tools_impl import delegate_task as delegate_task_module
 
     monkeypatch.setenv("DELEGATE_TASK_ENABLED", "1")
+    # Legacy CLI lane contract (native is the default backend since p75).
+    monkeypatch.setenv("DELEGATE_TASK_BACKEND", "cli")
     captured: Dict[str, Any] = {}
 
     class _Recorder:
@@ -481,6 +483,8 @@ async def test_delegate_task_without_a_progress_channel_keeps_the_spec_shape(
     from tool_box.tools_impl import delegate_task as delegate_task_module
 
     monkeypatch.setenv("DELEGATE_TASK_ENABLED", "1")
+    # Legacy CLI lane contract (native is the default backend since p75).
+    monkeypatch.setenv("DELEGATE_TASK_BACKEND", "cli")
     captured: Dict[str, Any] = {}
 
     class _Recorder:

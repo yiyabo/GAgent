@@ -92,4 +92,29 @@ describe('RunInspectorDrawer', () => {
     renderDrawer({ run_id: 'dt_missing' });
     await screen.findByText('run not found');
   });
+
+  it('renders delegated sub-agent child runs when present', async () => {
+    mocked.getRunInspection.mockResolvedValue({
+      ...inspection,
+      child_runs: [
+        { child_run_id: 'dt_abc:sub_0123456789ab', call_count: 3, total_tokens: 4200, duration_ms: 2500, error_calls: 0, call_purposes: ['subagent_scout'] },
+        { child_run_id: 'dt_abc:sub_ffffeeee1111', call_count: 1, total_tokens: 90, duration_ms: 400, error_calls: 1, call_purposes: ['subagent_worker'] },
+      ],
+    });
+    renderDrawer();
+    const section = await screen.findByTestId('run-inspector-child-runs');
+    expect(within(section).getByText(/^(Subagents \(2\)|子代理调用（2）)$/)).toBeTruthy();
+    expect(within(section).getByText('456789ab')).toBeTruthy();
+    expect(within(section).getByText('eeee1111')).toBeTruthy();
+    expect(within(section).getByText('scout')).toBeTruthy();
+    expect(within(section).getByText('worker')).toBeTruthy();
+    expect(within(section).getAllByText(/1 (failed|次失败)/).length).toBe(1);
+  });
+
+  it('omits the sub-agent section when there are no child runs', async () => {
+    mocked.getRunInspection.mockResolvedValue({ ...inspection, child_runs: [] });
+    renderDrawer();
+    await screen.findByText('dt_abc');
+    expect(screen.queryByTestId('run-inspector-child-runs')).toBeNull();
+  });
 });

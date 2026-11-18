@@ -9,9 +9,12 @@ calls with redacted, truncated parameters and results, and summarizes usage.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import datetime
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 INSPECTION_VERSION = 1
 MAX_STEPS = 400
@@ -327,6 +330,7 @@ def build_run_inspection(
     events: list[tuple[int, str, dict[str, Any]]],
     event_counts: dict[str, int],
     usage_rows: list[dict[str, Any]],
+    child_runs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     step_events = [item for item in events if item[2].get("type") == "thinking_step"]
     steps, steps_truncated = project_steps(step_events)
@@ -400,5 +404,19 @@ def build_run_inspection(
         "events": timeline_events,
         "final": final,
         "usage": summarize_usage(usage_rows),
+        "child_runs": list(child_runs or []),
         "truncated": {"steps": steps_truncated, "artifacts": artifacts_truncated},
     }
+
+
+def load_child_runs(run_id: str) -> list[dict[str, Any]]:
+    """Per-child usage rows for sub-agents delegated by ``run_id`` (``[]`` when none)."""
+    from app.repository.llm_usage import get_child_run_usage_summary
+
+    try:
+        summary = get_child_run_usage_summary(run_id)
+    except Exception:  # usage ledger is best-effort observability
+        logger.warning("run inspector: child run usage unavailable for %s", run_id, exc_info=True)
+        return []
+    children = summary.get("children") if isinstance(summary, dict) else None
+    return [dict(item) for item in children] if isinstance(children, list) else []

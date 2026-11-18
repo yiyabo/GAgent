@@ -9,39 +9,39 @@ handled via the ``overrides`` mechanism.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
+from .bio_tools import bio_tools_tool
 from .tools import register_tool
-from .tools_impl.deliverable_submit import deliverable_submit_tool
 from .tools_impl import (
     code_executor_tool,
+    delegate_task_tool,
     document_reader_tool,
+    execute_code_tool,
     file_operations_tool,
     generate_experiment_card_tool,
     graph_rag_tool,
     lightrag_query_tool,
     literature_pipeline_tool,
+    load_skill_tool,
     manuscript_writer_tool,
+    ncbi_search_tool,
     paper_replication_tool,
-    phagescope_tool,
     phagescope_data_tool,
     phagescope_research_tool,
+    phagescope_tool,
     plan_operation_tool,
     result_interpreter_tool,
     review_pack_writer_tool,
     scientific_figure_generator_tool,
     sequence_fetch_tool,
-    ncbi_search_tool,
-    url_fetch_tool,
     terminal_session_tool,
-    execute_code_tool,
-    delegate_task_tool,
-    load_skill_tool,
+    url_fetch_tool,
     vision_reader_tool,
     web_search_tool,
 )
-from .bio_tools import bio_tools_tool
-from .tools_impl.delegate_task import delegate_task_enabled
+from .tools_impl.delegate_task import delegate_task_backend, delegate_task_enabled
+from .tools_impl.deliverable_submit import deliverable_submit_tool
 from .tools_impl.phagescope_data import phagescope_data_enabled
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 # Only tools that differ from the conservative defaults need entries here;
 # tools not listed get is_read_only=False, is_concurrent_safe=False, etc.
 # ---------------------------------------------------------------------------
-_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
+_TOOL_METADATA: dict[str, dict[str, Any]] = {
     # --- read-only & concurrent-safe: pure information retrieval ---
     "web_search": {
         "is_read_only": True,
@@ -102,7 +102,6 @@ _TOOL_METADATA: Dict[str, Dict[str, Any]] = {
         "is_concurrent_safe": True,
         "search_hint": "skill load instructions playbook guide capability progressive disclosure",
     },
-
     # --- read-only but NOT concurrent-safe (heavyweight / stateful) ---
     "result_interpreter": {
         # NOT is_read_only=True: the "execute" operation actually runs generated code.
@@ -158,7 +157,8 @@ _TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     },
 }
 
-def get_tool_orchestration_metadata(tool_name: str) -> Dict[str, Any]:
+
+def get_tool_orchestration_metadata(tool_name: str) -> dict[str, Any]:
     """Return orchestration metadata for *tool_name* from the declarative registry.
 
     This is the public API for accessing ``_TOOL_METADATA`` from outside this
@@ -171,7 +171,7 @@ def get_tool_orchestration_metadata(tool_name: str) -> Dict[str, Any]:
 
 # Standard tools follow the common schema:
 #   name, description, category, parameters_schema, handler, tags?, examples?
-_STANDARD_TOOLS: List[Dict[str, Any]] = [
+_STANDARD_TOOLS: list[dict[str, Any]] = [
     web_search_tool,
     literature_pipeline_tool,
     review_pack_writer_tool,
@@ -201,7 +201,7 @@ _STANDARD_TOOLS: List[Dict[str, Any]] = [
 ]
 
 # Tools that need special field mapping
-_CUSTOM_TOOLS: List[Dict[str, Any]] = [
+_CUSTOM_TOOLS: list[dict[str, Any]] = [
     {
         "name": code_executor_tool["name"],
         "description": code_executor_tool["description"],
@@ -218,7 +218,7 @@ _CUSTOM_TOOLS: List[Dict[str, Any]] = [
 ]
 
 
-def _extract_registration_kwargs(tool_def: Dict[str, Any]) -> Dict[str, Any]:
+def _extract_registration_kwargs(tool_def: dict[str, Any]) -> dict[str, Any]:
     """Extract keyword arguments for register_tool() from a tool definition dict.
 
     Orchestration metadata is merged from three sources (highest priority last):
@@ -238,10 +238,21 @@ def _extract_registration_kwargs(tool_def: Dict[str, Any]) -> Dict[str, Any]:
         "examples": tool_def.get("examples", []),
         # orchestration metadata — inline > _TOOL_METADATA > default
         "is_read_only": tool_def.get("is_read_only", meta.get("is_read_only", False)),
-        "is_concurrent_safe": tool_def.get("is_concurrent_safe", meta.get("is_concurrent_safe", False)),
+        "is_concurrent_safe": tool_def.get(
+            "is_concurrent_safe", meta.get("is_concurrent_safe", _dynamic_concurrent_safe(name))
+        ),
         "is_destructive": tool_def.get("is_destructive", meta.get("is_destructive", False)),
         "search_hint": tool_def.get("search_hint", meta.get("search_hint", "")),
     }
+
+
+def _dynamic_concurrent_safe(name: str) -> bool:
+    """Concurrency that depends on runtime config rather than static metadata."""
+    if name == "delegate_task":
+        # Native in-process sub-agents are isolated per child workspace; the
+        # legacy CLI lane drives one external session at a time.
+        return delegate_task_backend() == "native"
+    return False
 
 
 # Env-gated definitions: absent from the runtime registry unless the flag is on,
@@ -252,15 +263,15 @@ _GATED_TOOLS = {
 }
 
 
-def _is_enabled(tool_def: Dict[str, Any]) -> bool:
+def _is_enabled(tool_def: dict[str, Any]) -> bool:
     gate = _GATED_TOOLS.get(str(tool_def.get("name") or ""))
     return True if gate is None else bool(gate())
 
 
 def register_all_tools() -> None:
     """Register every built-in tool from the declarative definitions."""
-    enabled: List[Dict[str, Any]] = []
-    skipped: List[str] = []
+    enabled: list[dict[str, Any]] = []
+    skipped: list[str] = []
     for tool_def in _STANDARD_TOOLS + _CUSTOM_TOOLS:
         if _is_enabled(tool_def):
             enabled.append(tool_def)

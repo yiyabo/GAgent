@@ -36,12 +36,11 @@ _SCOPED_TOOLS = frozenset(
         "phagescope_data",
         "phagescope",
         "phagescope_research",
+        "delegate_task",
     }
 )
 
-_READ_FILE_OPERATIONS = frozenset(
-    {"read", "list", "exists", "info", "profile", "census"}
-)
+_READ_FILE_OPERATIONS = frozenset({"read", "list", "exists", "info", "profile", "census"})
 _PLAN_OPERATIONS = frozenset(
     {
         "create",
@@ -88,9 +87,24 @@ def _operation(params: Mapping[str, Any], *, key: str = "operation") -> str:
     return str(params.get(key) or "").strip().lower()
 
 
-def plan_mode_tool_allowed(
-    tool_name: str, params: Mapping[str, Any] | None = None
-) -> bool:
+def _delegate_roles(params: Mapping[str, Any]) -> list[str]:
+    """Every role a delegate_task call would spawn (blank role = default worker)."""
+    tasks = params.get("tasks")
+    entries: list[Any] = list(tasks) if isinstance(tasks, (list, tuple)) and tasks else [params]
+    roles: list[str] = []
+    for entry in entries:
+        raw = entry.get("role") if isinstance(entry, Mapping) else None
+        roles.append(str(raw or "").strip().lower() or "worker")
+    return roles
+
+
+def _delegate_backend_native() -> bool:
+    from tool_box.tools_impl.delegate_task import delegate_task_backend
+
+    return delegate_task_backend() == "native"
+
+
+def plan_mode_tool_allowed(tool_name: str, params: Mapping[str, Any] | None = None) -> bool:
     """Return whether one exact call is safe in explicit Plan mode."""
     name = str(tool_name or "").strip()
     values = params or {}
@@ -104,14 +118,15 @@ def plan_mode_tool_allowed(
         if _operation(values) not in _READ_PHAGESCOPE_DATA_OPERATIONS:
             return False
         # A read query can still be asked to persist an artifact.
-        return (
-            values.get("save_tsv") is not True
-            and values.get("materialize_pdb") is not True
-        )
+        return values.get("save_tsv") is not True and values.get("materialize_pdb") is not True
     if name == "phagescope":
         return _operation(values, key="action") in _READ_PHAGESCOPE_ACTIONS
     if name == "phagescope_research":
         return _operation(values, key="action") in _READ_RESEARCH_ACTIONS
+    if name == "delegate_task":
+        # Read-only parallel recon is part of planning; any other role executes work.
+        # Only the native backend enforces the scout clamp, so the CLI lane stays closed.
+        return _delegate_backend_native() and all(role == "scout" for role in _delegate_roles(values))
     return False
 
 
@@ -146,16 +161,33 @@ def defer_plan_mode_execution(decision: Any) -> Any:
     )
 
 
-def plan_mode_denial(
-    tool_name: str, params: Mapping[str, Any] | None = None
-) -> dict[str, Any]:
+def plan_mode_denial(tool_name: str, params: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Structured tool failure returned before any handler can run."""
     values = params or {}
+    if tool_name == "delegate_task":
+        blocked = sorted({role for role in _delegate_roles(values) if role != "scout"})
+        if not _delegate_backend_native():
+            reason = "the CLI delegation backend cannot enforce read-only scout sub-agents"
+        else:
+            reason = (
+                f"delegate_task was asked to spawn role(s) {', '.join(blocked)} "
+                "that can execute work or write artifacts"
+            )
+        return {
+            "success": False,
+            "executed": False,
+            "error": "plan_mode_read_only",
+            "tool": tool_name,
+            "operation": ",".join(blocked) or None,
+            "summary": (f"Plan mode only allows read-only scout sub-agents; {reason}."),
+            "hint": (
+                'Use role="scout" for every delegated task during planning, or approve the Plan '
+                "and exit Plan mode to delegate execution work."
+            ),
+        }
     operation = _operation(
         values,
-        key="action"
-        if tool_name in {"phagescope", "phagescope_research"}
-        else "operation",
+        key="action" if tool_name in {"phagescope", "phagescope_research"} else "operation",
     )
     return {
         "success": False,
