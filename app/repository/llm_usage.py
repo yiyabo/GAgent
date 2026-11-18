@@ -889,7 +889,8 @@ def get_child_run_usage_summary(parent_run_id: str) -> Optional[Dict[str, Any]]:
                 GROUP_CONCAT(DISTINCT provider) as providers,
                 GROUP_CONCAT(DISTINCT model) as models,
                 GROUP_CONCAT(DISTINCT COALESCE(tool_name, '')) as tool_names,
-                GROUP_CONCAT(DISTINCT COALESCE(call_status, '')) as call_statuses
+                GROUP_CONCAT(DISTINCT COALESCE(call_status, '')) as call_statuses,
+                GROUP_CONCAT(DISTINCT COALESCE(call_purpose, '')) as call_purposes
             FROM llm_usage_log
             WHERE parent_run_id = ? AND run_id IS NOT NULL
             GROUP BY run_id
@@ -907,6 +908,7 @@ def get_child_run_usage_summary(parent_run_id: str) -> Optional[Dict[str, Any]]:
             "models": sorted({value for value in (row["models"] or "").split(",") if value}),
             "tool_names": sorted({value for value in (row["tool_names"] or "").split(",") if value}),
             "call_statuses": sorted({value for value in (row["call_statuses"] or "").split(",") if value}),
+            "call_purposes": sorted({value for value in (row["call_purposes"] or "").split(",") if value}),
             "first_call_at": row["first_call_at"],
             "last_call_at": row["last_call_at"],
         })

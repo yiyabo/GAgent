@@ -88,6 +88,8 @@ def test_plan_mode_offers_only_tools_with_a_read_or_planning_path() -> None:
         "phagescope_research",
         "load_skill",
         "load_tool_schema",
+        # p75: offered for read-only scout recon; non-scout roles are blocked at dispatch.
+        "delegate_task",
     ]
 
 

@@ -59,6 +59,8 @@ class _Recorder:
 @pytest.fixture(autouse=True)
 def _delegation_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DELEGATE_TASK_ENABLED", "1")
+    # Legacy CLI lane contract (native is the default backend since p75).
+    monkeypatch.setenv("DELEGATE_TASK_BACKEND", "cli")
 
 
 def _install(

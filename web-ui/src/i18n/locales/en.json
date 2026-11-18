@@ -1874,6 +1874,7 @@
     "usage": "Model usage",
     "usageRow": "{{calls}} calls · {{tokens}} tokens · {{duration}}",
     "failedCalls": "{{count}} failed",
+    "subagents": "Subagents ({{count}})",
     "streamingNote": "Streaming text is counted, not shown: {{thinking}} thinking, {{reasoning}} reasoning and {{deltas}} answer chunks."
   },
   "planClarify": {

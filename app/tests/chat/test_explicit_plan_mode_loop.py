@@ -192,5 +192,6 @@ def test_plan_mode_filters_mutating_tools_from_model_offer(monkeypatch) -> None:
         "file_operations",
         "plan_operation",
         "phagescope_data",
+        "delegate_task",
     ]
     assert events[-1]["type"] == "final"

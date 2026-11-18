@@ -1874,6 +1874,7 @@
     "usage": "模型用量",
     "usageRow": "{{calls}} 次 · {{tokens}} tokens · {{duration}}",
     "failedCalls": "{{count}} 次失败",
+    "subagents": "子代理调用（{{count}}）",
     "streamingNote": "流式文本只计数不展示：思考 {{thinking}} 条、推理 {{reasoning}} 条、回答片段 {{deltas}} 条。"
   },
   "planClarify": {

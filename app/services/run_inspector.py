@@ -9,9 +9,12 @@ calls with redacted, truncated parameters and results, and summarizes usage.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import datetime
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 INSPECTION_VERSION = 1
 MAX_STEPS = 400
@@ -370,6 +373,7 @@ def build_run_inspection(
     events: list[tuple[int, str, dict[str, Any]]],
     event_counts: dict[str, int],
     usage_rows: list[dict[str, Any]],
+    child_runs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     step_events = [item for item in events if item[2].get("type") == "thinking_step"]
     steps, dropped_steps = project_steps(step_events)
@@ -432,6 +436,7 @@ def build_run_inspection(
         "events": timeline_events,
         "final": final,
         "usage": summarize_usage(usage_rows),
+        "child_runs": list(child_runs or []),
         "truncated": {
             "steps": dropped_steps > 0,
             "artifacts": artifacts_truncated,
@@ -508,6 +513,7 @@ def build_plan_task_inspection(
     logs: list[tuple[int, str, dict[str, Any]]],
     log_counts: dict[str, int],
     usage_rows: list[dict[str, Any]],
+    child_runs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Project one plan task's execution into the Run Inspector payload.
 
@@ -532,11 +538,14 @@ def build_plan_task_inspection(
     if result:
         events.append((next_seq, fallback_at, _stored_final_event(result)))
 
+    run_id = plan_task_run_id(plan_id, task_id)
+    resolved_children = list(child_runs) if child_runs is not None else load_child_runs(run_id)
     payload = build_run_inspection(
         _plan_task_run(plan_id, task, job, logs, result, is_latest_job=is_latest_job),
         events,
         log_counts,
         usage_rows,
+        child_runs=resolved_children,
     )
     payload["run"].update(
         {
@@ -609,3 +618,16 @@ def _plan_task_run(
         "assistant_message_id": None,
         "request_json": {"message": task.get("instruction") or task.get("name")},
     }
+
+
+def load_child_runs(run_id: str) -> list[dict[str, Any]]:
+    """Per-child usage rows for sub-agents delegated by ``run_id`` (``[]`` when none)."""
+    from app.repository.llm_usage import get_child_run_usage_summary
+
+    try:
+        summary = get_child_run_usage_summary(run_id)
+    except Exception:  # usage ledger is best-effort observability
+        logger.warning("run inspector: child run usage unavailable for %s", run_id, exc_info=True)
+        return []
+    children = summary.get("children") if isinstance(summary, dict) else None
+    return [dict(item) for item in children] if isinstance(children, list) else []

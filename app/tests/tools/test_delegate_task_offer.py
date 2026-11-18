@@ -100,8 +100,12 @@ def test_on_present_on_the_chat_offer_surfaces(_flag_on) -> None:
     assert schema["type"] == "function"
     assert schema["function"]["name"] == _TOOL
     params = schema["function"]["parameters"]
-    assert params["required"] == ["goal"]
-    assert set(params["properties"]) == {"goal", "deliverable", "context_paths"}
+    # p75: either goal (single child) or tasks (parallel fan-out) — neither is required.
+    assert "required" not in params
+    assert set(params["properties"]) == {"goal", "deliverable", "context_paths", "role", "tasks"}
+    assert params["properties"]["role"]["enum"] == ["scout", "researcher", "worker", "verifier"]
+    assert params["properties"]["tasks"]["maxItems"] == 6
+    assert params["properties"]["tasks"]["items"]["required"] == ["goal"]
     assert params["properties"]["context_paths"]["items"] == {"type": "string"}
 
     assert _TOOL in _names(tool_schemas.build_tool_schemas(list(ALL_NATIVE_TOOLS)))
@@ -130,8 +134,8 @@ def test_on_registered_with_orchestration_metadata(_flag_on) -> None:
     assert tool_def.handler is delegate_task_tool["handler"]
     assert tool_def.is_read_only is False
     assert tool_def.is_destructive is False
-    # Serial by design: several delegate_task calls must not run concurrently.
-    assert tool_def.is_concurrent_safe is False
+    # p75: native in-process sub-agents are isolated per workspace -> concurrent safe.
+    assert tool_def.is_concurrent_safe is True
     metadata = get_tool_orchestration_metadata(_TOOL)
     assert "subagent" in metadata["search_hint"]
 
@@ -149,13 +153,17 @@ def test_description_carries_the_two_lane_division_of_labor(_flag_on) -> None:
     assert "Good: goal=" in description
     assert "Bad: goal=" in description
     assert "transcript never enters your context" in description
-    assert "no parallel fan-out" in description
+    assert "no parallel fan-out" not in description
+    assert "Parallel fan-out: pass tasks=" in description
+    for role in ("'scout'", "'researcher'", "'worker'", "'verifier'"):
+        assert role in description
 
 
 async def test_on_dispatch_through_the_registry_reaches_the_handler(
     _flag_on, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Canonical dispatch path: registry lookup + prepare_handler_kwargs."""
+    monkeypatch.setenv("DELEGATE_TASK_BACKEND", "cli")
     from app.services.plans.task_delegate_executor import TaskDelegationResult
     from tool_box import execute_tool
     from tool_box.context import ToolContext

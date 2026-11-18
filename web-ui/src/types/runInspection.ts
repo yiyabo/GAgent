@@ -45,6 +45,24 @@ export interface RunInspectionUsageGroup {
   failed: number;
 }
 
+/** One delegated sub-agent run (llm_usage_log rows whose parent_run_id is this run). */
+export interface RunInspectionChildRun {
+  child_run_id: string;
+  call_count: number;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens: number;
+  duration_ms: number;
+  ok_calls?: number;
+  error_calls?: number;
+  estimated_cost?: number;
+  models?: string[];
+  call_purposes?: string[];
+  call_statuses?: string[];
+  first_call_at?: string | null;
+  last_call_at?: string | null;
+}
+
 export interface RunInspection {
   version: number;
   run: {
@@ -94,6 +112,7 @@ export interface RunInspection {
     /** Plan tasks: the ledger is keyed by task, so totals span every attempt. */
     scope?: 'run' | 'plan_task_all_attempts';
   };
+  child_runs?: RunInspectionChildRun[];
   truncated: { steps: boolean; artifacts: boolean; logs?: boolean };
 }
 

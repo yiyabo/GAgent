@@ -749,6 +749,8 @@ def test_generic_execution_tools_reach_the_executor(
     monkeypatch.setenv("APP_RUNTIME_ROOT", str(tmp_path / "runtime"))
     monkeypatch.setenv("CODE_MODE_ENABLED", "1")
     monkeypatch.setenv("DELEGATE_TASK_ENABLED", "1")
+    # Legacy CLI lane contract (native is the default backend since p75).
+    monkeypatch.setenv("DELEGATE_TASK_BACKEND", "cli")
     _patch_runtime(monkeypatch)
     monkeypatch.setattr(
         chat_routes,

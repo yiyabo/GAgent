@@ -6,30 +6,35 @@ import asyncio
 import json
 import logging
 import sqlite3
-from typing import Any, AsyncIterator, Dict, Optional
+from collections.abc import AsyncIterator
+from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
+from app.database import get_db
 from app.repository.chat_runs import (
     create_chat_run,
     fetch_events_after,
-    insert_chat_run_signal,
-    is_chat_run_lease_live,
-    set_chat_run_user_message_id,
     get_chat_run,
     get_chat_run_by_idempotency_key,
+    insert_chat_run_signal,
+    is_chat_run_lease_live,
     list_session_runs,
+    set_chat_run_user_message_id,
 )
-from app.database import get_db
 from app.routers.chat.background import _sse_message, _sse_with_keepalive
 from app.routers.chat.models import ChatRequest
 from app.routers.chat.session_helpers import _ensure_session_exists, _save_chat_message
-from app.services.chat_run_worker import execute_chat_run
 from app.services import chat_run_hub as hub
-from app.services.realtime_bus import EventSubscription, get_realtime_bus, route_control_message
+from app.services.chat_run_worker import execute_chat_run
 from app.services.platform_access import bind_chat_request_to_principal
+from app.services.realtime_bus import (
+    EventSubscription,
+    get_realtime_bus,
+    route_control_message,
+)
 from app.services.request_principal import ensure_owner_access, get_request_owner_id
 
 logger = logging.getLogger(__name__)
@@ -47,7 +52,9 @@ def _schedule_quality_follow_up(
 ) -> None:
     async def _handle() -> None:
         try:
-            from app.services.conversation_quality import get_conversation_quality_service
+            from app.services.conversation_quality import (
+                get_conversation_quality_service,
+            )
 
             await get_conversation_quality_service().handle_follow_up(
                 session_id=session_id,
@@ -60,7 +67,7 @@ def _schedule_quality_follow_up(
     asyncio.create_task(_handle())
 
 
-def _plan_id_from_request(request: ChatRequest) -> Optional[int]:
+def _plan_id_from_request(request: ChatRequest) -> int | None:
     ctx = request.context or {}
     raw = ctx.get("plan_id")
     if raw is None:
@@ -73,7 +80,7 @@ def _plan_id_from_request(request: ChatRequest) -> Optional[int]:
 
 def _consume_plan_clarification(
     request: ChatRequest,
-    user_message_metadata: Dict[str, Any],
+    user_message_metadata: dict[str, Any],
     *,
     session_id: str,
     owner_id: str,
@@ -84,9 +91,7 @@ def _consume_plan_clarification(
         normalize_clarification_response,
     )
 
-    response = normalize_clarification_response(
-        (request.context or {}).get("plan_clarification_response")
-    )
+    response = normalize_clarification_response((request.context or {}).get("plan_clarification_response"))
     if response:
         user_message_metadata["plan_clarification_response"] = response
     try:
@@ -106,22 +111,24 @@ def _save_run_user_message(
     if source_id:
         source = get_chat_run(str(source_id))
         try:
-            same_message = json.loads((source or {}).get('request_json') or '{}').get('message') == request.message
+            same_message = json.loads((source or {}).get("request_json") or "{}").get("message") == request.message
         except (ValueError, TypeError):
             same_message = False
-        if (source and source.get("session_id") == session_id and source.get("owner_id") == owner_id
-                and source.get('status') in {'failed', 'cancelled'} and same_message
-                and isinstance(source.get("user_message_id"), int)):
+        if (
+            source
+            and source.get("session_id") == session_id
+            and source.get("owner_id") == owner_id
+            and source.get("status") in {"failed", "cancelled"}
+            and same_message
+            and isinstance(source.get("user_message_id"), int)
+        ):
             # A continuation is another attempt at the original turn, not a new user message.
             set_chat_run_user_message_id(run_id, source["user_message_id"])
             return
-    user_message_metadata = (
-        {"client_message_id": request.client_message_id}
-        if request.client_message_id
-        else None
-    )
+    user_message_metadata = {"client_message_id": request.client_message_id} if request.client_message_id else None
     from app.services.chat_attachments import attach_message_attachments
     from app.services.response_style import attach_response_preferences
+
     user_message_metadata = user_message_metadata or {}
     attach_response_preferences(user_message_metadata, request.context)
     attach_message_attachments(user_message_metadata, request.context)
@@ -156,7 +163,7 @@ def _spawn_chat_run_worker(run_id: str) -> None:
 
 def _resume_idempotent_run(
     request: ChatRequest,
-    existing: Dict[str, Any],
+    existing: dict[str, Any],
     *,
     session_id: str,
     owner_id: str,
@@ -166,9 +173,7 @@ def _resume_idempotent_run(
     if existing.get("user_message_id") is None:
         # Crashed between INSERT and message save: persist it now (deduped by
         # client_message_id inside _save_chat_message).
-        _save_run_user_message(
-            request, run_id=existing_run_id, session_id=session_id, owner_id=owner_id
-        )
+        _save_run_user_message(request, run_id=existing_run_id, session_id=session_id, owner_id=owner_id)
     if existing.get("status") == "queued":
         if hub.has_live_worker_task(existing_run_id):
             # Rapid duplicate POST while the first dispatch is still starting up.
@@ -214,12 +219,12 @@ def start_background_chat_run(
     if idempotency_key:
         existing = get_chat_run_by_idempotency_key(session_id, idempotency_key)
         if existing is not None:
-            return _resume_idempotent_run(
-                request, existing, session_id=session_id, owner_id=owner_id
-            )
+            return _resume_idempotent_run(request, existing, session_id=session_id, owner_id=owner_id)
 
     from app.services.response_style import snapshot_response_preferences
+
     from .session_helpers import _get_session_settings
+
     snapshot_response_preferences(request, _get_session_settings(session_id, owner_id=owner_id))
     run_id = new_chat_run_id()
     request_json = request.model_dump_json()
@@ -239,9 +244,7 @@ def start_background_chat_run(
         existing = get_chat_run_by_idempotency_key(session_id, idempotency_key)
         if existing is None:
             raise
-        return _resume_idempotent_run(
-            request, existing, session_id=session_id, owner_id=owner_id
-        )
+        return _resume_idempotent_run(request, existing, session_id=session_id, owner_id=owner_id)
 
     _save_run_user_message(request, run_id=run_id, session_id=session_id, owner_id=owner_id)
     _spawn_chat_run_worker(run_id)
@@ -262,7 +265,7 @@ async def iterate_chat_run_sse(
     rows**, and **deduplicate** queue items with ``seq <= last_yielded_seq``.
     """
     last_yielded_seq = after_seq
-    q: Optional[EventSubscription] = None
+    q: EventSubscription | None = None
     try:
         while True:
             progressed = False
@@ -305,7 +308,8 @@ async def iterate_chat_run_sse(
         if q is not None:
             await q.close()
 
-async def create_run(request: ChatRequest, raw_request: Request) -> Dict[str, str]:
+
+async def create_run(request: ChatRequest, raw_request: Request) -> dict[str, str]:
     if not request.session_id:
         raise HTTPException(status_code=400, detail="session_id is required for chat runs")
     request = bind_chat_request_to_principal(raw_request, request)
@@ -324,14 +328,15 @@ async def create_run(request: ChatRequest, raw_request: Request) -> Dict[str, st
 async def list_runs_for_session(
     session_id: str,
     request: Request,
-    status: Optional[str] = Query(None, description="Filter by run status"),
+    status: str | None = Query(None, description="Filter by run status"),
     limit: int = Query(10, ge=1, le=50),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     owner_id = get_request_owner_id(request)
     rows = list_session_runs(session_id, owner_id=owner_id, status=status, limit=limit)
     return {"runs": rows}
 
-async def cancel_run(run_id: str, request: Request) -> Dict[str, str]:
+
+async def cancel_run(run_id: str, request: Request) -> dict[str, str]:
     row = get_chat_run(run_id)
     if not row:
         raise HTTPException(status_code=404, detail="run not found")
@@ -349,7 +354,7 @@ async def cancel_run(run_id: str, request: Request) -> Dict[str, str]:
     return {"run_id": run_id, "status": "cancel_requested"}
 
 
-async def get_resume_info(run_id: str, request: Request, session_id: str = Query(...)) -> Dict[str, Any]:
+async def get_resume_info(run_id: str, request: Request, session_id: str = Query(...)) -> dict[str, Any]:
     from app.services.run_resume import resume_info
 
     row = get_chat_run(run_id)
@@ -361,7 +366,9 @@ async def get_resume_info(run_id: str, request: Request, session_id: str = Query
     return await asyncio.to_thread(resume_info, row)
 
 
-async def search_recall(session_id: str, request: Request, q: str = Query(..., min_length=1, max_length=1000)) -> Dict[str, Any]:
+async def search_recall(
+    session_id: str, request: Request, q: str = Query(..., min_length=1, max_length=1000)
+) -> dict[str, Any]:
     from app.repository.context_recall import session_scope
     from app.services.memory.context_recall import recall
 
@@ -373,11 +380,13 @@ async def search_recall(session_id: str, request: Request, q: str = Query(..., m
 
 
 async def resume_run(
-    run_id: str, request: Request, body: Optional[Dict[str, Any]] = Body(default=None),
-) -> Dict[str, str]:
+    run_id: str,
+    request: Request,
+    body: dict[str, Any] | None = Body(default=None),
+) -> dict[str, str]:
     """Fork an interrupted execution into an idempotent continuation run."""
-    from app.services.execution.step_ledger import StepLedger
     from app.repository.run_steps import list_checkpoint_pointers
+    from app.services.execution.step_ledger import StepLedger
 
     row = get_chat_run(run_id)
     if row is None:
@@ -391,9 +400,14 @@ async def resume_run(
         pointers = await asyncio.to_thread(list_checkpoint_pointers, run_id)
         pointer = next((item for item in pointers if item["checkpoint_key"].startswith("chat:")), None)
         pointer = pointer or (pointers[0] if pointers else None)
-        checkpoint = await asyncio.to_thread(
-            StepLedger(run_id).load_checkpoint, checkpoint_key=pointer["checkpoint_key"],
-        ) if pointer else None
+        checkpoint = (
+            await asyncio.to_thread(
+                StepLedger(run_id).load_checkpoint,
+                checkpoint_key=pointer["checkpoint_key"],
+            )
+            if pointer
+            else None
+        )
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=409, detail="The resumable checkpoint is unavailable") from exc
     if checkpoint is None:
@@ -416,7 +430,9 @@ async def resume_run(
     existing = get_chat_run_by_idempotency_key(row["session_id"], client_message_id)
     if existing is not None:
         try:
-            existing_source = (json.loads(existing.get("request_json") or "{}").get("context") or {}).get("resume_from_run_id")
+            existing_source = (json.loads(existing.get("request_json") or "{}").get("context") or {}).get(
+                "resume_from_run_id"
+            )
         except (ValueError, TypeError, AttributeError):
             existing_source = None
         if existing_source != run_id:
@@ -426,11 +442,17 @@ async def resume_run(
     auto_child = get_chat_run_by_idempotency_key(row["session_id"], f"resume:{run_id}")
     if auto_child is not None:
         child_id = auto_child["run_id"]
-        return {"run_id": child_id, "session_id": row["session_id"], "resume_from_run_id": run_id,
-                "events_stream_url": f"/chat/runs/{child_id}/events"}
+        return {
+            "run_id": child_id,
+            "session_id": row["session_id"],
+            "resume_from_run_id": run_id,
+            "events_stream_url": f"/chat/runs/{child_id}/events",
+        }
     resumed_request = bind_chat_request_to_principal(request, resumed_request)
     child = start_background_chat_run(
-        resumed_request, session_id=row["session_id"], owner_id=get_request_owner_id(request),
+        resumed_request,
+        session_id=row["session_id"],
+        owner_id=get_request_owner_id(request),
     )
     child_row = get_chat_run(child)
     if child_row is None:
@@ -438,8 +460,12 @@ async def resume_run(
     child_source = (json.loads(child_row["request_json"]).get("context") or {}).get("resume_from_run_id")
     if child_source != run_id:
         raise HTTPException(status_code=409, detail="This client_message_id belongs to another request")
-    return {"run_id": child, "session_id": row["session_id"], "resume_from_run_id": run_id,
-            "events_stream_url": f"/chat/runs/{child}/events"}
+    return {
+        "run_id": child,
+        "session_id": row["session_id"],
+        "resume_from_run_id": run_id,
+        "events_stream_url": f"/chat/runs/{child}/events",
+    }
 
 
 async def stream_run_events(
@@ -488,7 +514,7 @@ async def inspect_session_run(
     produced, enforces owner and session scope, and never re-executes anything.
     """
     from app.repository import run_inspection as repo
-    from app.services.run_inspector import build_run_inspection
+    from app.services.run_inspector import build_run_inspection, load_child_runs
 
     if run_id:
         row = repo.get_run_for_inspection(run_id)
@@ -509,6 +535,7 @@ async def inspect_session_run(
             repo.fetch_inspection_events(resolved),
             repo.count_run_event_types(resolved),
             repo.fetch_run_usage(resolved),
+            load_child_runs(resolved),
         )
 
     return await asyncio.to_thread(_load)
@@ -547,7 +574,7 @@ def mount_run_routes(router: APIRouter) -> None:
     )
 
 
-async def steer_run(run_id: str, request: Request, body: Dict[str, Any] = Body(...)) -> Dict[str, str]:
+async def steer_run(run_id: str, request: Request, body: dict[str, Any] = Body(...)) -> dict[str, str]:
     """Push a mid-run user guidance message into a running chat run."""
     row = get_chat_run(run_id)
     if not row:
