@@ -19,6 +19,12 @@ from typing import Any, Dict, List, Optional
 
 
 @dataclass(frozen=True)
+class PublishedArtifact:
+    path: str
+    source_path: str | None
+
+
+@dataclass(frozen=True)
 class PublishReport:
     version_id: str
     published_files_count: int
@@ -33,6 +39,7 @@ class PublishReport:
     submit_artifacts_published: Optional[int] = None
     submit_artifacts_skipped: Optional[int] = None
     warnings: List[str] = field(default_factory=list)
+    published_artifacts: tuple[PublishedArtifact, ...] = ()
 
     def to_dict(self) -> Dict[str, Any]:
         payload = {
@@ -46,6 +53,8 @@ class PublishReport:
             "release_summary": self.release_summary,
             "hidden_artifact_prefixes": list(self.hidden_artifact_prefixes),
         }
+        if self.published_artifacts:
+            payload["published_artifact_paths"] = [item.path for item in self.published_artifacts]
         if self.submit_artifacts_requested is not None:
             payload["submit_artifacts_requested"] = int(self.submit_artifacts_requested)
             payload["submit_artifacts_published"] = int(self.submit_artifacts_published or 0)

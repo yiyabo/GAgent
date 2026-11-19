@@ -19,7 +19,7 @@ export const isUserUploadPath = (path: string | null | undefined): boolean => {
 };
 
 export const normalizeArtifactGalleryItem = (raw: any): ArtifactGalleryItem | null => {
-  if (!raw || typeof raw !== 'object') {
+  if (!raw || typeof raw !== 'object' || raw.mime_family === 'file') {
     return null;
   }
   const path = isNonEmptyString(raw.path) ? normalizeArtifactImagePath(raw.path) : '';
@@ -203,10 +203,8 @@ export const normalizeArtifactFileItem = (raw: any): ArtifactFileItem | null => 
   if (!rawPath || rawPath.endsWith('/') || rawPath.includes('..') || rawPath.includes('\\')) {
     return null;
   }
-  if (IMAGE_EXT_RE.test(rawPath)) {
-    return null; // images belong to the gallery, not the file list
-  }
-  if (!FILE_EXT_RE.test(rawPath)) {
+  const publishedFile = raw.origin === 'deliverable' && raw.mime_family === 'file';
+  if (!publishedFile && !FILE_EXT_RE.test(rawPath)) {
     return null;
   }
   // Workspace-absolute paths keep their leading slash for the workspace endpoint.

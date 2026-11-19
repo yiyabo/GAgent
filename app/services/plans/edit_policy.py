@@ -14,10 +14,27 @@ _TARGET = re.compile(r"计划|任务|节点|阶段|(?<![a-z])(?:plan|task)(?![a-
 _EDIT = re.compile(r"创建|构建|新增|添加|增加|插入|删除|移除|修改|调整|更新|编辑|优化|重构|重新规划|拆分|拆解|拆成|拆开|细分|合并|移动|排序|标记|接受|"
     r"\b(?:create|add|delete|remove|edit|modify|update|optimi[sz]e|restructure|split|decompose|merge|move|reorder)\b", re.I)
 _NEGATED = re.compile(r"不要|不需要|无需|不能|不允许|禁止|别|do not|don't|without", re.I)
+_DEFERRED_PLAN_CHANGE = re.compile(
+    r"(?:下(?:一)?(?:条(?:消息)?|轮(?:对话)?|次)|稍后|之后|等我)[^。！？\n]{0,24}?"
+    r"(?:决定|确认)\s*(?:是否|要不要)\s*(?:需要\s*)?"
+    r"(?:创建|建立|新建|生成|制定|修改|优化)\s*(?:一个|新的)?\s*(?:计划|plan\b)"
+    r"|\b(?:decide|confirm)\s+(?:later|(?:in\s+)?(?:(?:my|the)\s+)?next\s+(?:message|turn))\s+"
+    r"(?:whether|if)\s+to\s+(?:create|make|start|revise)\s+(?:a\s+|the\s+)?plan\b"
+    r"|\b(?:decide|confirm)\s+(?:whether|if)\s+to\s+(?:create|make|start|revise)\s+"
+    r"(?:a\s+|the\s+)?plan\b\s+(?:later|in\s+(?:(?:my|the)\s+)?next\s+(?:message|turn))\b",
+    re.IGNORECASE,
+)
+
+
+def plan_change_deferred(message: str) -> bool:
+    """Recognize an explicit decision to leave the Plan unchanged for this turn."""
+    return bool(_DEFERRED_PLAN_CHANGE.search(message))
 
 
 def user_requested_plan_edit(message: Any) -> bool:
     text = str(message or "").strip()
+    if plan_change_deferred(text):
+        return False
     if re.match(r"^(?:请问)?(?:怎么|如何|怎样|为什么|是否|要不要|需不需要)|^(?:how|why|should)\b", text, re.I):
         return False
     if re.search(r"[?？]|[吗么]\s*$", text) and not re.match(
@@ -88,7 +105,8 @@ def blocked_execution_revision(operation: str, *, changes: Any, reason: Any,
             return _revision_denied(operation, f"Unsupported revision action: {action or '<missing>'}.")
         if action == "delete_task":
             try:
-                target = int(change.get("task_id"))
+                task_id = change.get("task_id")
+                target = int(task_id) if task_id is not None else None
             except (TypeError, ValueError):
                 target = None
             if target in protected:

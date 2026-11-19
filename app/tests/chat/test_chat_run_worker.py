@@ -217,7 +217,10 @@ def test_deadline_stops_active_stream_and_reports_failed_partial(monkeypatch):
     async def stream(*args, event_sink, **kwargs):
         seen["budget"] = current_run_budget()
         try:
-            await event_sink({"type": "artifact", "path": "published-output.txt"})
+            await event_sink({"type": "artifact", "path": "results/preview.png", "mime_family": "image"})
+            await event_sink({
+                "type": "artifact", "path": "docs/counts.txt", "origin": "deliverable", "mime_family": "file",
+            })
             await asyncio.Event().wait()
         finally:
             seen["joined"] = True
@@ -233,6 +236,8 @@ def test_deadline_stops_active_stream_and_reports_failed_partial(monkeypatch):
     assert seen["budget"].cancel_token.reason == "run_deadline_exceeded"
     assert metadata["status"] == "failed" and metadata["failure_kind"] == "deadline_exceeded"
     assert metadata["partial"] is True
+    assert [item["path"] for item in metadata["artifact_files"]] == ["docs/counts.txt"]
+    assert [item["path"] for item in metadata["artifact_gallery"]] == ["results/preview.png"]
     assert finished == ["failed"]
     assert current_run_budget() is None
 

@@ -10,9 +10,7 @@ interface ArtifactFileListProps {
 }
 
 /**
- * Download entries for non-image files (manuscripts, tables, archives, …)
- * produced by the tool calls behind this message. Renders nothing when the
- * message produced no files.
+ * Download entries for files produced by this message, including published images.
  */
 export const ArtifactFileList: React.FC<ArtifactFileListProps> = ({ items, sessionId }) => {
   const t = useT();

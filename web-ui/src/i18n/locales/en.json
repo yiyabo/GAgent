@@ -1898,8 +1898,10 @@
     "contractTitle": "Research contract (preserved during execution)",
     "contractSources": "Source preferences: {{sources}}",
     "deliveryTitle": "Final synthesis and domain review completed",
-    "deliveryPublished": "The full report and review record are available in Deliverables: {{path}}",
-    "deliveryFailed": "Tasks finished, but final synthesis did not complete",
-    "deliveryFailedDesc": "The system did not fabricate a successful synthesis. Review the task artifacts and retry. Reason: {{error}}"
+    "deliveryPartial": "Report published. Review or revision is incomplete.",
+    "deliveryUnverified": "This earlier delivery record does not confirm which report files were published. Check Deliverables for available files.",
+    "deliveryFailed": "Tasks finished, but final report delivery failed",
+    "downloadDeliveryReport": "Download report",
+    "downloadDeliveryReview": "Download domain review"
   }
 }

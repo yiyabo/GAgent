@@ -80,6 +80,7 @@ from .action_execution import (
 from .artifact_gallery import (
     build_artifact_gallery_item,
     merge_artifact_gallery,
+    published_file_events,
     update_recent_image_artifacts,
 )
 from .action_handlers import (
@@ -2272,6 +2273,10 @@ class StructuredChatAgent:
                             metadata={"origin": "deep_think"},
                         )
                         step = await self._handle_tool_action(synthetic_action)
+                        for event in published_file_events(
+                            (step.details or {}).get("deliverables"), source_tool=name, iteration=deep_think_tool_order,
+                        ):
+                            queue.put_nowait(event)
 
                         result, _details = _normalize_deep_think_tool_result(
                             step=step,
@@ -2956,7 +2961,7 @@ class StructuredChatAgent:
                             "cancelled",
                             result={"cancelled": True},
                         )
-                    await queue.put({"type": "error", "error": "Run cancelled."})
+                    await queue.put({"type": "error", "error": "Run cancelled.", "cancelled": True})
                 else:
                     # Put result in queue FIRST so the consumer can emit the
                     # ``final`` SSE event without waiting for job bookkeeping.

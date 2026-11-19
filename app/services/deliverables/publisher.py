@@ -40,11 +40,13 @@ from app.config.deliverable_config import (
 )
 from app.services.session_paths import normalize_session_base
 
+from .file_ops import _atomic_write_json, _FileOpsMethods
+from .file_ops import _KeepFirstConflict as _KeepFirstConflict
+from .manifest import _ManifestMethods
+from .manuscript import _ManuscriptMethods
 from .paper_builder import PaperBuilder
-
-logger = logging.getLogger(__name__)
-
 from .policy import (
+    _CC_RUN_ARTIFACT_RE,
     BLOCKED_PROJECT_DIRS,
     BLOCKED_SOURCE_FILENAMES,
     BLOCKED_SOURCE_SEGMENTS,
@@ -62,16 +64,15 @@ from .policy import (
     REF_EXTS,
     SOURCE_OWNERSHIP_MAP,
     TABULAR_EXTS,
-    _CC_RUN_ARTIFACT_RE,
     _PolicyMethods,
 )
-
-
-from .report import PublishReport, format_deliverable_submit_summary
-from .manifest import _ManifestMethods
-from .file_ops import _FileOpsMethods, _KeepFirstConflict, _atomic_write_json
+from .report import PublishedArtifact, PublishReport
+from .report import (
+    format_deliverable_submit_summary as format_deliverable_submit_summary,
+)
 from .submit_payload import _SubmitPayloadMethods
-from .manuscript import _ManuscriptMethods
+
+logger = logging.getLogger(__name__)
 
 
 class DeliverablePublisher(
@@ -291,6 +292,20 @@ class DeliverablePublisher(
         )
         _atomic_write_json(latest_manifest_path, manifest)
 
+        updated_paths = {item["path"] for item in deduped_updates}
+        hidden_prefixes = tuple(
+            prefix for raw in manifest.get("hidden_artifact_prefixes", [])
+            if (prefix := str(raw).strip().replace("\\", "/").strip("/"))
+        )
+        published_artifacts = tuple(
+            PublishedArtifact(
+                path=item["path"],
+                source_path=str(self._project_root / item["source_path"]) if item["source_path"] else None,
+            )
+            for item in merged_items
+            if item["path"] in updated_paths
+            and not any(item["path"] == prefix or item["path"].startswith(f"{prefix}/") for prefix in hidden_prefixes)
+        )
         return PublishReport(
             version_id=version_id,
             published_files_count=len(merged_items),
@@ -305,6 +320,7 @@ class DeliverablePublisher(
             submit_artifacts_published=submit_artifacts_published,
             submit_artifacts_skipped=submit_artifacts_skipped,
             warnings=submit_warnings,
+            published_artifacts=published_artifacts,
         )
 
 

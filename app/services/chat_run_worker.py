@@ -17,6 +17,7 @@ from app.repository.chat_runs import (
     mark_chat_run_started,
     release_chat_run_lease,
 )
+from app.routers.chat.artifact_gallery import published_artifact_files
 from app.routers.chat.models import ChatRequest
 from app.routers.chat.stream_context import build_agent_for_chat_request
 from app.routers.chat.session_helpers import _save_chat_message
@@ -103,6 +104,8 @@ async def _run_explicit_task_execution(
 
     _ctx = getattr(agent, "extra_context", None) or {}
     first_task = _ctx.get("current_task_id")
+    if first_task is None:
+        raise ValueError("Explicit task execution requires a current task ID.")
     pending = list(_ctx.get("pending_scope_task_ids") or [])
     all_task_ids = [int(first_task)] + [int(t) for t in pending]
 
@@ -419,6 +422,9 @@ async def _run_lease_heartbeat(
 
 
 async def execute_chat_run(run_id: str) -> None:
+    owner_task = asyncio.current_task()
+    if owner_task is None:
+        raise RuntimeError("Chat run execution requires an asyncio task.")
     # The process routes controls; this unique claim fences earlier attempts
     # even when a queued run is redispatched in the same process.
     worker_id = f"{get_worker_id()}:{uuid.uuid4().hex}"
@@ -474,7 +480,7 @@ async def execute_chat_run(run_id: str) -> None:
     pump_task = asyncio.create_task(run_signal_pump(run_id, pump_stop, worker_id=worker_id))
     heartbeat_task = asyncio.create_task(
         _run_lease_heartbeat(
-            run_id, worker_id, heartbeat_stop, owner_task=asyncio.current_task(),
+            run_id, worker_id, heartbeat_stop, owner_task=owner_task,
             lease_lost=lease_lost, terminal_committed=terminal_committed,
         )
     )
@@ -491,7 +497,9 @@ async def execute_chat_run(run_id: str) -> None:
     budget = configured_run_budget(hub.ensure_cancel_token(run_id))
     budget_handle = bind_run_budget(budget)
     budget_stop = asyncio.Event()
-    budget_watch = asyncio.create_task(watch_run_owner(asyncio.current_task(), budget, hub.ensure_cancel_token(run_id), budget_stop))
+    budget_watch = asyncio.create_task(
+        watch_run_owner(owner_task, budget, hub.ensure_cancel_token(run_id), budget_stop)
+    )
     request = None
     agent = None
 
@@ -507,7 +515,9 @@ async def execute_chat_run(run_id: str) -> None:
             "status": "failed", "failure_kind": "deadline_exceeded",
             "completion_reason": "deadline_exceeded", "partial": bool(observed_artifacts or completed_ids),
             "completed_task_ids": completed_ids,
-            "artifact_gallery": observed_artifacts, "analysis_text": message,
+            "artifact_gallery": [item for item in observed_artifacts if item.get("mime_family") != "file"],
+            "artifact_files": published_artifact_files(observed_artifacts),
+            "analysis_text": message,
             "final_summary": message, "thinking_display_mode": "final_answer",
         }
         accepted = await run_stage(

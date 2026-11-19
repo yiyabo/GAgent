@@ -150,9 +150,15 @@ def consume_revision_proposal(
 
 def configure_revision_context(agent: Any, routing_decision: Any) -> bool:
     """Set the approved proposal and return this turn's Plan-edit permission."""
-    from app.services.plans.edit_policy import user_requested_plan_edit
+    from app.services.plans.edit_policy import (
+        plan_change_deferred,
+        user_requested_plan_edit,
+    )
 
     message = routing_decision.effective_user_message
+    if plan_change_deferred(message):
+        agent.extra_context.pop("approved_plan_revision_proposal", None)
+        return False
     approved = approved_revision(
         session_id=getattr(agent, "session_id", None),
         owner_id=str(agent.extra_context.get("owner_id") or "").strip() or None,
