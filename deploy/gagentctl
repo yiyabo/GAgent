@@ -79,12 +79,46 @@ smoke() {
 # default builder shows STATUS=error. `DOCKER_BUILDKIT=1 docker build` uses the
 # daemon's own BuildKit and works, and it still honours the per-Dockerfile
 # dockerignore, so the build args have to be passed explicitly here.
+# Checksum list of every file under a frontend tree, as `md5  ./path` lines in
+# byte order. Run on the host (web-ui/dist) and inside the gateway image
+# (/usr/share/nginx/html) so the two can be compared line for line.
+frontend_manifest_cmd='find . -type f | LC_ALL=C sort | xargs md5sum'
+
+# The gateway image must serve exactly the web-ui/dist this build produced,
+# stamped with the commit being built. An image whose html differs from dist
+# (a reused layer, a stale context) or whose build-info.json names another
+# commit fails the build here instead of reaching a release.
+verify_gateway() {
+  local tag="$1" sha="$2"
+  local dist="${ROOT_DIR}/web-ui/dist"
+  [ -f "${dist}/build-info.json" ] || die "verify: ${dist}/build-info.json missing (run gagentctl build)"
+  local want got
+  want=$(cd "${dist}" && sh -c "${frontend_manifest_cmd}") || die "verify: cannot checksum ${dist}"
+  got=$(docker run --rm --entrypoint sh -w /usr/share/nginx/html "gagent-gateway:${tag}" -c "${frontend_manifest_cmd}") \
+    || die "verify: cannot read the frontend inside gagent-gateway:${tag}"
+  if [ "${want}" != "${got}" ]; then
+    diff <(printf '%s\n' "${want}") <(printf '%s\n' "${got}") | head -20 >&2 || true
+    die "verify: gagent-gateway:${tag} does not serve this build's web-ui/dist"
+  fi
+  local built_commit
+  built_commit=$(docker run --rm --entrypoint cat "gagent-gateway:${tag}" /usr/share/nginx/html/build-info.json \
+    | sed -n 's/.*"commit": *"\([0-9a-f]*\)".*/\1/p')
+  [ "${built_commit}" = "${sha}" ] \
+    || die "verify: gagent-gateway:${tag} frontend is from commit '${built_commit}', expected ${sha}"
+  log "verify OK: gagent-gateway:${tag} serves web-ui/dist of ${sha} ($(printf '%s\n' "${want}" | wc -l | tr -d ' ') files)"
+}
+
 build() {
   local tag="${GAGENT_TAG:-latest}"
+  local sha dirty=false
+  sha=$(git -C "${ROOT_DIR}" rev-parse HEAD 2>/dev/null) || die "build must run from a git checkout (cannot resolve HEAD)"
+  [ -z "$(git -C "${ROOT_DIR}" status --porcelain --untracked-files=no)" ] || dirty=true
+  log "source ${sha} (dirty=${dirty})"
   log "building gagent-app:${tag}"
   DOCKER_BUILDKIT=1 docker build \
     -f "${DEPLOY_DIR}/Dockerfile" \
     -t "gagent-app:${tag}" \
+    --label "org.opencontainers.image.revision=${sha}" \
     --build-arg "BASE_IMAGE=${APP_BASE_IMAGE:-python:3.12-slim}" \
     --build-arg "APP_UID=${APP_UID:-1001}" \
     --build-arg "APP_GID=${APP_GID:-1001}" \
@@ -102,13 +136,20 @@ build() {
   # never executed (same rule as the gate inside deploy/Dockerfile.gateway).
   hits=$({ grep -rl --include='*.js' ":9000" "${ROOT_DIR}/web-ui/dist" 2>/dev/null || true; } | wc -l | tr -d ' ')
   [ "${hits}" -eq 0 ] || die "frontend runtime .js contains ':9000' (${hits} file(s))"
+  # Stamp the bundle with its commit. vite output alone is not tied to a commit:
+  # unchanged web-ui sources can rebuild byte-identical to an older release
+  # (BuildKit then rightly reuses that release's layer and image), or differ
+  # only in chunk hashes between two builds of the same source.
+  printf '{"commit": "%s", "dirty": %s}\n' "${sha}" "${dirty}" > "${ROOT_DIR}/web-ui/dist/build-info.json"
 
   log "building gagent-gateway:${tag}"
   DOCKER_BUILDKIT=1 docker build \
     -f "${DEPLOY_DIR}/Dockerfile.gateway" \
     -t "gagent-gateway:${tag}" \
+    --label "org.opencontainers.image.revision=${sha}" \
     --build-arg "GATEWAY_BASE_IMAGE=${GATEWAY_BASE_IMAGE:-docker.byoryn.cn/ms/webui:ms}" \
     "${ROOT_DIR}" || die "gateway image build failed"
+  verify_gateway "${tag}" "${sha}"
   log "images built"
 }
 
@@ -130,6 +171,8 @@ reprobe() {
 cmd="${1:-}"; shift || true
 case "${cmd}" in
   build)   build ;;
+  verify-gateway)
+    verify_gateway "${1:-${GAGENT_TAG:-latest}}" "$(git -C "${ROOT_DIR}" rev-parse HEAD)" ;;
   # --no-build everywhere: images are built by `build` (plain docker build);
   # letting compose build here would hit the buildx/daemon mismatch above.
   up)      gate enforce; "${COMPOSE[@]}" up -d --no-build "$@"; smoke ;;
@@ -181,7 +224,8 @@ case "${cmd}" in
   import-images) gunzip -c "${1:-/tmp/gagent-images.tgz}" | docker load ;;
   *) cat <<EOF
 gagentctl commands:
-  build            build app + gateway images
+  build            build app + gateway images, then verify-gateway
+  verify-gateway [tag]  check the gateway image serves this checkout's web-ui/dist and commit
   up               gate, start the stack, smoke
   down             stop the stack
   deploy           gate, (re)start, smoke
