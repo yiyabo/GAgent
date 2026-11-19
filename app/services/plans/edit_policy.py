@@ -21,7 +21,10 @@ _DEFERRED_PLAN_CHANGE = re.compile(
     r"|\b(?:decide|confirm)\s+(?:later|(?:in\s+)?(?:(?:my|the)\s+)?next\s+(?:message|turn))\s+"
     r"(?:whether|if)\s+to\s+(?:create|make|start|revise)\s+(?:a\s+|the\s+)?plan\b"
     r"|\b(?:decide|confirm)\s+(?:whether|if)\s+to\s+(?:create|make|start|revise)\s+"
-    r"(?:a\s+|the\s+)?plan\b\s+(?:later|in\s+(?:(?:my|the)\s+)?next\s+(?:message|turn))\b",
+    r"(?:a\s+|the\s+)?plan\b\s+(?:later|in\s+(?:(?:my|the)\s+)?next\s+(?:message|turn))\b"
+    r"|\b(?:create|make|start|draft|revise|edit|update|modify)\s+"
+    r"(?:(?:a|the|this|my|our)\s+)?(?:(?:new|current)\s+)?plan\s*[?？]\s*"
+    r"(?:no\s*[,，]\s*)?not\s+yet(?=\s*(?:[,，.;；。!?！？—:]|$))",
     re.IGNORECASE,
 )
 

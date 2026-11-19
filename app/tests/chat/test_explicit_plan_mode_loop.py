@@ -172,7 +172,26 @@ def test_plan_mode_allows_structured_plan_creation(monkeypatch, native: bool) ->
 
 @pytest.mark.parametrize("native", [True, False])
 @pytest.mark.parametrize("model_selected", [True, False])
-def test_chat_defers_plan_creation_until_next_turn(monkeypatch, native, model_selected) -> None:
+@pytest.mark.parametrize(
+    ("plan_mode", "first_message"),
+    [
+        (
+            False,
+            "我在做内部的梧桐-47 周报复盘。原始数据是周一处理 12 个请求、周二 18 个。"
+            "交付要用中文，明确两天合计，写一句样本小的局限。只使用这两项输入，禁止外部检索。"
+            "先在聊天里复述目标和限制，我下一条再决定是否创建计划。",
+        ),
+        (
+            True,
+            "The weekly counts are Monday 12 and Tuesday 18. Create a Plan? Not yet, discuss first. "
+            "Please recap the goal and the two-day limitation; no external sources.",
+        ),
+    ],
+    ids=["decide-next-turn", "not-yet-with-plan-mode-on"],
+)
+def test_chat_defers_plan_creation_until_next_turn(
+    monkeypatch, native, model_selected, plan_mode, first_message
+) -> None:
     from app.services.foundation.settings import get_settings
 
     monkeypatch.setattr(get_settings(), "chat_model_action_selection_enabled", model_selected)
@@ -183,7 +202,7 @@ def test_chat_defers_plan_creation_until_next_turn(monkeypatch, native, model_se
         "app.services.plan_mode_offer_acceptance.persist_plan_mode_enabled",
         lambda _session_id, *, enabled: activated.append(enabled),
     )
-    agent = _build_agent(extra_context={"owner_id": "alice"})
+    agent = _build_agent(extra_context={"owner_id": "alice", "plan_mode": plan_mode})
     monkeypatch.setattr(type(agent.plan_session), "bind", lambda session, plan_id: setattr(session, "plan_id", plan_id), raising=False)
     monkeypatch.setattr(agent_module, "_set_session_plan_id", lambda _session_id, _plan_id: None)
     agent.plan_session.plan_id = None
@@ -200,12 +219,7 @@ def test_chat_defers_plan_creation_until_next_turn(monkeypatch, native, model_se
         return {"success": True, "operation": "create", "plan_id": 35, "plan_title": "梧桐-47"}
 
     monkeypatch.setattr(agent_module, "execute_tool", handler)
-    first = _run(
-        agent,
-        "我在做内部的梧桐-47 周报复盘。原始数据是周一处理 12 个请求、周二 18 个。"
-        "交付要用中文，明确两天合计，写一句样本小的局限。只使用这两项输入，禁止外部检索。"
-        "先在聊天里复述目标和限制，我下一条再决定是否创建计划。",
-    )[-1]
+    first = _run(agent, first_message)[-1]
     assert first["type"] == "final"
     assert recap in first["payload"]["response"]
     assert "plan_mode_offer" not in first["payload"]["metadata"]
