@@ -190,6 +190,7 @@ def test_mcp_rate_limit_returns_429(mcp_client, monkeypatch):
 
 def test_mcp_token_rechecks_user_status_and_current_policy(mcp_client, monkeypatch):
     client, _ = mcp_client
+    _setenv(monkeypatch, "AUTH_MODE", "local")
     token, record = store.issue_token("u1", name="lifecycle")
     assert _rpc(client, token, "tools/list").status_code == 200
     _setenv(monkeypatch, "PHAGESCOPE_MCP_ALLOWED_USER_IDS", "")
@@ -218,6 +219,39 @@ def test_mcp_rejects_foreign_host_and_origin(mcp_client):
     assert _rpc(client, token, "tools/list").status_code == 200
     assert _rpc(client, token, "tools/list", extra_headers={"Host": "evil.example"}).status_code == 421
     assert _rpc(client, token, "tools/list", extra_headers={"Origin": "https://evil.example"}).status_code == 403
+
+
+def test_proxy_identity_without_local_user_can_issue_and_use_token(app_client_factory, monkeypatch):
+    _setenv(monkeypatch, "AUTH_MODE", "proxy")
+    _setenv(monkeypatch, "AUTH_OPEN_SIGNUP", "1")
+    _setenv(monkeypatch, "PROXY_AUTH_REQUIRED", "1")
+    _setenv(monkeypatch, "PROXY_AUTH_SHARED_SECRET", "synthetic-proxy-secret")
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ENABLED", "1")
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ALLOWED_HOSTS", "testserver")
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ALLOWED_USERS", "")
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ALLOWED_USER_IDS", "proxy-alice")
+    monkeypatch.setattr(store, "_schema_ready", False)
+    with app_client_factory() as client:
+        identity_headers = {"X-Forwarded-User": "proxy-alice", "X-Gagent-Proxy-Secret": "synthetic-proxy-secret"}
+        assert client.post("/phagescope-mcp/tokens", json={"name": "untrusted"},
+                           headers={"X-Forwarded-User": "proxy-alice"}).status_code == 401
+        created = client.post("/phagescope-mcp/tokens", json={"name": "proxy"}, headers=identity_headers)
+        assert created.status_code == 200, created.text
+        token = created.json()["token"]
+        with get_db() as conn:
+            assert conn.execute("SELECT id FROM users WHERE id = 'proxy-alice'").fetchone() is None
+        assert _rpc(client, token, "tools/list").status_code == 200
+        _setenv(monkeypatch, "PHAGESCOPE_MCP_ALLOWED_USER_IDS", "")
+        _setenv(monkeypatch, "PHAGESCOPE_MCP_ALLOWED_USERS", "alice@example.org")
+        assert _rpc(client, token, "tools/list").status_code == 401
+        assert client.post("/phagescope-mcp/tokens", json={"name": "email-only"},
+                           headers={**identity_headers, "X-Forwarded-Email": "alice@example.org"}).status_code == 403
+        _setenv(monkeypatch, "PHAGESCOPE_MCP_ALLOWED_USER_IDS", "proxy-alice")
+        with get_db() as conn:
+            conn.execute("INSERT INTO users (id, email, password_hash, is_active) VALUES (?, ?, ?, 0)",
+                         ("proxy-alice", "alice@example.org", "synthetic"))
+            conn.commit()
+        assert _rpc(client, token, "tools/list").status_code == 401
 
 
 def test_token_routes_enforce_allowlist(app_client_factory, monkeypatch):

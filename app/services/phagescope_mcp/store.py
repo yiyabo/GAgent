@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from app.database_pool import get_db
+from app.services.auth import AUTH_MODE_PROXY, get_auth_mode
 from app.services.request_principal import RequestPrincipal
 
 from . import policy
@@ -87,6 +88,17 @@ _SCHEMA = (
     """,
     "CREATE INDEX IF NOT EXISTS idx_phagescope_mcp_tasks_token ON phagescope_mcp_analysis_tasks(token_id, created_at)",
     """
+    CREATE TABLE IF NOT EXISTS phagescope_mcp_analysis_replies (
+        task_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        client_message_id TEXT NOT NULL,
+        run_id TEXT,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (task_id, client_message_id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_phagescope_mcp_replies_user ON phagescope_mcp_analysis_replies(user_id, created_at)",
+    """
     CREATE UNIQUE INDEX IF NOT EXISTS idx_phagescope_mcp_tasks_idem
         ON phagescope_mcp_analysis_tasks(token_id, idempotency_key)
     """,
@@ -146,6 +158,16 @@ def ensure_schema() -> None:
         with get_db() as conn:
             for stmt in _SCHEMA:
                 conn.execute(stmt)
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chat_runs'").fetchone():
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO phagescope_mcp_analysis_replies
+                        (task_id, user_id, client_message_id, run_id, created_at)
+                    SELECT t.task_id, t.user_id, r.idempotency_key, r.run_id, r.created_at
+                    FROM chat_runs r JOIN phagescope_mcp_analysis_tasks t ON t.session_id = r.session_id
+                    WHERE r.idempotency_key LIKE t.task_id || ':reply:%'
+                    """
+                )
             conn.commit()
         _schema_ready = True
 
@@ -255,9 +277,14 @@ def authenticate(plaintext: str) -> Optional[McpToken]:
         user = conn.execute(
             "SELECT id, email, role, is_active FROM users WHERE id = ?", (row["user_id"],)
         ).fetchone()
-        if not user or not bool(user["is_active"]):
-            return None
-        principal = RequestPrincipal(user_id=user["id"], email=user["email"], role=user["role"], auth_source="mcp")
+        if user is not None:
+            if not bool(user["is_active"]):
+                return None
+            principal = RequestPrincipal(user_id=user["id"], email=user["email"], role=user["role"], auth_source="mcp")
+        else:
+            if get_auth_mode() != AUTH_MODE_PROXY:
+                return None
+            principal = RequestPrincipal(user_id=row["user_id"], email=None, role="user", auth_source="mcp")
         if not policy.may_self_issue(principal):
             return None
         conn.execute(
@@ -472,7 +499,6 @@ def is_analysis_session(session_id: str) -> bool:
 def analysis_counts(token: McpToken) -> dict[str, int]:
     """Active runs and this user's analysis submissions/replies today (UTC)."""
     ensure_schema()
-    day_start = utc_day() + "T00:00:00"
     active_sql = """
         SELECT COUNT(*) AS n FROM phagescope_mcp_analysis_tasks t
         JOIN chat_runs r ON r.run_id = t.run_id
@@ -481,26 +507,88 @@ def analysis_counts(token: McpToken) -> dict[str, int]:
     with get_db() as conn:
         token_active = conn.execute(active_sql + " AND t.token_id = ?", (token.id,)).fetchone()["n"]
         global_active = conn.execute(active_sql).fetchone()["n"]
-        submissions_today = conn.execute(
-            "SELECT COUNT(*) AS n FROM phagescope_mcp_analysis_tasks WHERE user_id = ? AND created_at >= ?",
-            (token.user_id, day_start),
-        ).fetchone()["n"]
-        replies_today = conn.execute(
-            """
-            SELECT COUNT(*) AS n
-            FROM chat_runs r
-            JOIN phagescope_mcp_analysis_tasks t ON t.session_id = r.session_id
-            WHERE t.user_id = ?
-              AND r.idempotency_key LIKE t.task_id || ':reply:%'
-              AND datetime(r.created_at) >= datetime(?)
-            """,
-            (token.user_id, day_start),
-        ).fetchone()["n"]
+        user_today = _daily_analysis_count(conn, token.user_id)
     return {
         "token_active": int(token_active),
         "global_active": int(global_active),
-        "user_today": int(submissions_today) + int(replies_today),
+        "user_today": user_today,
     }
+
+
+def _daily_analysis_count(conn: Any, user_id: str) -> int:
+    day_start = utc_day() + "T00:00:00"
+    row = conn.execute(
+        """
+        SELECT
+            (SELECT COUNT(*) FROM phagescope_mcp_analysis_tasks WHERE user_id = ? AND created_at >= ?) +
+            (SELECT COUNT(*) FROM phagescope_mcp_analysis_replies
+             WHERE user_id = ? AND datetime(created_at) >= datetime(?)) AS n
+        """,
+        (user_id, day_start, user_id, day_start),
+    ).fetchone()
+    return int(row["n"])
+
+
+class AnalysisQuotaExceeded(ValueError):
+    pass
+
+
+def get_analysis_reply(task_id: str, client_message_id: str) -> Optional[dict[str, Any]]:
+    ensure_schema()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM phagescope_mcp_analysis_replies WHERE task_id = ? AND client_message_id = ?",
+            (task_id, client_message_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def reserve_analysis_reply(task: AnalysisTask, client_message_id: str, daily_limit: int) -> bool:
+    """Atomically reserve a durable daily slot before starting a reply run."""
+    ensure_schema()
+    with get_db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            existing = conn.execute(
+                "SELECT 1 FROM phagescope_mcp_analysis_replies WHERE task_id = ? AND client_message_id = ?",
+                (task.task_id, client_message_id),
+            ).fetchone()
+            if existing:
+                conn.commit()
+                return False
+            if _daily_analysis_count(conn, task.user_id) >= daily_limit:
+                raise AnalysisQuotaExceeded()
+            conn.execute(
+                """INSERT INTO phagescope_mcp_analysis_replies
+                   (task_id, user_id, client_message_id, created_at) VALUES (?, ?, ?, ?)""",
+                (task.task_id, task.user_id, client_message_id, _iso(_now())),
+            )
+            conn.commit()
+            return True
+        except BaseException:
+            conn.rollback()
+            raise
+
+
+def finish_analysis_reply(task_id: str, client_message_id: str, run_id: Optional[str]) -> None:
+    with get_db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if run_id is None:
+                conn.execute(
+                    "DELETE FROM phagescope_mcp_analysis_replies WHERE task_id = ? AND client_message_id = ? AND run_id IS NULL",
+                    (task_id, client_message_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE phagescope_mcp_analysis_replies SET run_id = ? WHERE task_id = ? AND client_message_id = ?",
+                    (run_id, task_id, client_message_id),
+                )
+                conn.execute("UPDATE phagescope_mcp_analysis_tasks SET run_id = ? WHERE task_id = ?", (run_id, task_id))
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
 
 
 def set_analysis_task_run(task_id: str, run_id: str) -> None:

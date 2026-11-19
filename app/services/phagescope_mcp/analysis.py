@@ -416,7 +416,7 @@ def _check_capacity(token: store.McpToken) -> None:
 
 
 async def reply_analysis(token: store.McpToken, arguments: dict[str, Any]) -> dict[str, Any]:
-    from app.repository.chat_runs import get_chat_run_by_idempotency_key
+    from app.repository.chat_runs import get_chat_run, get_chat_run_by_idempotency_key
     from app.routers.chat.models import ChatRequest
     from app.routers.chat.run_routes import start_background_chat_run
 
@@ -427,6 +427,10 @@ async def reply_analysis(token: store.McpToken, arguments: dict[str, Any]) -> di
     key = str(arguments.get("idempotency_key") or "").strip()[:128]
     client_message_id = f"{task.task_id}:reply:{key or uuid.uuid4().hex}"
     if key:
+        reply = store.get_analysis_reply(task.task_id, client_message_id)
+        if reply is not None:
+            row = get_chat_run(reply["run_id"]) if reply["run_id"] else {"status": "queued"}
+            return {"task_id": task.task_id, "status": _status(row or {}), "deduplicated": True}
         existing = get_chat_run_by_idempotency_key(task.session_id, client_message_id)
         if existing is not None:
             return {"task_id": task.task_id, "status": _status(existing), "deduplicated": True}
@@ -442,8 +446,21 @@ async def reply_analysis(token: store.McpToken, arguments: dict[str, Any]) -> di
         client_message_id=client_message_id,
         context={"origin": "phagescope_mcp", "mcp_task_id": task.task_id},
     )
-    run_id = start_background_chat_run(request, session_id=task.session_id, owner_id=token.user_id)
-    store.set_analysis_task_run(task.task_id, run_id)
+    try:
+        reserved = store.reserve_analysis_reply(task, client_message_id, int(settings.phagescope_mcp_analysis_daily_submissions))
+    except store.AnalysisQuotaExceeded:
+        raise AnalysisError("daily_task_quota_exceeded", DAILY_QUOTA_ERROR) from None
+    if not reserved:
+        reply = store.get_analysis_reply(task.task_id, client_message_id)
+        row = get_chat_run(reply["run_id"]) if reply and reply["run_id"] else {"status": "queued"}
+        return {"task_id": task.task_id, "status": _status(row or {}), "deduplicated": True}
+    try:
+        run_id = start_background_chat_run(request, session_id=task.session_id, owner_id=token.user_id)
+    except Exception:
+        existing = get_chat_run_by_idempotency_key(task.session_id, client_message_id)
+        store.finish_analysis_reply(task.task_id, client_message_id, existing["run_id"] if existing else None)
+        raise
+    store.finish_analysis_reply(task.task_id, client_message_id, run_id)
     return {"task_id": task.task_id, "status": "working", "poll_after_seconds": 15}
 
 

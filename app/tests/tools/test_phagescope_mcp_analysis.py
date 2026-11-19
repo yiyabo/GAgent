@@ -151,6 +151,71 @@ def test_replies_count_toward_daily_analysis_quota(analysis_client, monkeypatch)
     assert len(spawned) == before
 
 
+def test_reply_quota_and_idempotency_survive_session_deletion(analysis_client, monkeypatch):
+    from app.repository.chat_runs import get_chat_run
+    from app.services.foundation.settings import get_settings
+
+    client, spawned = analysis_client
+    monkeypatch.setenv("PHAGESCOPE_MCP_ANALYSIS_DAILY_SUBMISSIONS", "3")
+    get_settings.cache_clear()
+    token, record = _token()
+    _, body = _call(client, token, "submit_analysis", {"instructions": "durable quota"})
+    task = store.get_analysis_task(body["task_id"])
+    _finish(task.run_id, "succeeded")
+    for key in ("one", "two"):
+        _, body = _call(client, token, "reply_analysis", {"task_id": task.task_id, "message": "next", "idempotency_key": key})
+        assert body["status"] == "working"
+        _finish(store.get_analysis_task(task.task_id).run_id, "succeeded")
+    run_id = store.get_analysis_task(task.task_id).run_id
+    assert store.analysis_counts(record)["user_today"] == 3
+    with get_db() as conn:
+        conn.execute("DELETE FROM chat_sessions WHERE id = ?", (task.session_id,))
+        conn.commit()
+    assert get_chat_run(run_id) is None
+    assert store.analysis_counts(record)["user_today"] == 3
+    before = len(spawned)
+    _, duplicate = _call(client, token, "reply_analysis", {"task_id": task.task_id, "message": "next", "idempotency_key": "one"})
+    assert duplicate["deduplicated"]
+    result, error = _call(client, token, "reply_analysis", {"task_id": task.task_id, "message": "over quota"})
+    assert result["isError"] and error["error"]["code"] == "daily_task_quota_exceeded"
+    assert len(spawned) == before and store.analysis_counts(record)["user_today"] == 3
+
+
+def test_reply_start_failure_releases_unused_quota_reservation(analysis_client, monkeypatch):
+    client, spawned = analysis_client
+    token, record = _token()
+    _, body = _call(client, token, "submit_analysis", {"instructions": "failed reply"})
+    task = store.get_analysis_task(body["task_id"])
+    _finish(task.run_id, "succeeded")
+
+    def fail_start(*args, **kwargs):
+        raise RuntimeError("synthetic startup failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr("app.routers.chat.run_routes.start_background_chat_run", fail_start)
+        result, _ = _call(client, token, "reply_analysis", {"task_id": task.task_id, "message": "next", "idempotency_key": "retry"})
+        assert result["isError"]
+    assert store.analysis_counts(record)["user_today"] == 1 and len(spawned) == 1
+    assert store.get_analysis_reply(task.task_id, f"{task.task_id}:reply:retry") is None
+    _, reply = _call(client, token, "reply_analysis", {"task_id": task.task_id, "message": "next", "idempotency_key": "retry"})
+    assert reply["status"] == "working" and store.analysis_counts(record)["user_today"] == 2
+
+
+def test_existing_reply_runs_are_backfilled_once(analysis_client, monkeypatch):
+    client, _ = analysis_client
+    token, record = _token()
+    _, body = _call(client, token, "submit_analysis", {"instructions": "legacy run"})
+    task = store.get_analysis_task(body["task_id"])
+    _finish(task.run_id, "succeeded")
+    _call(client, token, "reply_analysis", {"task_id": task.task_id, "message": "legacy reply", "idempotency_key": "legacy"})
+    with get_db() as conn:
+        conn.execute("DELETE FROM phagescope_mcp_analysis_replies")
+        conn.commit()
+    for _ in range(2):
+        monkeypatch.setattr(store, "_schema_ready", False)
+        assert store.analysis_counts(record)["user_today"] == 2
+
+
 def test_tool_guard_blocks_only_mcp_sessions(analysis_client):
     client, _ = analysis_client
     token, _ = _token()
