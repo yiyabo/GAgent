@@ -63,8 +63,8 @@
 
 ## 6. 权限与安全
 
-1. **PhageScope 只读**：MCP 发起的 run 只能使用现有的只读数据通道（`phagescope_data` v2 和 gateway 查询）。旧版网站 `phagescope` 的 taskid 提交类 action，在 `origin=mcp` 时禁用。写入只发生在该用户自己的会话工作区。
-2. **防循环**：`origin=mcp` 的 run 禁用对外 MCP 挂载（`mcp_mount` 扩展），也不能调用本机 `/mcp`，所以 GAgent 不会回调外部 Agent 或自己。
+1. **PhageScope 只读**：MCP 发起的 run 只能使用现有的只读数据通道（`phagescope_data` v2 和 gateway 查询）。`phagescope` 工具的 `submit` action（向 PhageScope 网站提交分析任务）在 `origin=mcp` 时禁用。写入只发生在该用户自己的会话工作区。
+2. **防循环**：`origin=mcp` 的 run 禁用用户挂载的外部 MCP 扩展（`app/services/extensions`），也不能调用本机 `/mcp`，所以 GAgent 不会回调外部 Agent 或自己。
 3. **独立 scope**：`analysis:submit` 默认不发放。只有管理员能在令牌上加这个 scope，白名单仍用 `PHAGESCOPE_MCP_ALLOWED_USERS`。旧令牌只有 `data:read`，行为不变。
 4. **输入边界**：`inline_data` 落到会话工作区作为附件，与网页上传走同一套检查；本期不接受 URL 抓取，避免 SSRF 和带宽滥用。
 5. **输出当作不可信数据**：结果只给结构化摘要和下载链接，不回传原始日志或大段工具输出，以减少对调用方 Agent 的提示注入面。签名链接只能下载该任务的产物。
