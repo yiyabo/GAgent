@@ -107,6 +107,9 @@ def auth_session_ttl_hours() -> int:
 
 
 def auth_cookie_secure() -> bool:
+    configured = str(os.getenv("AUTH_COOKIE_SECURE") or "").strip()
+    if configured:
+        return parse_bool(configured, default=False)
     app_env = str(
         os.getenv("APP_ENV")
         or os.getenv("ENV")
