@@ -3,9 +3,20 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.services.plans.edit_policy import user_requested_plan_edit, agent_plan_edit_allowed
+from app.services.plans.edit_policy import agent_plan_edit_allowed, plan_change_deferred, user_requested_plan_edit
 from tool_box.context import ToolContext
 from tool_box.tools_impl import plan_tools
+
+
+@pytest.mark.parametrize(("message", "deferred"), [
+    ("Can we start a new Plan? Not yet.", True),
+    ("Revise the current Plan? No, not yet; discuss first.", True),
+    ("Is the Plan ready? Not yet. Please revise it now.", False),
+    ("Create a Plan? Yes, start now; the full data is not yet available.", False),
+    ("Can you update the plan? Not yet another outline; update the existing one.", False),
+])
+def test_short_deferral_must_answer_a_plan_change_question(message, deferred):
+    assert plan_change_deferred(message) is deferred
 
 
 @pytest.mark.parametrize('message', ['这样啊，你重新执行一下吧', '重试任务4，不要拆分任务',
