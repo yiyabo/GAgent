@@ -111,6 +111,59 @@ def test_bio_shared_reference_data_is_readable_but_not_an_output(world, isolated
     assert client.post("/tools/bio-tools", json={**body, "params": {"output": str(reference)}}).status_code == 403
 
 
+@pytest.mark.parametrize("tool, operation, params, output_name, expected_command", [
+    ("blast", "makeblastdb", {"type": "nucl", "db": "mydb"}, "mydb", "makeblastdb -in"),
+    ("seqkit", "grep", {"pattern": "/read1", "output": "hits.fa"}, "hits.fa", "-p /read1"),
+])
+def test_operation_parameter_roles_survive_native_rendering(
+    world, monkeypatch, tool, operation, params, output_name, expected_command,
+):
+    import tool_box
+    from tool_box.bio_tools.bio_tools_handler import get_tools_config
+    from tool_box.bio_tools.native_exec import build_job
+
+    client, _, own, _, _ = world
+    work_dir = own.parent.parent / "native-run"
+    work_dir.mkdir()
+
+    async def render_native(name, **kwargs):
+        assert name == "bio_tools"
+        assert kwargs["params"] == params
+        job = build_job(
+            get_tools_config(), tool=kwargs["tool_name"], operation=kwargs["operation"],
+            input_file=kwargs.get("input_file"), output_file=kwargs.get("output_file"),
+            params=kwargs.get("params"), timeout=None, work_dir=str(work_dir),
+            read_roots=[str(own.parent.parent)],
+        )
+        return {"success": True, "job": job}
+
+    monkeypatch.setattr(tool_box, "execute_tool", render_native)
+    response = client.post("/tools/bio-tools", json={
+        "session_id": "bob", "tool_name": tool, "operation": operation,
+        "input_file": str(own), "params": params,
+    })
+    assert response.status_code == 200, response.text
+    job = response.json()["result"]["job"]
+    assert expected_command in job["command"]
+    assert str(own) in job["command"]
+    assert job["output_path"] == str(work_dir / output_name)
+
+
+@pytest.mark.parametrize("operation, params", [
+    ("makeblastdb", {"type": "nucl", "db": "../escape"}),
+    ("makeblastdb", {"type": "nucl", "db": "/etc/private"}),
+    ("blastn", {"db": "/etc/private"}),
+])
+def test_operation_parameter_roles_preserve_path_boundaries(world, operation, params):
+    client, calls, own, *_ = world
+    response = client.post("/tools/bio-tools", json={
+        "session_id": "bob", "tool_name": "blast", "operation": operation,
+        "input_file": str(own), "params": params,
+    })
+    assert response.status_code == 403
+    assert not calls
+
+
 @pytest.mark.parametrize("owner, session_id, allowed", [
     ("alice", "session_alice", False), ("bob", "bob", True),
     ("legacy-local", "bob", True), ("legacy-local", None, False),

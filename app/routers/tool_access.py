@@ -27,10 +27,17 @@ def _inside(path: Path, roots: list[Path]) -> bool:
     return any(path.is_relative_to(root) for root in roots)
 
 
-def bio_paths(session_id: str, input_file: Any, output_file: Any, params: Any):
+def bio_paths(session_id: str, input_file: Any, output_file: Any, params: Any, *, tool_name: str, operation: str):
+    from tool_box.bio_tools import native_exec
     from tool_box.bio_tools.bio_tools_handler import (
-        DATABASE_MOUNT_CONFIG, INPUT_PATH_PARAM_KEYS, OUTPUT_PATH_PARAM_KEYS,
+        DATABASE_MOUNT_CONFIG, get_tools_config,
     )
+
+    op = get_tools_config().get(tool_name, {}).get("operations", {}).get(operation, {})
+    output_keys = set(native_exec.OUTPUT_PATH_PARAM_KEYS)
+    for template in (op.get("command", ""), op.get("native_command", "")):
+        template = native_exec._QUOTED_PLACEHOLDER_RE.sub(r"{\2}", template)
+        output_keys.update(native_exec._WORK_PLACEHOLDER_RE.findall(template))
 
     roots = get_session_storage_candidates(session_id)
     shared = [Path(os.getenv("DB_ROOT", "data/databases")) / "bio_tools"]
@@ -59,24 +66,27 @@ def bio_paths(session_id: str, input_file: Any, output_file: Any, params: Any):
     def check_params(value, *, read=True, path_value=False):
         if isinstance(value, dict):
             return {
-                key: check_params(item, read=key not in OUTPUT_PATH_PARAM_KEYS, path_value=key in INPUT_PATH_PARAM_KEYS)
+                key: check_params(
+                    item, read=key not in output_keys,
+                    path_value=key in output_keys or key in native_exec.INPUT_PATH_PARAM_KEYS,
+                )
                 for key, item in value.items()
             }
         elif isinstance(value, (tuple, list)):
             return [check_params(item, read=read, path_value=path_value) for item in value]
-        elif isinstance(value, str):
+        elif isinstance(value, str) and path_value:
             parts = []
             for part in value.split(","):
                 part = part.strip()
                 if ".." in Path(part).parts:
                     raise HTTPException(403, "Relative tool paths cannot traverse parent directories")
-                if part and (path_value or part.startswith(("/", "~"))):
+                if part and read:
                     resolved = checked(part, read=read)
-                    if path_value:
-                        part = resolved
+                    part = resolved
+                elif part.startswith(("/", "~")):
+                    checked(part, read=False)
                 parts.append(part)
-            if path_value:
-                return ",".join(parts)
+            return ",".join(parts)
         return value
 
     return input_file, check_params(params)

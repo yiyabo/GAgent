@@ -264,7 +264,9 @@ async def execute_bio_tools(request: Request, payload: Dict[str, Any] = Body(...
             if not requested_job_id:
                 raise HTTPException(400, "job_id is required")
             owned_bio_job(request, str(requested_job_id))
-        input_file, params = bio_paths(session_id, input_file, output_file, params)
+        input_file, params = bio_paths(
+            session_id, input_file, output_file, params, tool_name=tool_name, operation=operation,
+        )
 
         if not tool_name:
             raise HTTPException(status_code=400, detail="tool_name is required")
