@@ -1069,6 +1069,11 @@ def _effective_execution_mode(config: RemoteExecutionConfig) -> str:
     return "local"
 
 
+def _uses_native_execution(mode: Optional[str] = None) -> bool:
+    mode = _normalize_execution_mode(mode if mode is not None else os.getenv("BIO_TOOLS_EXECUTION_MODE"))
+    return mode in {"native", "native_first"}
+
+
 def _is_definitely_local_missing(path_value: str) -> bool:
     p = (path_value or "").strip()
     if not p:
@@ -1538,7 +1543,7 @@ async def _execute_bio_tool_once(
     requested_mode = _normalize_execution_mode(os.getenv("BIO_TOOLS_EXECUTION_MODE"))
     execution_mode = _effective_execution_mode(remote_config)
 
-    if requested_mode in {"native", "native_first"}:
+    if _uses_native_execution(requested_mode):
         # A native run writes only inside its own directory. An output the caller placed inside its session
         # runs under a plain name there and is copied to the requested place afterwards.
         native_output_file, native_params, output_requests = output_paths.plan_session_outputs(

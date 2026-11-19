@@ -30,14 +30,14 @@ def _inside(path: Path, roots: list[Path]) -> bool:
 def bio_paths(session_id: str, input_file: Any, output_file: Any, params: Any, *, tool_name: str, operation: str):
     from tool_box.bio_tools import native_exec
     from tool_box.bio_tools.bio_tools_handler import (
-        DATABASE_MOUNT_CONFIG, get_tools_config,
+        DATABASE_MOUNT_CONFIG, _uses_native_execution, get_tools_config,
     )
 
     op = get_tools_config().get(tool_name, {}).get("operations", {}).get(operation, {})
     output_keys = set(native_exec.OUTPUT_PATH_PARAM_KEYS)
-    for template in (op.get("command", ""), op.get("native_command", "")):
-        template = native_exec._QUOTED_PLACEHOLDER_RE.sub(r"{\2}", template)
-        output_keys.update(native_exec._WORK_PLACEHOLDER_RE.findall(template))
+    template = (op.get("native_command") if _uses_native_execution() else None) or op.get("command", "")
+    template = native_exec._QUOTED_PLACEHOLDER_RE.sub(r"{\2}", template)
+    output_keys.update(native_exec._WORK_PLACEHOLDER_RE.findall(template))
 
     roots = get_session_storage_candidates(session_id)
     shared = [Path(os.getenv("DB_ROOT", "data/databases")) / "bio_tools"]

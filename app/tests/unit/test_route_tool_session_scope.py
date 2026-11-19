@@ -122,6 +122,7 @@ def test_operation_parameter_roles_survive_native_rendering(
     from tool_box.bio_tools.bio_tools_handler import get_tools_config
     from tool_box.bio_tools.native_exec import build_job
 
+    monkeypatch.setenv("BIO_TOOLS_EXECUTION_MODE", "native")
     client, _, own, _, _ = world
     work_dir = own.parent.parent / "native-run"
     work_dir.mkdir()
@@ -162,6 +163,90 @@ def test_operation_parameter_roles_preserve_path_boundaries(world, operation, pa
     })
     assert response.status_code == 403
     assert not calls
+
+
+def test_all_backend_dependent_input_roles_are_covered():
+    from tool_box.bio_tools.bio_tools_handler import get_tools_config
+    from tool_box.bio_tools import native_exec
+
+    differences = set()
+    for tool, info in get_tools_config().items():
+        for operation, op in info.get("operations", {}).items():
+            docker = set(native_exec._WORK_PLACEHOLDER_RE.findall(op["command"]))
+            native = set(native_exec._WORK_PLACEHOLDER_RE.findall(op.get("native_command") or op["command"]))
+            for key in (docker ^ native) & native_exec.INPUT_PATH_PARAM_KEYS:
+                differences.add((tool, operation, key))
+    assert differences == {
+        ("hmmer", "hmmpress", "db"), ("concoct", "bin", "coverage"), ("checkm", "qa", "tree"),
+    }
+
+
+@pytest.mark.parametrize("mode", ["native", "native_first"])
+@pytest.mark.parametrize("tool, operation, path_key, other_params", [
+    ("hmmer", "hmmpress", "db", {}),
+    ("concoct", "bin", "coverage", {"output": "bins"}),
+    ("checkm", "qa", "tree", {"output": "qa.tsv"}),
+])
+def test_backend_specific_inputs_reach_native_rendering(
+    world, monkeypatch, mode, tool, operation, path_key, other_params,
+):
+    import tool_box
+    from tool_box.bio_tools.bio_tools_handler import get_tools_config
+    from tool_box.bio_tools.native_exec import build_job
+
+    monkeypatch.setenv("BIO_TOOLS_EXECUTION_MODE", mode)
+    client, _, own, private, _ = world
+    work_dir = own.parent.parent / "native-run"
+    work_dir.mkdir()
+    params = {**other_params, path_key: "uploads/own.fa"}
+    if tool == "concoct":
+        params["contigs"] = "uploads/own.fa"
+    if tool == "checkm":
+        params["input"] = "uploads/own.fa"
+
+    async def render_native(name, **kwargs):
+        assert kwargs["params"][path_key] == str(own)
+        job = build_job(
+            get_tools_config(), tool=tool, operation=operation,
+            input_file=kwargs.get("input_file"), output_file=None, params=kwargs["params"],
+            timeout=None, work_dir=str(work_dir), read_roots=[str(own.parent.parent)],
+            database_path=str(own.parent),
+        )
+        return {"success": True, "job": job}
+
+    monkeypatch.setattr(tool_box, "execute_tool", render_native)
+    body = {"session_id": "bob", "tool_name": tool, "operation": operation, "input_file": str(own)}
+    response = client.post("/tools/bio-tools", json={**body, "params": params})
+    assert response.status_code == 200, response.text
+    assert str(own) in response.json()["result"]["job"]["command"]
+    for forbidden in (str(private), "../session_alice/uploads/private.fa"):
+        response = client.post("/tools/bio-tools", json={**body, "params": {**params, path_key: forbidden}})
+        assert response.status_code == 403
+
+
+def test_docker_work_relative_parameter_reaches_docker_rendering(world, monkeypatch):
+    import tool_box
+    from tool_box.bio_tools.bio_tools_handler import _build_docker_command_args
+
+    monkeypatch.setenv("BIO_TOOLS_EXECUTION_MODE", "local")
+    client, _, own, private, _ = world
+    work_dir = own.parent.parent / "docker-run"
+    work_dir.mkdir()
+
+    async def render_docker(name, **kwargs):
+        assert kwargs["params"]["db"] == "uploads/own.fa"
+        command = _build_docker_command_args(
+            "hmmer", "hmmpress", extra_params=kwargs["params"], work_dir_override=str(work_dir),
+            validate_database=False,
+        )
+        return {"success": True, "command": command}
+
+    monkeypatch.setattr(tool_box, "execute_tool", render_docker)
+    body = {"session_id": "bob", "tool_name": "hmmer", "operation": "hmmpress"}
+    response = client.post("/tools/bio-tools", json={**body, "params": {"db": "uploads/own.fa"}})
+    assert response.status_code == 200, response.text
+    assert "/work/uploads/own.fa" in response.json()["result"]["command"]
+    assert client.post("/tools/bio-tools", json={**body, "params": {"db": str(private)}}).status_code == 403
 
 
 @pytest.mark.parametrize("owner, session_id, allowed", [
