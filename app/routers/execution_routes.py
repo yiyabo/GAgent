@@ -9,7 +9,8 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field, validator
 
 from ..services.execution import command_runner, workspace_manager
-from ..services.request_principal import get_request_owner_id
+from ..services.foundation.settings import get_settings
+from ..services.request_principal import get_request_owner_id, require_admin_principal
 from . import register_router
 
 logger = logging.getLogger(__name__)
@@ -85,8 +86,15 @@ def _require_own_workspace(request: Request, owner: Optional[str]) -> str:
     return principal_owner
 
 
+def _require_shell_access(request: Request) -> None:
+    if not bool(getattr(get_settings(), "execution_shell_enabled", False)):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Command execution is disabled")
+    require_admin_principal(request, detail="Administrator access required for command execution")
+
+
 @router.post("/shell", response_model=ShellCommandResponse)
 async def execute_shell_command(request: Request, payload: ShellCommandRequest) -> ShellCommandResponse:
+    _require_shell_access(request)
     owner = _require_own_workspace(request, payload.owner)
     workspace = await workspace_manager.prepare_workspace(owner, reset=payload.reset_workspace)
     try:
