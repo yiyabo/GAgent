@@ -568,7 +568,7 @@ def reserve_analysis_reply(task: AnalysisTask, client_message_id: str, daily_lim
                         "UPDATE phagescope_mcp_analysis_replies SET run_id = ? WHERE task_id = ? AND client_message_id = ? AND run_id IS NULL",
                         (run["run_id"], task.task_id, client_message_id),
                     )
-                    conn.execute("UPDATE phagescope_mcp_analysis_tasks SET run_id = ? WHERE task_id = ?", (run["run_id"], task.task_id))
+                    _advance_analysis_task_run(conn, task.task_id, client_message_id, run["run_id"])
                 elif existing["run_id"] is None:
                     now = _now()
                     claimed = conn.execute(
@@ -596,6 +596,27 @@ def reserve_analysis_reply(task: AnalysisTask, client_message_id: str, daily_lim
             raise
 
 
+def _advance_analysis_task_run(conn: Any, task_id: str, client_message_id: str, run_id: str) -> None:
+    conn.execute(
+        """
+        UPDATE phagescope_mcp_analysis_tasks SET run_id = ?
+        WHERE task_id = ? AND EXISTS (
+            SELECT 1 FROM phagescope_mcp_analysis_replies candidate
+            WHERE candidate.task_id = phagescope_mcp_analysis_tasks.task_id
+              AND candidate.client_message_id = ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM phagescope_mcp_analysis_replies current
+                  WHERE current.task_id = candidate.task_id
+                    AND current.run_id = phagescope_mcp_analysis_tasks.run_id
+                    AND (julianday(current.created_at), current.rowid) >=
+                        (julianday(candidate.created_at), candidate.rowid)
+              )
+        )
+        """,
+        (run_id, task_id, client_message_id),
+    )
+
+
 def finish_analysis_reply(task_id: str, client_message_id: str, run_id: Optional[str]) -> None:
     with get_db() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -610,7 +631,7 @@ def finish_analysis_reply(task_id: str, client_message_id: str, run_id: Optional
                     "UPDATE phagescope_mcp_analysis_replies SET run_id = ? WHERE task_id = ? AND client_message_id = ?",
                     (run_id, task_id, client_message_id),
                 )
-                conn.execute("UPDATE phagescope_mcp_analysis_tasks SET run_id = ? WHERE task_id = ?", (run_id, task_id))
+                _advance_analysis_task_run(conn, task_id, client_message_id, run_id)
             conn.commit()
         except BaseException:
             conn.rollback()

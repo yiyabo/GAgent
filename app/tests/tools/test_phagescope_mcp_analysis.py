@@ -276,6 +276,52 @@ def test_only_one_concurrent_reply_reclaim_wins(analysis_client, monkeypatch):
     assert store.analysis_counts(record)["user_today"] == 2
 
 
+@pytest.mark.parametrize("recovery", ["retry", "reserve"])
+@pytest.mark.parametrize("same_timestamp", [False, True])
+def test_recovering_older_reply_preserves_newer_current_run(analysis_client, recovery, same_timestamp):
+    from datetime import timedelta
+    from app.repository.chat_runs import fetch_unconsumed_chat_run_signals, mark_chat_run_started
+
+    client, spawned = analysis_client
+    token, record = _token()
+    _, body = _call(client, token, "submit_analysis", {"instructions": "recover older reply"})
+    task = store.get_analysis_task(body["task_id"])
+    _finish(task.run_id, "succeeded")
+    args = {"task_id": task.task_id, "message": "reply A", "idempotency_key": "A"}
+    _call(client, token, "reply_analysis", args)
+    run_a = store.get_analysis_task(task.task_id).run_id
+    _finish(run_a, "succeeded")
+    _call(client, token, "reply_analysis", {**args, "message": "reply B", "idempotency_key": "B"})
+    run_b = store.get_analysis_task(task.task_id).run_id
+    mark_chat_run_started(run_b)
+    now = store._now()
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE phagescope_mcp_analysis_replies SET run_id = NULL, created_at = ? WHERE task_id = ? AND client_message_id = ?",
+            (store._iso(now - timedelta(seconds=0 if same_timestamp else 1)), task.task_id, f"{task.task_id}:reply:A"),
+        )
+        conn.execute(
+            "UPDATE phagescope_mcp_analysis_replies SET created_at = ? WHERE task_id = ? AND client_message_id = ?",
+            (store._iso(now), task.task_id, f"{task.task_id}:reply:B"),
+        )
+        conn.commit()
+    if recovery == "retry":
+        _, recovered = _call(client, token, "reply_analysis", args)
+        assert recovered["deduplicated"] and recovered["status"] == "completed"
+    else:
+        assert not store.reserve_analysis_reply(task, f"{task.task_id}:reply:A", 10)
+    assert store.get_analysis_reply(task.task_id, f"{task.task_id}:reply:A")["run_id"] == run_a
+    assert store.get_analysis_task(task.task_id).run_id == run_b
+    assert store.analysis_counts(record)["user_today"] == 3 and len(spawned) == 3
+    _, status = _call(client, token, "get_analysis_status", {"task_id": task.task_id})
+    assert status["status"] == "working"
+    _, cancelled = _call(client, token, "cancel_analysis", {"task_id": task.task_id})
+    assert cancelled["status"] == "cancel_requested"
+    assert [signal["kind"] for signal in fetch_unconsumed_chat_run_signals(run_b)] == ["cancel"]
+    assert fetch_unconsumed_chat_run_signals(run_a) == []
+    assert store.get_analysis_task(task.task_id).run_id == run_b
+
+
 def test_existing_reply_runs_are_backfilled_once(analysis_client, monkeypatch):
     client, _ = analysis_client
     token, record = _token()
