@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
+from app.database import init_db
 from app.routers import project_routes
 from app.services.request_principal import RequestPrincipal
 
@@ -100,7 +101,8 @@ def test_project_files_lists_shared_data_root(monkeypatch, tmp_path: Path) -> No
     assert leaf.key == "notes.txt"
 
 
-def test_project_file_selection_copies_into_session(monkeypatch, tmp_path: Path) -> None:
+def test_project_file_selection_copies_into_session(monkeypatch, tmp_path: Path, isolated_app_env) -> None:
+    init_db()
     root = tmp_path / "root"
     root.mkdir()
     source = root / "private.tsv"

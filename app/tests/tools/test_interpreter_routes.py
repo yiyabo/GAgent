@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from starlette.requests import Request
+
 from app.routers import interpreter_routes as interpreter_routes_module
 
 
@@ -32,6 +34,11 @@ def test_interpreter_execute_passes_docker_image_override_to_code_executor(
         }
 
     monkeypatch.setattr(
+        interpreter_routes_module,
+        "resolve_optional_owned_path",
+        lambda _request, raw: raw,
+    )
+    monkeypatch.setattr(
         "tool_box.tools_impl.code_executor.code_executor_handler",
         _fake_code_executor_handler,
     )
@@ -43,7 +50,8 @@ def test_interpreter_execute_passes_docker_image_override_to_code_executor(
                 work_dir=str(work_dir),
                 data_dir=str(data_dir),
                 docker_image="custom:image",
-            )
+            ),
+            Request({"type": "http", "headers": []}),
         )
     )
 
