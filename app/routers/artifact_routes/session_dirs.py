@@ -18,6 +18,7 @@ from fastapi import HTTPException, Request, status
 
 from app.database import get_db
 from app.services.request_principal import ensure_owner_access
+from app.services.session_access import ensure_session_alias_access
 from app.services.session_paths import normalize_session_base
 
 
@@ -151,6 +152,7 @@ def _resolve_session_dir(
 
 def _ensure_session_access(session_id: str, request: Request) -> None:
     with get_db() as conn:
+        ensure_session_alias_access(conn, session_id, request)
         row = conn.execute(
             "SELECT owner_id FROM chat_sessions WHERE id=?",
             (session_id,),

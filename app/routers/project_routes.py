@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from app.routers import register_router
+from app.routers.upload_routes import _ensure_session_access
 from app.services.platform_access import require_bound_platform_project
 from app.services.platform_api import get_platform_api_client
 
@@ -261,6 +262,7 @@ async def select_project_files(
 
     session_upload_dir = None
     if payload.session_id:
+        _ensure_session_access(payload.session_id, request)
         from app.services.session_paths import get_session_upload_dir
 
         try:
