@@ -43,6 +43,9 @@ def _local_mode(monkeypatch) -> None:
         "/ws/terminal/abc",
         "/execution/shell",
         "/mcp/tools",
+        "/mcp/save_memory",
+        "/mcp/",
+        "/phagescope-mcp/tokens",
         "/models",
     ],
 )
@@ -52,7 +55,7 @@ def test_every_api_prefix_is_protected(path: str) -> None:
     assert proxy_auth._is_anonymous_path(path) is False
 
 
-@pytest.mark.parametrize("path", ["/", "/health", "/health/llm", "/auth/login", "/sso/complete", "/assets/app.js", "/some/spa/route"])
+@pytest.mark.parametrize("path", ["/", "/health", "/health/llm", "/mcp", "/auth/login", "/sso/complete", "/assets/app.js", "/some/spa/route"])
 def test_anonymous_allowlist(path: str) -> None:
     import app.routers  # noqa: F401
 
