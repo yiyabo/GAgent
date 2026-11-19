@@ -16,6 +16,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from app.services.plans.edit_policy import plan_change_deferred
+
 logger = logging.getLogger(__name__)
 
 GATE_TIMEOUT_SECONDS = 12.0
@@ -73,7 +75,8 @@ class PlanOfferGateDecision:
 
 def is_offer_candidate(message: str) -> bool:
     """Cheap recall filter; never a final decision."""
-    return bool(_OFFER_CANDIDATE.search(str(message or "")))
+    text = str(message or "")
+    return not plan_change_deferred(text) and bool(_OFFER_CANDIDATE.search(text))
 
 
 def _build_prompt(message: str) -> str:

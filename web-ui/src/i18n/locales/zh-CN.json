@@ -1898,8 +1898,10 @@
     "contractTitle": "研究契约（执行时持续保留）",
     "contractSources": "来源偏好：{{sources}}",
     "deliveryTitle": "最终综合与领域复核已完成",
-    "deliveryPublished": "完整报告与复核记录已发布到交付物：{{path}}",
-    "deliveryFailed": "任务已结束，但最终综合未完成",
-    "deliveryFailedDesc": "系统不会伪造成功或综合结果。请查看任务产物后重试。原因：{{error}}"
+    "deliveryPartial": "报告已发布，复核交付或修订尚未完成",
+    "deliveryUnverified": "这条历史记录未确认具体发布的文件，可在交付物中查看现有文件。",
+    "deliveryFailed": "任务已结束，最终报告交付失败",
+    "downloadDeliveryReport": "下载报告",
+    "downloadDeliveryReview": "下载领域复核"
   }
 }

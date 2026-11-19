@@ -452,6 +452,96 @@ def test_provider_failure_final_is_a_failed_job_without_restarting_acceptance(mo
     assert 'mark_failure' in jobs.names() and 'mark_success' not in jobs.names()
 
 
+@pytest.mark.parametrize("failure", ["provider", "exception"])
+def test_failed_chat_keeps_only_files_published_in_this_turn(tmp_path, monkeypatch, failure):
+    from dataclasses import replace
+    from io import BytesIO
+
+    from PIL import Image, ImageDraw
+
+    from app.tests.plan.test_deliverable_publisher import _build_publisher
+
+    _patch_runtime(monkeypatch)
+    publisher = _build_publisher(tmp_path)
+    source_dir = tmp_path / "workspace" / "submission"
+    source_dir.mkdir(parents=True)
+    session_id = "publish-recovery"
+
+    def publish(*names):
+        artifacts = []
+        for name, module, content in names:
+            source = source_dir / name
+            source.write_bytes(content)
+            artifacts.append({"path": str(source), "module": module})
+        report = publisher.publish_from_tool_result(
+            session_id=session_id,
+            tool_name="deliverable_submit",
+            raw_result={"success": True, "deliverable_submit": {"publish": True, "artifacts": artifacts}},
+        )
+        assert report is not None
+        return report.to_dict()
+
+    publish(("previous_report.md", "docs", b"earlier turn"))
+    root = tmp_path / "runtime" / f"session_{session_id}" / "deliverables" / "latest"
+    assert (root / "docs/previous_report.md").is_file()
+    summary = {"A": {"count": 2, "mean": 25}, "B": {"count": 2, "mean": 40}}
+    chart_bytes = BytesIO()
+    with Image.new("RGB", (160, 90), "white") as chart:
+        bars = ImageDraw.Draw(chart)
+        bars.rectangle((20, 30, 40, 54), fill="#4C72B0")
+        bars.rectangle((80, 15, 100, 54), fill="#4C72B0")
+        chart.save(chart_bytes, format="PNG")
+    expected_paths = {"image_tabular/summary.json", "image_tabular/group_means.png"}
+    saved = []
+
+    async def handle_tool(action):
+        assert action.name == "deliverable_submit"
+        report = publish(
+            ("summary.json", "image_tabular", json.dumps(summary).encode()),
+            ("group_means.png", "image_tabular", chart_bytes.getvalue()),
+        )
+        return AgentStep(
+            action=action, success=True, message="Published two files",
+            details={
+                "deliverables": report,
+                "result": {"success": True, "deliverables": {"published_artifact_paths": ["docs/unpublished.txt"]}},
+            },
+        )
+
+    class FailedAfterPublish(_ThinkingStub):
+        def __init__(self, **kwargs):
+            super().__init__([], **kwargs)
+
+        async def think(self, *args, **kwargs):
+            await self.kwargs["tool_executor"]("deliverable_submit", {})
+            if failure == "exception":
+                raise RuntimeError("synthetic stream interruption")
+            return replace(await super().think(*args, **kwargs), final_answer="", termination_reason="llm_unavailable")
+
+    monkeypatch.setattr(chat_routes, "DeepThinkAgent", FailedAfterPublish)
+    monkeypatch.setattr(agent_module, "_save_chat_message", lambda *args, **kwargs: saved.append(kwargs["metadata"]))
+    agent = _build_agent(session_id=session_id)
+    agent._handle_tool_action = handle_tool
+    message = "更正：重复 ID 一律保留最后一条，其它规则不变，请发布更新后的同名两个文件。"
+    agent._resolve_request_routing = lambda user_message: (_decision(message), _profile())
+    events = _run(agent, message)
+
+    assert _types(events).count("final") == 1
+    assert events[-1]["type"] == "final"
+    metadata = events[-1]["payload"]["metadata"]
+    assert metadata["status"] == "failed"
+    assert metadata["partial"] is True
+    assert {item["path"] for item in metadata["artifact_files"]} == expected_paths
+    assert saved[-1]["artifact_files"] == metadata["artifact_files"]
+    assert json.loads((root / "image_tabular/summary.json").read_bytes()) == summary
+    with Image.open(root / "image_tabular/group_means.png") as published_chart:
+        assert published_chart.size == (160, 90)
+        with published_chart.convert("RGB") as rgb_chart:
+            assert rgb_chart.getpixel((30, 29)) == (255, 255, 255)
+            assert rgb_chart.getpixel((30, 30)) == (76, 114, 176)
+            assert rgb_chart.getpixel((90, 15)) == (76, 114, 176)
+
+
 def test_closing_unified_stream_joins_agent_and_prevents_late_events(monkeypatch) -> None:
     _patch_runtime(monkeypatch)
     settled = asyncio.Event()

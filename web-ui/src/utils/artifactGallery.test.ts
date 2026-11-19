@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  collectArtifactFiles,
   collectArtifactGallery,
   collectInlineImageKeys,
   filterInlinedGalleryItems,
   isUserUploadPath,
+  resolveArtifactFileItemSrc,
   resolveArtifactGalleryItemSrc,
   type ArtifactGalleryItem,
 } from './artifactGallery';
@@ -13,6 +15,15 @@ const item = (path: string, display_name?: string): ArtifactGalleryItem => ({
   path,
   display_name,
   mime_family: 'image',
+});
+it('keeps a published PNG downloadable without showing the receipt in the image gallery', () => {
+  const receipt = { path: 'image_tabular/counts.png', origin: 'deliverable', mime_family: 'file' };
+  const [file] = collectArtifactFiles([receipt]);
+  expect(file?.path).toBe(receipt.path);
+  expect(collectArtifactGallery([receipt])).toEqual([]);
+  const url = new URL(resolveArtifactFileItemSrc(file, 's1'), 'http://localhost');
+  expect(url.pathname.endsWith('/sessions/s1/deliverables/file')).toBe(true);
+  expect(url.searchParams.get('path')).toBe(receipt.path);
 });
 
 describe('collectInlineImageKeys', () => {

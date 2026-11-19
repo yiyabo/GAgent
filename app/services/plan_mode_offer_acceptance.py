@@ -13,6 +13,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from app.services.plans.edit_policy import plan_change_deferred
+
 _OFFER_QUERY_CAP = 20000
 _CONFIRMER_MAX_CHARS = 200
 
@@ -184,7 +186,7 @@ def resolve_plan_mode_acceptance(
     from app.routers.chat.request_routing import _has_explicit_plan_request
 
     text = str(message or "").strip()
-    if plan_bound or settings.get("plan_mode") is True or not text:
+    if plan_bound or settings.get("plan_mode") is True or not text or plan_change_deferred(text):
         return PlanModeAcceptance(plan_mode=False, clear_dismissed=False)
 
     pending = _latest_pending_offer(messages, current_message=text) or (

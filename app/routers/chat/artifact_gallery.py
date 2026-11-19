@@ -395,6 +395,37 @@ def extract_artifact_gallery_from_result(
     return merge_artifact_gallery(None, collected)
 
 
+def published_file_events(report: object, *, source_tool: str, iteration: int) -> list[dict[str, Any]]:
+    """Project the server-owned publish report into this turn's event stream."""
+    paths = report.get("published_artifact_paths") if isinstance(report, dict) else None
+    if not isinstance(paths, list):
+        return []
+    return [
+        {
+            "type": "artifact",
+            "path": path,
+            "display_name": path.rsplit("/", 1)[-1],
+            "origin": "deliverable",
+            "mime_family": "file",
+            "source_tool": source_tool,
+            "iteration": iteration,
+        }
+        for path in paths
+        if isinstance(path, str) and path
+    ]
+
+
+def published_artifact_files(events: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Deduplicate download entries by their latest deliverable path."""
+    files = {}
+    fields = ("path", "display_name", "origin", "mime_family", "source_tool")
+    for event in events:
+        path = event.get("path")
+        if isinstance(path, str) and path and event.get("origin") == "deliverable" and event.get("mime_family") == "file":
+            files[path] = {key: event[key] for key in fields if key in event}
+    return list(files.values())
+
+
 _FILE_OUTPUT_KEYS = (
     "effective_output_path",
     "output_path",

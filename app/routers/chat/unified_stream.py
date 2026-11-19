@@ -50,6 +50,7 @@ from app.services.plan_clarifications import plan_clarification_from_result
 from app.services.plan_mode_offers import plan_mode_offer_from_result
 from app.services.plan_mode_offer_acceptance import plan_acceptance_metadata
 
+from .artifact_gallery import published_artifact_files
 from .background import _sse_message
 from .deterministic_execute import (
     _build_deterministic_execute_final_payload,
@@ -573,6 +574,35 @@ async def _drain_unified_stream_events(
             await event_sink(payload)
         return _sse_message(payload)
 
+    def _save_response(content: str, metadata: dict[str, Any]) -> None:
+        if agent.session_id and content:
+            try:
+                _ag()._persist_runtime_context(agent)
+                _ag()._save_chat_message(
+                    agent.session_id,
+                    "assistant",
+                    content,
+                    metadata=metadata,
+                    model_provider=(agent.extra_context or {}).get("model_provider"),
+                    memory_enabled=(agent.extra_context or {}).get("memory_enabled") is not False,
+                )
+                logger.info(
+                    "[CHAT][DEEP_THINK] Response saved to database for session=%s",
+                    agent.session_id,
+                )
+            except Exception as save_err:
+                logger.warning(
+                    "[CHAT][DEEP_THINK] Failed to save response: %s",
+                    save_err,
+                )
+
+    observed_artifacts: list[dict[str, Any]] = []
+    recovery_message = (
+        "最终回复未能完成。已发布的文件仍可下载。"
+        if reasoning_language == "zh"
+        else "The final reply could not be completed. Published files remain available to download."
+    )
+
     # Consume queue
     while True:
         item = await queue.get()
@@ -580,6 +610,8 @@ async def _drain_unified_stream_events(
             break
 
         event_type = item.get("type")
+        if event_type == "artifact" and item.get("mime_family") == "file":
+            observed_artifacts.append(item)
         if event_type in {
             "thinking_step",
             "thinking_delta",
@@ -594,6 +626,23 @@ async def _drain_unified_stream_events(
             out = await _through_sink(item)
             yield out
         elif event_type == "error":
+            artifact_files = published_artifact_files(observed_artifacts)
+            if artifact_files:
+                metadata = {
+                    "status": "cancelled" if item.get("cancelled") else "failed",
+                    "goal_status": "incomplete",
+                    "failure_kind": "cancelled" if item.get("cancelled") else item.get("error_code") or "stream_error",
+                    "error": item["error"],
+                    "partial": True,
+                    "artifact_files": artifact_files,
+                    "final_summary": recovery_message,
+                    "thinking_display_mode": "final_answer",
+                }
+                yield await _through_sink({"type": "final", "payload": {
+                    "response": recovery_message, "actions": [], "metadata": metadata,
+                }})
+                _save_response(recovery_message, metadata)
+                continue
             err_payload = {"type": "error", "message": item["error"]}
             for key in (
                 "error_type",
@@ -673,9 +722,17 @@ async def _drain_unified_stream_events(
             from app.services.response_style import attach_response_preferences
             attach_response_preferences(final_metadata, agent.extra_context)
 
+            artifact_files = published_artifact_files(observed_artifacts)
+            llm_message = res.final_answer
+            if artifact_files and final_metadata.get("status") == "failed":
+                final_metadata.update(artifact_files=artifact_files, partial=True)
+                if not full_response:
+                    llm_message = full_response = recovery_message
+                    final_metadata.update(analysis_text=full_response, final_summary=full_response)
+
             # 🚀 Emit final event to client FIRST (before DB save)
             payload = {
-                "llm_reply": {"message": res.final_answer},
+                "llm_reply": {"message": llm_message},
                 "response": full_response,
                 "actions": [],
                 "metadata": final_metadata,
@@ -684,24 +741,4 @@ async def _drain_unified_stream_events(
             out = await _through_sink(final_payload)
             yield out
 
-            # 💾 Save Deep Think response to database AFTER final event
-            if agent.session_id and full_response:
-                try:
-                    _ag()._persist_runtime_context(agent)
-                    _ag()._save_chat_message(
-                        agent.session_id,
-                        "assistant",
-                        full_response,
-                        metadata=final_metadata,
-                        model_provider=(agent.extra_context or {}).get("model_provider"),
-                        memory_enabled=(agent.extra_context or {}).get("memory_enabled") is not False,
-                    )
-                    logger.info(
-                        "[CHAT][DEEP_THINK] Response saved to database for session=%s",
-                        agent.session_id,
-                    )
-                except Exception as save_err:
-                    logger.warning(
-                        "[CHAT][DEEP_THINK] Failed to save response: %s",
-                        save_err,
-                    )
+            _save_response(full_response, final_metadata)

@@ -25,8 +25,13 @@ def enable_model_selection(monkeypatch):
 
 
 class PlanExecutionProvider:
-    def __init__(self, operation: str | None = "execute_all"):
+    def __init__(
+        self,
+        operation: str | None = "execute_all",
+        answer: str = "计划已准备好，请批准后执行。",
+    ):
         self.operation = operation
+        self.answer = answer
         self.calls: list[list[dict]] = []
 
     def next(self, messages):
@@ -44,7 +49,7 @@ class PlanExecutionProvider:
             "thinking": "Return the planning result.",
             "action": None,
             "final_answer": {
-                "answer": "计划已准备好，请批准后执行。",
+                "answer": self.answer,
                 "confidence": 0.9,
             },
         }
@@ -163,6 +168,58 @@ def test_plan_mode_allows_structured_plan_creation(monkeypatch, native: bool) ->
     assert [item["operation"] for item in created] == ["create"]
     assert events[-1]["type"] == "final"
     assert "background_plan_job_id" not in events[-1]["payload"]["metadata"]
+
+
+@pytest.mark.parametrize("native", [True, False])
+@pytest.mark.parametrize("model_selected", [True, False])
+def test_chat_defers_plan_creation_until_next_turn(monkeypatch, native, model_selected) -> None:
+    from app.services.foundation.settings import get_settings
+
+    monkeypatch.setattr(get_settings(), "chat_model_action_selection_enabled", model_selected)
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr("app.services.plan_mode_offers.session_offer_settings", lambda _session_id: {})
+    activated = []
+    monkeypatch.setattr(
+        "app.services.plan_mode_offer_acceptance.persist_plan_mode_enabled",
+        lambda _session_id, *, enabled: activated.append(enabled),
+    )
+    agent = _build_agent(extra_context={"owner_id": "alice"})
+    monkeypatch.setattr(type(agent.plan_session), "bind", lambda session, plan_id: setattr(session, "plan_id", plan_id), raising=False)
+    monkeypatch.setattr(agent_module, "_set_session_plan_id", lambda _session_id, _plan_id: None)
+    agent.plan_session.plan_id = None
+    agent.plan_tree = None
+    agent.extra_context.pop("current_task_id", None)
+    provider_type = NativePlanExecutionProvider if native else PlanExecutionProvider
+    recap = "梧桐-47：周一 12 件、周二 18 件，共 30 件。用中文，注明样本小，只用这两项数据。"
+    first_provider = provider_type("create", answer=recap)
+    _patch_agent(monkeypatch, first_provider, {})
+    dispatched = []
+
+    async def handler(name, tool_context=None, **params):
+        dispatched.append((name, params.get("operation")))
+        return {"success": True, "operation": "create", "plan_id": 35, "plan_title": "梧桐-47"}
+
+    monkeypatch.setattr(agent_module, "execute_tool", handler)
+    first = _run(
+        agent,
+        "我在做内部的梧桐-47 周报复盘。原始数据是周一处理 12 个请求、周二 18 个。"
+        "交付要用中文，明确两天合计，写一句样本小的局限。只使用这两项输入，禁止外部检索。"
+        "先在聊天里复述目标和限制，我下一条再决定是否创建计划。",
+    )[-1]
+    assert first["type"] == "final"
+    assert recap in first["payload"]["response"]
+    assert "plan_mode_offer" not in first["payload"]["metadata"]
+    assert agent.plan_session.plan_id is None
+    assert activated == dispatched == []
+    assert any("plan_edit_not_requested" in str(message) for message in first_provider.calls[1])
+
+    _patch_agent(monkeypatch, provider_type("create"), {})
+    second = _run(agent, "现在请创建计划，用刚才给出的约束。")[-1]
+    assert second["type"] == "final"
+    assert second["payload"]["metadata"]["plan_contract_enforced"] is True
+    assert activated == [True]
+    assert dispatched == [("plan_operation", "create")]
+    assert agent.plan_session.plan_id == 35
 
 
 def test_plan_mode_filters_mutating_tools_from_model_offer(monkeypatch) -> None:

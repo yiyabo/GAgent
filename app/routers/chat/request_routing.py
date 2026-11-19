@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence
 
+from app.services.plans.edit_policy import plan_change_deferred
+
 from .guardrails import (
     extract_task_ids_from_text,
 )
@@ -1239,12 +1241,13 @@ def resolve_request_routing(
         and not plan_intent.conflict_requires_confirmation
         and (not effective_plan_bound or plan_intent.new_plan_requested)
     )
-    if plan_contract_enforced and not effective_plan_bound and not plan_intent.conflict_requires_confirmation:
-        plan_create_required = True
-        combined_reasons.append("plan_mode_create_required")
-    if plan_contract_enforced and context and context.get("plan_offer_accepted") is True:
-        plan_create_required = True
-        combined_reasons.append("plan_offer_accepted")
+    if plan_contract_enforced and not plan_change_deferred(effective_user_message):
+        if not effective_plan_bound and not plan_intent.conflict_requires_confirmation:
+            plan_create_required = True
+            combined_reasons.append("plan_mode_create_required")
+        if context and context.get("plan_offer_accepted") is True:
+            plan_create_required = True
+            combined_reasons.append("plan_offer_accepted")
     plan_execute_required = bool(
         plan_intent.execute_requested
         and not plan_intent.conflict_requires_confirmation
@@ -1597,7 +1600,7 @@ def _has_explicit_plan_request(text: str) -> bool:
         return False
     if _is_internal_contract_repair_request(lowered):
         return False
-    if _has_negated_plan_create_request(lowered):
+    if _has_negated_plan_create_request(lowered) or plan_change_deferred(lowered):
         return False
     return (
         _contains_any_lowered(lowered, _PLAN_REQUEST_PHRASES)
@@ -1674,7 +1677,7 @@ def resolve_plan_lifecycle_intent(
     lowered = text.lower()
     if not lowered:
         return PlanLifecycleIntent()
-    if _is_internal_contract_repair_request(text):
+    if _is_internal_contract_repair_request(text) or plan_change_deferred(text):
         return PlanLifecycleIntent()
 
     create_requested = _has_explicit_plan_request(text)

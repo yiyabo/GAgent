@@ -7,6 +7,7 @@ import { usePlanTasks, usePlanTree } from '@hooks/usePlans';
 import { useChatStore } from '@store/chat';
 import { useTasksStore } from '@store/tasks';
 import { useLayoutStore } from '@store/layout';
+import { buildDeliverableFileUrl } from '@api/artifacts';
 import { planTreeApi } from '@api/planTree';
 import { shouldHandlePlanSyncEvent } from '@utils/planSyncEvents';
 import type { PlanSyncEventDetail } from '@/types';
@@ -84,9 +85,24 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
   const rawDelivery: unknown = treeQuery.data?.metadata?.delivery;
   const delivery = rawDelivery && typeof rawDelivery === 'object' && !Array.isArray(rawDelivery)
     ? rawDelivery as Record<string, unknown> : null;
-  const deliveryStatus = typeof delivery?.status === 'string' ? delivery.status : '';
+  const deliverySessionId = typeof delivery?.session_id === 'string' ? delivery.session_id : '';
+  const latestPrefix = 'deliverables/latest/';
+  const reportPath = deliverySessionId && typeof delivery?.report_path === 'string' && delivery.report_path.startsWith(latestPrefix)
+    ? delivery.report_path.slice(latestPrefix.length) : '';
+  const reviewPath = deliverySessionId && typeof delivery?.review_path === 'string' && delivery.review_path.startsWith(latestPrefix)
+    ? delivery.review_path.slice(latestPrefix.length) : '';
+  let deliveryStatus = delivery?.status;
+  if (deliveryStatus === 'completed') {
+    if (delivery?.publish_status === 'failed' || delivery?.publish_status === 'disabled') {
+      deliveryStatus = 'failed';
+    } else if (!reportPath) {
+      deliveryStatus = 'unverified';
+    } else if (!reviewPath || delivery?.publish_status !== 'completed'
+      || delivery?.review_status !== 'completed' || delivery?.revision_status !== 'completed') {
+      deliveryStatus = 'partial';
+    }
+  }
   const deliverySummary = typeof delivery?.summary === 'string' ? delivery.summary : '';
-  const deliveryReportPath = typeof delivery?.report_path === 'string' ? delivery.report_path : '';
   const deliveryError = typeof delivery?.error === 'string' ? delivery.error : '';
   const planTitle = treeQuery.data?.title || currentPlanTitle || (planId != null ? t('planWorkspace.planNum', { id: planId }) : t('planWorkspace.noPlanYet'));
   const artifactSessionId = artifactSourceSession(treeQuery.data) ?? undefined;
@@ -176,13 +192,21 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
       message={t('planClarify.contractTitle')}
       description={<div className="pw-contract-body"><p>{objective}</p>
         {sources.length > 0 && <small>{t('planClarify.contractSources', { sources: sources.join(' / ') })}</small>}</div>} />}
-    {planId != null && deliveryStatus === 'completed' && <Alert className="pw-alert pw-delivery" type="success" showIcon
-      message={t('planClarify.deliveryTitle')}
-      description={<div className="pw-delivery-body"><pre>{deliverySummary}</pre>
-        <small>{t('planClarify.deliveryPublished', { path: deliveryReportPath })}</small></div>} />}
+    {planId != null && (deliveryStatus === 'completed' || deliveryStatus === 'partial') &&
+      <Alert className="pw-alert pw-delivery" type={deliveryStatus === 'completed' ? 'success' : 'warning'} showIcon
+        message={t(deliveryStatus === 'completed' ? 'planClarify.deliveryTitle' : 'planClarify.deliveryPartial')}
+        description={<div className="pw-delivery-body">
+          {deliverySummary && <pre>{deliverySummary}</pre>}
+          {sessionId === deliverySessionId && <Space size="middle" wrap>
+            {reportPath && <a href={buildDeliverableFileUrl(deliverySessionId, reportPath)} download>{t('planClarify.downloadDeliveryReport')}</a>}
+            {reviewPath && <a href={buildDeliverableFileUrl(deliverySessionId, reviewPath)} download>{t('planClarify.downloadDeliveryReview')}</a>}
+          </Space>}
+        </div>} />}
+    {planId != null && deliveryStatus === 'unverified' && <Alert className="pw-alert" type="warning" showIcon
+      message={t('planClarify.deliveryUnverified')} />}
     {planId != null && deliveryStatus === 'failed' && <Alert className="pw-alert" type="error" showIcon
       message={t('planClarify.deliveryFailed')}
-      description={t('planClarify.deliveryFailedDesc', { error: deliveryError })} />}
+      description={deliveryError || undefined} />}
     {planId != null && assumptions.length > 0 && <Alert className="pw-alert pw-assumptions" type="info" showIcon
       message={t('planClarify.assumptionsTitle')}
       description={<ul className="pw-assumption-list">{assumptions.map((item) => <li key={item}>{item}</li>)}</ul>} />}

@@ -50,9 +50,13 @@ def _clip(text: Any, limit: int) -> str:
     value = str(text or "").strip()
     if len(value) <= limit:
         return value
-    head = max(1, limit * 2 // 3)
-    tail = max(1, limit - head - 40)
-    return f"{value[:head]}\n...[truncated {len(value) - head - tail} chars]...\n{value[-tail:]}"
+    marker = "\n...[truncated]...\n"
+    available = limit - len(marker)
+    if available < 2:
+        return value[:max(0, limit)]
+    head = available * 2 // 3
+    tail = available - head
+    return f"{value[:head]}{marker}{value[-tail:]}"
 
 
 def _result_content(node: Any) -> str:
@@ -64,10 +68,18 @@ def _result_content(node: Any) -> str:
     except (json.JSONDecodeError, TypeError):
         return raw
     if isinstance(payload, dict):
-        content = payload.get("content") or payload.get("result") or payload.get("summary")
-        if isinstance(content, str):
-            return content
-    return raw
+        result_fields = [payload[key] for key in ("content", "result", "summary") if key in payload]
+        for content in result_fields:
+            if isinstance(content, str):
+                if content.strip():
+                    return content.strip()
+            elif content is not None and content != {} and content != []:
+                return raw
+        if result_fields or not payload:
+            return ""
+    if isinstance(payload, str):
+        return payload.strip()
+    return "" if payload is None or payload == [] else raw
 
 
 def _artifact_paths(node: Any) -> list[str]:
@@ -97,7 +109,11 @@ def collect_task_evidence(tree: Any) -> str:
         if status not in {"completed", "done"}:
             continue
         content = _result_content(node)
-        if not content or remaining <= 0:
+        if not content:
+            continue
+        if sections:
+            remaining -= 2  # Inter-task separator.
+        if remaining <= 0:
             break
         section = "\n".join(
             [
@@ -107,6 +123,7 @@ def collect_task_evidence(tree: Any) -> str:
                 f"Result:\n{_clip(content, min(_TASK_CHAR_LIMIT, remaining))}",
             ]
         )
+        section = _clip(section, remaining)
         sections.append(section)
         remaining -= len(section)
     return "\n\n".join(sections)
@@ -138,7 +155,9 @@ def generate_plan_delivery(
         return {"status": "skipped", "reason": "legacy_plan_without_research_contract"}
     evidence = collect_task_evidence(tree)
     if not evidence:
-        return {"status": "failed", "error": "no_completed_leaf_evidence"}
+        delivery = {"status": "failed", "error": "no_completed_leaf_evidence"}
+        repo.update_plan_metadata(plan_id, {"delivery": delivery})
+        return delivery
     contract_prompt = research_contract_prompt(contract)
     if llm_chat is None:
         from .executor_llm import PlanExecutorLLMService
@@ -184,6 +203,7 @@ def generate_plan_delivery(
         delivery.update(review_status="failed", review_error=type(exc).__name__)
 
     report = draft
+    delivery["revision_status"] = "skipped"
     if review:
         try:
             revised = llm_chat(
@@ -198,29 +218,31 @@ def generate_plan_delivery(
                 max_tokens=12_000,
                 timeout=300,
             ).strip()
-            if revised:
-                report = revised
-                delivery["revision_status"] = "completed"
+            if not revised:
+                raise ValueError("empty_final_revision")
+            report = revised
+            delivery["revision_status"] = "completed"
         except Exception as exc:
             logger.warning("Plan %s final revision failed; retaining reviewed draft: %s", plan_id, exc)
             delivery["revision_status"] = "failed"
 
-    delivery.update(status="completed", report_chars=len(report))
+    delivery["report_chars"] = len(report)
     if session_id:
         try:
-            root = get_session_raw_files_dir(session_id, create=True) / "tmp" / "plan_delivery" / f"plan_{plan_id}"
+            root = (get_session_raw_files_dir(session_id, create=True) / "tmp" / "plan_delivery" / f"plan_{plan_id}").resolve()
             report_name = f"plan_{plan_id}_final_report.md"
             review_name = f"plan_{plan_id}_domain_review.md"
             report_source = root / report_name
             review_source = root / review_name
             _write(report_source, report)
-            artifacts = [
+            artifacts: list[dict[str, str | bool]] = [
                 {"path": str(report_source), "module": "docs", "reason": "Integrated Plan research report"}
             ]
             if review:
                 _write(review_source, review)
                 artifacts.append(
-                    {"path": str(review_source), "module": "docs", "reason": "Independent domain review"}
+                    # This server-generated filename also needs to survive the docs cleanup policy.
+                    {"path": str(review_source), "module": "docs", "reason": "Independent domain review", "trusted": True}
                 )
             publish_report = get_deliverable_publisher().publish_from_tool_result(
                 session_id=session_id,
@@ -231,13 +253,41 @@ def generate_plan_delivery(
                 plan_id=plan_id,
                 task_name=tree.title,
             )
-            delivery["report_path"] = f"deliverables/latest/docs/{report_name}"
-            if review:
-                delivery["review_path"] = f"deliverables/latest/docs/{review_name}"
-            delivery["publish_status"] = "completed" if publish_report is not None else "disabled"
+            if publish_report is None:
+                delivery["publish_status"] = "disabled"
+            else:
+                published_paths = {item.source_path: item.path for item in publish_report.published_artifacts}
+                report_path = published_paths.get(str(report_source))
+                review_path = published_paths.get(str(review_source)) if review else None
+                if report_path:
+                    delivery["report_path"] = f"deliverables/latest/{report_path}"
+                if review_path:
+                    delivery["review_path"] = f"deliverables/latest/{review_path}"
+                if report_path or review_path:
+                    delivery["session_id"] = session_id
+                if report_path and (not review or review_path):
+                    delivery["publish_status"] = "completed"
+                elif report_path or review_path:
+                    delivery["publish_status"] = "partial"
+                else:
+                    delivery["publish_status"] = "failed"
         except Exception as exc:
             logger.warning("Plan %s delivery publication failed: %s", plan_id, exc)
             delivery.update(publish_status="failed", publish_error=type(exc).__name__)
+    else:
+        delivery.update(publish_status="skipped", publish_error="missing_delivery_session")
+
+    if not delivery.get("report_path"):
+        delivery.update(status="failed", error="report_not_published")
+    elif (
+        delivery.get("review_path")
+        and delivery.get("review_status") == "completed"
+        and delivery.get("revision_status") == "completed"
+        and delivery.get("publish_status") == "completed"
+    ):
+        delivery["status"] = "completed"
+    else:
+        delivery["status"] = "partial"
 
     delivery["summary"] = _clip(report, _SUMMARY_CHAR_LIMIT)
     delivery["content"] = report
