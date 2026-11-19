@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
 from pydantic import BaseModel, Field
 
 from app.services.interpreter import (
@@ -20,6 +20,11 @@ from app.services.interpreter import (
     CodeTaskResponse,
 )
 from app.services.interpreter.interpreter import run_analysis as run_plan_analysis
+from app.services.interpreter.path_access import (
+    resolve_optional_owned_path,
+    resolve_owned_path,
+    resolve_owned_paths,
+)
 from . import register_router
 
 logger = logging.getLogger(__name__)
@@ -177,12 +182,13 @@ class PlanAnalyzeResponse(BaseModel):
     response_model=MetadataResponse,
     summary="Extract metadata",
 )
-def extract_metadata(request: MetadataRequest):
+def extract_metadata(request: MetadataRequest, http_request: Request):
     """
     Extract file metadata. Supports CSV, TSV, MAT, and NPY formats.
     """
+    file_path = resolve_owned_path(http_request, request.file_path)
     try:
-        metadata = DataProcessor.get_metadata(request.file_path)
+        metadata = DataProcessor.get_metadata(file_path)
         return MetadataResponse(
             success=True,
             metadata=metadata.model_dump(),
@@ -201,13 +207,14 @@ def extract_metadata(request: MetadataRequest):
     response_model=CodeGenerateResponse,
     summary="Generate analysis code",
 )
-def generate_code(request: CodeGenerateRequest):
+def generate_code(request: CodeGenerateRequest, http_request: Request):
     """
     Generate Python analysis code from task instructions and file metadata.
     """
+    file_paths = resolve_owned_paths(http_request, request.file_paths)
     try:
         metadata_list: List[DatasetMetadata] = []
-        for file_path in request.file_paths:
+        for file_path in file_paths:
             if not os.path.exists(file_path):
                 raise HTTPException(
                     status_code=404,
@@ -244,15 +251,16 @@ def generate_code(request: CodeGenerateRequest):
     response_model=CodeExecuteResponse,
     summary="Execute Python code",
 )
-async def execute_code(request: CodeExecuteRequest):
+async def execute_code(request: CodeExecuteRequest, http_request: Request):
     """
     Execute Python code with Claude Code in a controlled working directory.
     """
+    work_dir = resolve_optional_owned_path(http_request, request.work_dir)
+    data_dir = resolve_optional_owned_path(http_request, request.data_dir)
     try:
         from pathlib import Path
         from tool_box.tools_impl.code_executor import code_executor_handler
 
-        work_dir = request.work_dir
         if not work_dir:
             work_dir = tempfile.mkdtemp(prefix="interpreter_")
 
@@ -266,12 +274,12 @@ async def execute_code(request: CodeExecuteRequest):
 
 Working directory: {work_dir}
 """
-        if request.data_dir:
-            task += f"\nData directory: {request.data_dir}"
+        if data_dir:
+            task += f"\nData directory: {data_dir}"
 
         add_dirs = work_dir
-        if request.data_dir:
-            add_dirs = f"{work_dir},{request.data_dir}"
+        if data_dir:
+            add_dirs = f"{work_dir},{data_dir}"
 
         result = await code_executor_handler(
             task=task,
@@ -316,30 +324,32 @@ Working directory: {work_dir}
     response_model=AnalyzeResponse,
     summary="Run end-to-end analysis",
 )
-async def run_analysis(request: AnalyzeRequest):
+async def run_analysis(request: AnalyzeRequest, http_request: Request):
     """
     Run end-to-end analysis with Claude Code:
     1. Collect metadata for input files
     2. Run Claude Code to complete the analysis task
     """
     staging_dir_to_cleanup: Optional[str] = None
+    file_paths = resolve_owned_paths(http_request, request.file_paths)
+    requested_work_dir = resolve_optional_owned_path(http_request, request.work_dir)
 
     try:
         from app.services.interpreter import TaskExecutor
 
-        for file_path in request.file_paths:
+        for file_path in file_paths:
             if not os.path.exists(file_path):
                 raise HTTPException(
                     status_code=404,
                     detail=f"File not found: {file_path}"
                 )
 
-        effective_paths, data_dir, staging_dir_to_cleanup = _prepare_data_files(request.file_paths)
+        effective_paths, data_dir, staging_dir_to_cleanup = _prepare_data_files(file_paths)
         metadata_list: List[DatasetMetadata] = [
             DataProcessor.get_metadata(path) for path in effective_paths
         ]
 
-        work_dir = request.work_dir
+        work_dir = requested_work_dir
         if not work_dir:
             work_dir = tempfile.mkdtemp(prefix="interpreter_")
         os.makedirs(work_dir, exist_ok=True)
@@ -385,19 +395,21 @@ async def run_analysis(request: AnalyzeRequest):
     response_model=PlanAnalyzeResponse,
     summary="Run plan-based analysis",
 )
-def run_plan_analysis_endpoint(request: PlanAnalyzeRequest):
+def run_plan_analysis_endpoint(request: PlanAnalyzeRequest, http_request: Request):
     """
     Run plan-based analysis with Claude Code:
     1. Create a plan
     2. Decompose tasks
     3. Execute the plan
     """
+    data_paths = resolve_owned_paths(http_request, request.data_paths)
+    output_dir = resolve_optional_owned_path(http_request, request.output_dir)
     try:
         result = run_plan_analysis(
             description=request.task_description,
-            data_paths=request.data_paths,
+            data_paths=data_paths,
             title=request.task_title,
-            output_dir=request.output_dir or "./results",
+            output_dir=output_dir or "./results",
             max_depth=request.max_depth,
             node_budget=request.node_budget,
             docker_image=request.docker_image,
