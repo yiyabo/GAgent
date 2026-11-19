@@ -304,6 +304,14 @@ if _USE_PYDANTIC:
         # External PhageScope MCP endpoint (/mcp)
         phagescope_mcp_enabled: bool = Field(default=False, env="PHAGESCOPE_MCP_ENABLED")
         phagescope_mcp_allowed_users: str = Field(default="", env="PHAGESCOPE_MCP_ALLOWED_USERS")
+        phagescope_mcp_allowed_user_ids: str = Field(default="", env="PHAGESCOPE_MCP_ALLOWED_USER_IDS")
+        phagescope_mcp_allowed_hosts: str = Field(
+            default="phageagent.deepomics.org,localhost,127.0.0.1", env="PHAGESCOPE_MCP_ALLOWED_HOSTS"
+        )
+        phagescope_mcp_allowed_origins: str = Field(
+            default="https://phageagent.deepomics.org,http://localhost,http://127.0.0.1",
+            env="PHAGESCOPE_MCP_ALLOWED_ORIGINS",
+        )
         phagescope_mcp_daily_bytes: int = Field(default=2 * 1024**3, env="PHAGESCOPE_MCP_DAILY_BYTES")
         phagescope_mcp_requests_per_minute: int = Field(default=60, env="PHAGESCOPE_MCP_REQUESTS_PER_MINUTE")
         phagescope_mcp_max_concurrency: int = Field(default=4, env="PHAGESCOPE_MCP_MAX_CONCURRENCY")
@@ -740,6 +748,14 @@ else:
 
             self.phagescope_mcp_enabled = os.getenv("PHAGESCOPE_MCP_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
             self.phagescope_mcp_allowed_users = os.getenv("PHAGESCOPE_MCP_ALLOWED_USERS", "")
+            self.phagescope_mcp_allowed_user_ids = os.getenv("PHAGESCOPE_MCP_ALLOWED_USER_IDS", "")
+            self.phagescope_mcp_allowed_hosts = os.getenv(
+                "PHAGESCOPE_MCP_ALLOWED_HOSTS", "phageagent.deepomics.org,localhost,127.0.0.1"
+            )
+            self.phagescope_mcp_allowed_origins = os.getenv(
+                "PHAGESCOPE_MCP_ALLOWED_ORIGINS",
+                "https://phageagent.deepomics.org,http://localhost,http://127.0.0.1",
+            )
             self.phagescope_mcp_daily_bytes = _int_env("PHAGESCOPE_MCP_DAILY_BYTES", 2 * 1024**3)
             self.phagescope_mcp_requests_per_minute = _int_env("PHAGESCOPE_MCP_REQUESTS_PER_MINUTE", 60)
             self.phagescope_mcp_max_concurrency = _int_env("PHAGESCOPE_MCP_MAX_CONCURRENCY", 4)

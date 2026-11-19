@@ -17,6 +17,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from app.database_pool import get_db
+from app.services.request_principal import RequestPrincipal
+
+from . import policy
 
 TOKEN_PREFIX = "gpsk_"
 SCOPE_DATA_READ = "data:read"
@@ -249,6 +252,14 @@ def authenticate(plaintext: str) -> Optional[McpToken]:
             return None
         if row["expires_at"] and row["expires_at"] <= _iso(_now()):
             return None
+        user = conn.execute(
+            "SELECT id, email, role, is_active FROM users WHERE id = ?", (row["user_id"],)
+        ).fetchone()
+        if not user or not bool(user["is_active"]):
+            return None
+        principal = RequestPrincipal(user_id=user["id"], email=user["email"], role=user["role"], auth_source="mcp")
+        if not policy.may_self_issue(principal):
+            return None
         conn.execute(
             "UPDATE phagescope_mcp_tokens SET last_used_at = ? WHERE id = ?",
             (_iso(_now()), row["id"]),
@@ -459,7 +470,7 @@ def is_analysis_session(session_id: str) -> bool:
 
 
 def analysis_counts(token: McpToken) -> dict[str, int]:
-    """Active runs for this token, for all MCP tasks, and this user's submissions today (UTC)."""
+    """Active runs and this user's analysis submissions/replies today (UTC)."""
     ensure_schema()
     day_start = utc_day() + "T00:00:00"
     active_sql = """
@@ -470,11 +481,26 @@ def analysis_counts(token: McpToken) -> dict[str, int]:
     with get_db() as conn:
         token_active = conn.execute(active_sql + " AND t.token_id = ?", (token.id,)).fetchone()["n"]
         global_active = conn.execute(active_sql).fetchone()["n"]
-        today = conn.execute(
+        submissions_today = conn.execute(
             "SELECT COUNT(*) AS n FROM phagescope_mcp_analysis_tasks WHERE user_id = ? AND created_at >= ?",
             (token.user_id, day_start),
         ).fetchone()["n"]
-    return {"token_active": int(token_active), "global_active": int(global_active), "user_today": int(today)}
+        replies_today = conn.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM chat_runs r
+            JOIN phagescope_mcp_analysis_tasks t ON t.session_id = r.session_id
+            WHERE t.user_id = ?
+              AND r.idempotency_key LIKE t.task_id || ':reply:%'
+              AND datetime(r.created_at) >= datetime(?)
+            """,
+            (token.user_id, day_start),
+        ).fetchone()["n"]
+    return {
+        "token_active": int(token_active),
+        "global_active": int(global_active),
+        "user_today": int(submissions_today) + int(replies_today),
+    }
 
 
 def set_analysis_task_run(task_id: str, run_id: str) -> None:

@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from app.database import get_db
 from app.services.phagescope_mcp import analysis, limits, store
 
 from .test_phagescope_mcp import _call, _rpc
@@ -17,12 +18,22 @@ def analysis_client(app_client_factory, monkeypatch):
 
     monkeypatch.setenv("PHAGESCOPE_MCP_ENABLED", "1")
     monkeypatch.setenv("PHAGESCOPE_MCP_ANALYSIS_ENABLED", "1")
+    monkeypatch.setenv("PHAGESCOPE_MCP_ALLOWED_USER_IDS", "alice,bob")
+    monkeypatch.setenv("PHAGESCOPE_MCP_ALLOWED_HOSTS", "testserver,localhost,127.0.0.1")
+    monkeypatch.setenv("PHAGESCOPE_MCP_ALLOWED_ORIGINS", "http://testserver,http://localhost,http://127.0.0.1")
     get_settings.cache_clear()
     limits.limiter.reset()
     monkeypatch.setattr(store, "_schema_ready", False)
     spawned: list[str] = []
     monkeypatch.setattr("app.routers.chat.run_routes._spawn_chat_run_worker", spawned.append)
     with app_client_factory() as client:
+        with get_db() as conn:
+            for user_id in ("alice", "bob"):
+                conn.execute(
+                    "INSERT OR IGNORE INTO users (id, email, password_hash, role, is_active) VALUES (?, ?, ?, 'user', 1)",
+                    (user_id, f"{user_id}@example.org", "synthetic-test-hash"),
+                )
+            conn.commit()
         yield client, spawned
     get_settings.cache_clear()
 
@@ -107,6 +118,37 @@ def test_submit_quotas(analysis_client, monkeypatch):
     assert res["isError"] and err["error"]["code"] == "too_many_tasks"
     res, err = _call(client, token, "submit_analysis", {"instructions": ""})
     assert err["error"]["code"] in {"invalid_argument", "too_many_tasks"}
+
+
+def test_replies_count_toward_daily_analysis_quota(analysis_client, monkeypatch):
+    client, spawned = analysis_client
+    monkeypatch.setenv("PHAGESCOPE_MCP_ANALYSIS_DAILY_SUBMISSIONS", "2")
+    from app.services.foundation.settings import get_settings
+
+    get_settings.cache_clear()
+    token, record = _token()
+    _, body = _call(client, token, "submit_analysis", {"instructions": "first"})
+    task_id = body["task_id"]
+    assert store.analysis_counts(record)["user_today"] == 1
+    empty_result, empty_error = _call(client, token, "reply_analysis", {"task_id": task_id, "message": ""})
+    assert empty_result["isError"] and empty_error["error"]["code"] == "invalid_argument"
+    assert store.analysis_counts(record)["user_today"] == 1 and len(spawned) == 1
+    _finish(store.get_analysis_task(task_id).run_id, "succeeded")
+    reply_args = {"task_id": task_id, "message": "follow-up", "idempotency_key": "same-reply"}
+    _, replied = _call(client, token, "reply_analysis", reply_args)
+    assert replied["status"] == "working"
+    assert store.analysis_counts(record)["user_today"] == 2
+    second_run = store.get_analysis_task(task_id).run_id
+    _finish(second_run, "succeeded")
+    before = len(spawned)
+    _, duplicate = _call(client, token, "reply_analysis", reply_args)
+    assert duplicate["deduplicated"] and store.analysis_counts(record)["user_today"] == 2
+    result, error = _call(client, token, "reply_analysis", {"task_id": task_id, "message": "over quota"})
+    assert result["isError"] and error["error"]["code"] == "daily_task_quota_exceeded"
+    other_token, _ = _token(user="alice")
+    result, error = _call(client, other_token, "submit_analysis", {"instructions": "over quota on another token"})
+    assert result["isError"] and error["error"]["code"] == "daily_task_quota_exceeded"
+    assert len(spawned) == before
 
 
 def test_tool_guard_blocks_only_mcp_sessions(analysis_client):

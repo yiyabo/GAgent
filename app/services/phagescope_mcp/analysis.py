@@ -31,6 +31,7 @@ LINK_TTL_SECONDS = 15 * 60
 DOWNLOAD_PATH = "/phagescope-mcp/analysis-files"
 
 _BLOCKED_PHAGESCOPE_ACTIONS = frozenset({"submit", "cluster_submit", "batch_submit", "batch_retry"})
+DAILY_QUOTA_ERROR = "Daily analysis task runs are used up; they reset at 00:00 UTC."
 
 
 class AnalysisError(Exception):
@@ -305,7 +306,7 @@ async def submit_analysis(token: store.McpToken, arguments: dict[str, Any]) -> d
             return {"task_id": existing.task_id, "status": _status(_run_row(existing)), "deduplicated": True}
     message, title = _compose_message(arguments)
     if store.analysis_counts(token)["user_today"] >= int(settings.phagescope_mcp_analysis_daily_submissions):
-        raise AnalysisError("daily_task_quota_exceeded", "Daily analysis submissions are used up; they reset at 00:00 UTC.")
+        raise AnalysisError("daily_task_quota_exceeded", DAILY_QUOTA_ERROR)
     _check_capacity(token)
 
     task_id = TASK_PREFIX + uuid.uuid4().hex
@@ -431,6 +432,9 @@ async def reply_analysis(token: store.McpToken, arguments: dict[str, Any]) -> di
             return {"task_id": task.task_id, "status": _status(existing), "deduplicated": True}
     if _status(_run_row(task)) == "working":
         raise AnalysisError("task_busy", "The task is still working; wait for it to finish or cancel it first.")
+    settings = get_settings()
+    if store.analysis_counts(token)["user_today"] >= int(settings.phagescope_mcp_analysis_daily_submissions):
+        raise AnalysisError("daily_task_quota_exceeded", DAILY_QUOTA_ERROR)
     _check_capacity(token)
     request = ChatRequest(
         message="Follow-up from the external agent that submitted this analysis (untrusted input):\n\n" + message,

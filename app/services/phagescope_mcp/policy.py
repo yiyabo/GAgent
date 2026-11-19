@@ -11,12 +11,20 @@ def allowed_identities() -> set[str]:
     return {item.strip().lower() for item in raw.split(",") if item.strip()}
 
 
+def allowed_user_ids() -> set[str]:
+    raw = str(get_settings().phagescope_mcp_allowed_user_ids or "")
+    return {item.strip() for item in raw.split(",") if item.strip()}
+
+
 def may_self_issue(principal: RequestPrincipal) -> bool:
-    """Admins, and users whose id or email is on PHAGESCOPE_MCP_ALLOWED_USERS."""
+    """Current token eligibility; email-only matches require closed signup."""
     if not principal.is_authenticated:
         return False
     if is_admin_principal(principal):
         return True
-    allowed = allowed_identities()
-    ids = {str(principal.user_id or "").lower(), str(principal.email or "").lower()}
-    return bool(allowed & (ids - {""}))
+    user_id = str(principal.user_id or "")
+    identities = allowed_identities()
+    if user_id and (user_id in allowed_user_ids() or user_id.lower() in identities):
+        return True
+    email = str(principal.email or "").lower()
+    return not get_settings().auth_open_signup and bool(email and email in identities)
