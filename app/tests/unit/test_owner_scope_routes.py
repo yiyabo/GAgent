@@ -81,6 +81,14 @@ def test_existing_alias_cannot_read_or_delete_victim_storage(scoped_client):
     assert (root / "runtime/session_victim/uploads/secret.txt").exists()
 
 
+def test_alias_guard_handles_lossy_normalization(scoped_client):
+    client, _ = scoped_client
+    with get_db() as conn:
+        conn.execute("INSERT INTO chat_sessions(id,owner_id) VALUES ('v!ictim','alice')")
+        conn.commit()
+    assert client.get("/upload/list", params={"session_id": "v-ictim"}).status_code == 403
+
+
 def test_workspace_image_is_session_scoped(scoped_client):
     client, root = scoped_client
     params = {"path": "runtime/session_victim/private.png"}
