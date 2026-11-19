@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import secrets
 import time
 import uuid
@@ -156,12 +157,25 @@ def _step(event: dict[str, Any]) -> dict[str, Any]:
     return step if isinstance(step, dict) else {}
 
 
-def _step_tool(step: dict[str, Any]) -> Optional[str]:
+def _step_tools(step: dict[str, Any]) -> list[str]:
+    """Tool names a DeepThink step invoked; ``action`` is a dict, a name, or a JSON batch."""
     action = step.get("action")
+    if isinstance(action, str) and action.strip()[:1] in {"[", "{"}:
+        try:
+            action = json.loads(action)
+        except ValueError:
+            return []
     if isinstance(action, dict):
-        name = action.get("tool") or action.get("name")
-        return str(name) if name else None
-    return str(action) if isinstance(action, str) and action else None
+        action = action.get("tools", [action])
+    if isinstance(action, str):
+        return [action] if action else []
+    names = []
+    for item in action if isinstance(action, list) else []:
+        for call in item.get("tools", [item]) if isinstance(item, dict) else []:
+            name = call.get("tool") or call.get("name") if isinstance(call, dict) else None
+            if name:
+                names.append(str(name))
+    return names
 
 
 def _progress_notes(events: list[dict[str, Any]], limit: int = 3) -> list[str]:
@@ -171,9 +185,9 @@ def _progress_notes(events: list[dict[str, Any]], limit: int = 3) -> list[str]:
             continue
         step = _step(event)
         text = str(step.get("display_text") or step.get("thought") or "").strip()
-        tool = _step_tool(step)
-        if tool:
-            text = f"[{tool}] {text}".strip()
+        tools = _step_tools(step)
+        if tools:
+            text = f"[{', '.join(dict.fromkeys(tools))}] {text}".strip()
         if text and text[:200] not in notes:
             notes.append(text[:200])
         if len(notes) >= limit:
@@ -369,8 +383,7 @@ async def get_analysis_result(token: store.McpToken, arguments: dict[str, Any]) 
         kind = event.get("type")
         if kind in {"final", "error"}:
             final = event
-        tool = _step_tool(_step(event)) if kind == "thinking_step" else None
-        if tool:
+        for tool in _step_tools(_step(event)) if kind == "thinking_step" else []:
             tools_used[tool] = tools_used.get(tool, 0) + 1
     body = final.get("payload") if isinstance(final.get("payload"), dict) else {}
     summary = str(body.get("response") or final.get("message") or row.get("error") or "")
