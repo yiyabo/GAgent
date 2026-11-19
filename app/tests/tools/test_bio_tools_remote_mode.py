@@ -7,10 +7,8 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.routers import tool_routes
 import tool_box
 from tool_box.bio_tools import remote_executor
 
@@ -987,6 +985,7 @@ def test_bio_tools_handler_rejects_ambiguous_input_file_and_sequence_text() -> N
 
 def test_tools_bio_tools_endpoint_returns_backward_compatible_payload(
     monkeypatch: pytest.MonkeyPatch,
+    http_tool_app,
 ) -> None:
     async def _fake_execute_tool(name: str, **kwargs: Any) -> Dict[str, Any]:
         assert name == "bio_tools"
@@ -1004,16 +1003,15 @@ def test_tools_bio_tools_endpoint_returns_backward_compatible_payload(
 
     monkeypatch.setattr(tool_box, "execute_tool", _fake_execute_tool)
 
-    app = FastAPI()
-    app.include_router(tool_routes.router)
-    client = TestClient(app)
+    client = TestClient(http_tool_app)
     try:
         response = client.post(
             "/tools/bio-tools",
             json={
                 "tool_name": "seqkit",
                 "operation": "stats",
-                "input_file": "/tmp/input.fasta",
+                "session_id": "session_api",
+                "input_file": "uploads/input.fasta",
             },
         )
         assert response.status_code == 200
@@ -1029,6 +1027,7 @@ def test_tools_bio_tools_endpoint_returns_backward_compatible_payload(
 
 def test_tools_bio_tools_endpoint_forwards_sequence_text_and_session_id(
     monkeypatch: pytest.MonkeyPatch,
+    http_tool_app,
 ) -> None:
     async def _fake_execute_tool(name: str, **kwargs: Any) -> Dict[str, Any]:
         assert name == "bio_tools"
@@ -1046,9 +1045,7 @@ def test_tools_bio_tools_endpoint_forwards_sequence_text_and_session_id(
 
     monkeypatch.setattr(tool_box, "execute_tool", _fake_execute_tool)
 
-    app = FastAPI()
-    app.include_router(tool_routes.router)
-    client = TestClient(app)
+    client = TestClient(http_tool_app)
     try:
         response = client.post(
             "/tools/bio-tools",
@@ -1139,11 +1136,18 @@ def test_bio_tools_handler_job_status_operation(
 
 def test_tools_bio_tools_endpoint_supports_zero_timeout_and_background(
     monkeypatch: pytest.MonkeyPatch,
+    http_tool_app,
 ) -> None:
+    from app.services.plans.decomposition_jobs import plan_decomposition_jobs
+
     async def _fake_execute_tool(name: str, **kwargs: Any) -> Dict[str, Any]:
         assert name == "bio_tools"
         assert kwargs["timeout"] == 0
         assert kwargs["background"] is True
+        plan_decomposition_jobs.create_job(
+            plan_id=None, task_id=None, mode="bio_tools_background",
+            job_type="bio_tools_run", job_id="bio_test_job",
+        )
         return {
             "success": True,
             "background": True,
@@ -1153,9 +1157,7 @@ def test_tools_bio_tools_endpoint_supports_zero_timeout_and_background(
 
     monkeypatch.setattr(tool_box, "execute_tool", _fake_execute_tool)
 
-    app = FastAPI()
-    app.include_router(tool_routes.router)
-    client = TestClient(app)
+    client = TestClient(http_tool_app)
     try:
         response = client.post(
             "/tools/bio-tools",
@@ -1165,6 +1167,7 @@ def test_tools_bio_tools_endpoint_supports_zero_timeout_and_background(
                 "params": {"threads": 1},
                 "timeout": 0,
                 "background": True,
+                "session_id": "session_api_background",
             },
         )
         assert response.status_code == 200
@@ -1178,30 +1181,36 @@ def test_tools_bio_tools_endpoint_supports_zero_timeout_and_background(
 
 def test_tools_bio_tools_job_status_endpoint(
     monkeypatch: pytest.MonkeyPatch,
+    http_tool_app,
 ) -> None:
+    from app.services.plans.decomposition_jobs import plan_decomposition_jobs
+
+    plan_decomposition_jobs.create_job(
+        plan_id=None, task_id=None, mode="bio_tools_background",
+        job_type="bio_tools_run", job_id="bio_status_job", owner_id="alice",
+    )
+
     async def _fake_execute_tool(name: str, **kwargs: Any) -> Dict[str, Any]:
         assert name == "bio_tools"
         assert kwargs["operation"] == "job_status"
-        assert kwargs["params"]["job_id"] == "bio_test_job"
+        assert kwargs["params"]["job_id"] == "bio_status_job"
         return {
             "success": True,
             "operation": "job_status",
-            "job_id": "bio_test_job",
+            "job_id": "bio_status_job",
             "status": "running",
-            "job": {"job_id": "bio_test_job", "job_type": "bio_tools_run"},
+            "job": {"job_id": "bio_status_job", "job_type": "bio_tools_run"},
         }
 
     monkeypatch.setattr(tool_box, "execute_tool", _fake_execute_tool)
 
-    app = FastAPI()
-    app.include_router(tool_routes.router)
-    client = TestClient(app)
+    client = TestClient(http_tool_app)
     try:
-        response = client.get("/tools/bio-tools/jobs/bio_test_job")
+        response = client.get("/tools/bio-tools/jobs/bio_status_job")
         assert response.status_code == 200
         payload = response.json()
         assert payload["success"] is True
-        assert payload["job_id"] == "bio_test_job"
+        assert payload["job_id"] == "bio_status_job"
         assert payload["status"] == "running"
     finally:
         client.close()
