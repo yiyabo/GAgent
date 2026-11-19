@@ -602,14 +602,14 @@ def _advance_analysis_task_run(conn: Any, task_id: str, client_message_id: str, 
         UPDATE phagescope_mcp_analysis_tasks SET run_id = ?
         WHERE task_id = ? AND EXISTS (
             SELECT 1 FROM phagescope_mcp_analysis_replies candidate
+            JOIN chat_runs candidate_run ON candidate_run.run_id = candidate.run_id
             WHERE candidate.task_id = phagescope_mcp_analysis_tasks.task_id
               AND candidate.client_message_id = ?
               AND NOT EXISTS (
-                  SELECT 1 FROM phagescope_mcp_analysis_replies current
-                  WHERE current.task_id = candidate.task_id
-                    AND current.run_id = phagescope_mcp_analysis_tasks.run_id
+                  SELECT 1 FROM chat_runs current
+                  WHERE current.run_id = phagescope_mcp_analysis_tasks.run_id
                     AND (julianday(current.created_at), current.rowid) >=
-                        (julianday(candidate.created_at), candidate.rowid)
+                        (julianday(candidate_run.created_at), candidate_run.rowid)
               )
         )
         """,

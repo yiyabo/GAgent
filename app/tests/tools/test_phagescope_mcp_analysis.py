@@ -322,6 +322,46 @@ def test_recovering_older_reply_preserves_newer_current_run(analysis_client, rec
     assert store.get_analysis_task(task.task_id).run_id == run_b
 
 
+@pytest.mark.parametrize("same_timestamp", [False, True])
+def test_delayed_reply_start_becomes_current_despite_earlier_reservation(analysis_client, same_timestamp):
+    from datetime import timedelta
+    from app.routers.chat.models import ChatRequest
+    from app.routers.chat.run_routes import start_background_chat_run
+
+    client, spawned = analysis_client
+    token, record = _token()
+    _, body = _call(client, token, "submit_analysis", {"instructions": "delayed start"})
+    task = store.get_analysis_task(body["task_id"])
+    _finish(task.run_id, "succeeded")
+    client_message_id = f"{task.task_id}:reply:A"
+    assert store.reserve_analysis_reply(task, client_message_id, 10)
+    _call(client, token, "reply_analysis", {"task_id": task.task_id, "message": "B first", "idempotency_key": "B"})
+    run_b = store.get_analysis_task(task.task_id).run_id
+    _finish(run_b, "succeeded")
+
+    async def start_run():
+        return start_background_chat_run(ChatRequest(message="A delayed", session_id=task.session_id,
+                                                     client_message_id=client_message_id),
+                                         session_id=task.session_id, owner_id=record.user_id)
+
+    run_a = client.portal.call(start_run)
+    now = store._now()
+    with get_db() as conn:
+        conn.execute("UPDATE phagescope_mcp_analysis_replies SET created_at = ? WHERE task_id = ? AND client_message_id = ?",
+                     (store._iso(now - timedelta(minutes=2)), task.task_id, client_message_id))
+        conn.execute("UPDATE phagescope_mcp_analysis_replies SET created_at = ? WHERE task_id = ? AND client_message_id = ?",
+                     (store._iso(now - timedelta(minutes=1)), task.task_id, f"{task.task_id}:reply:B"))
+        conn.execute("UPDATE chat_runs SET created_at = ? WHERE run_id = ?", (store._iso(now), run_a))
+        conn.execute("UPDATE chat_runs SET created_at = ? WHERE run_id = ?",
+                     (store._iso(now - timedelta(seconds=0 if same_timestamp else 1)), run_b))
+        conn.commit()
+    store.finish_analysis_reply(task.task_id, client_message_id, run_a)
+    assert store.get_analysis_task(task.task_id).run_id == run_a
+    _, status = _call(client, token, "get_analysis_status", {"task_id": task.task_id})
+    assert status["status"] == "working"
+    assert store.analysis_counts(record)["user_today"] == 3 and len(spawned) == 3
+
+
 def test_existing_reply_runs_are_backfilled_once(analysis_client, monkeypatch):
     client, _ = analysis_client
     token, record = _token()
