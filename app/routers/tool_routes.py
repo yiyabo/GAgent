@@ -4,7 +4,7 @@ relatedAPI
 Tool Box, analysisexecute. 
 """
 
-from fastapi import APIRouter, HTTPException, Body
+from fastapi import APIRouter, HTTPException, Body, Request
 from typing import Any, Dict, Optional
 
 from tool_box import get_cache_stats
@@ -14,6 +14,7 @@ from tool_box import execute_tool as _execute_tool
 from . import register_router
 
 from ..utils.route_helpers import parse_bool, sanitize_context_options
+from .tool_access import bind_http_bio_job, bio_paths, owned_bio_job, owned_session
 
 router = APIRouter(tags=["tools"])
 
@@ -132,7 +133,7 @@ async def web_search_api(payload: Dict[str, Any] = Body(...)):
 
 
 @router.post("/tools/sequence-fetch")
-async def sequence_fetch_api(payload: Dict[str, Any] = Body(...)):
+async def sequence_fetch_api(request: Request, payload: Dict[str, Any] = Body(...)):
     """Deterministically download FASTA by accession(s)."""
     try:
         from tool_box import execute_tool
@@ -141,7 +142,7 @@ async def sequence_fetch_api(payload: Dict[str, Any] = Body(...)):
         accessions = payload.get("accessions")
         database = payload.get("database", "nuccore")
         fmt = payload.get("format", "fasta")
-        session_id = payload.get("session_id")
+        session_id = owned_session(request, payload.get("session_id"))
         output_name = payload.get("output_name")
         timeout_sec = payload.get("timeout_sec")
         max_bytes = payload.get("max_bytes")
@@ -176,14 +177,14 @@ async def sequence_fetch_api(payload: Dict[str, Any] = Body(...)):
 
 
 @router.post("/tools/url-fetch")
-async def url_fetch_api(payload: Dict[str, Any] = Body(...)):
+async def url_fetch_api(request: Request, payload: Dict[str, Any] = Body(...)):
     """Download a file from a public URL."""
     try:
         from tool_box import execute_tool
 
         url = payload.get("url")
         output_name = payload.get("output_name")
-        session_id = payload.get("session_id")
+        session_id = owned_session(request, payload.get("session_id"))
         timeout_sec = payload.get("timeout_sec")
         max_bytes = payload.get("max_bytes")
         allowed_content_types = payload.get("allowed_content_types")
@@ -217,7 +218,7 @@ async def url_fetch_api(payload: Dict[str, Any] = Body(...)):
 
 
 @router.post("/tools/bio-tools")
-async def execute_bio_tools(payload: Dict[str, Any] = Body(...)):
+async def execute_bio_tools(request: Request, payload: Dict[str, Any] = Body(...)):
     """
     Execute a registered bioinformatics tool through the tool gateway.
 
@@ -231,14 +232,15 @@ async def execute_bio_tools(payload: Dict[str, Any] = Body(...)):
     - timeout: Timeout in seconds (optional, default 3600; <=0 disables execution timeout)
     - background: Run as background job and return immediately (optional)
     - job_id: Optional job id, mainly for operation="job_status"
-    - session_id: Optional session id for session-scoped inline sequence storage
+    - session_id: Required requester-owned session for inputs and outputs
 
     Example:
     ```json
     {
         "tool_name": "seqkit",
         "operation": "stats",
-        "input_file": "/path/to/file.fasta"
+        "input_file": "uploads/file.fasta",
+        "session_id": "my-session"
     }
     ```
     """
@@ -255,7 +257,16 @@ async def execute_bio_tools(payload: Dict[str, Any] = Body(...)):
         timeout_provided = "timeout" in payload
         background = parse_bool(payload.get("background"), default=False) if "background" in payload else None
         job_id = payload.get("job_id")
-        session_id = payload.get("session_id")
+        session_id = owned_session(request, payload.get("session_id"))
+
+        if operation == "job_status":
+            requested_job_id = job_id or (params or {}).get("job_id")
+            if not requested_job_id:
+                raise HTTPException(400, "job_id is required")
+            owned_bio_job(request, str(requested_job_id))
+        input_file, params = bio_paths(
+            session_id, input_file, output_file, params, tool_name=tool_name, operation=operation,
+        )
 
         if not tool_name:
             raise HTTPException(status_code=400, detail="tool_name is required")
@@ -282,6 +293,7 @@ async def execute_bio_tools(payload: Dict[str, Any] = Body(...)):
             kwargs["session_id"] = session_id.strip()
 
         result = await execute_tool("bio_tools", **kwargs)
+        bind_http_bio_job(request, session_id, result)
 
         return {
             "success": result.get("success", False),
@@ -297,8 +309,9 @@ async def execute_bio_tools(payload: Dict[str, Any] = Body(...)):
 
 
 @router.get("/tools/bio-tools/jobs/{job_id}")
-async def get_bio_tools_job_status(job_id: str):
+async def get_bio_tools_job_status(request: Request, job_id: str):
     """Query background bio_tools job status."""
+    owned_bio_job(request, job_id)
     try:
         from tool_box import execute_tool
 

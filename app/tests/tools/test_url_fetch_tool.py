@@ -6,11 +6,9 @@ from pathlib import Path
 from typing import Any, Dict
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import tool_box
-from app.routers import tool_routes
 from app.services import session_paths
 from tool_box.context import ToolContext
 
@@ -183,6 +181,7 @@ def test_url_fetch_reports_sha256_mismatch(
 
 def test_url_fetch_route_passthrough(
     monkeypatch: pytest.MonkeyPatch,
+    http_tool_app,
 ) -> None:
     captured: Dict[str, Any] = {}
 
@@ -198,9 +197,7 @@ def test_url_fetch_route_passthrough(
 
     monkeypatch.setattr(tool_box, "execute_tool", _fake_execute_tool)
 
-    app = FastAPI()
-    app.include_router(tool_routes.router)
-    client = TestClient(app)
+    client = TestClient(http_tool_app)
 
     response = client.post(
         "/tools/url-fetch",
