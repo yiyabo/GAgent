@@ -73,8 +73,13 @@ def test_submit_status_result_round_trip(analysis_client):
     assert run["owner_id"] == "alice"
     assert "Plot genome length" in json.loads(run["request_json"])["message"]
 
+    from app.repository.chat_runs import append_chat_run_event
+
+    append_chat_run_event(task.run_id, {"type": "thinking_step", "step": {"display_text": "Querying hosts", "action": {"tool": "phagescope_data"}}})
+    append_chat_run_event(task.run_id, {"type": "reasoning_delta", "delta": "x"})
     _, status = _call(client, token, "get_analysis_status", {"task_id": task_id})
     assert status["status"] == "working" and status["poll_after_seconds"] == 15
+    assert status["progress"] == ["[phagescope_data] Querying hosts"]
     _, pending = _call(client, token, "get_analysis_result", {"task_id": task_id})
     assert pending["not_ready"]
 
@@ -83,6 +88,7 @@ def test_submit_status_result_round_trip(analysis_client):
     assert status["status"] == "completed"
     _, result = _call(client, token, "get_analysis_result", {"task_id": task_id})
     assert result["summary"] == "Median length 45 kb." and result["deliverables"] == []
+    assert result["provenance"]["tools_used"] == {"phagescope_data": 1}
 
     other, _ = _token(user="bob")
     res, err = _call(client, other, "get_analysis_status", {"task_id": task_id})

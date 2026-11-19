@@ -142,26 +142,40 @@ def _poll_after(row: dict[str, Any]) -> Optional[int]:
     return 15 if elapsed < 300 else 30 if elapsed < 1800 else 60
 
 
-def _events(task: store.AnalysisTask) -> list[dict[str, Any]]:
-    from app.repository.chat_runs import fetch_events_after
+_DELTA_EVENTS = ("delta", "reasoning_delta", "thinking_delta", "heartbeat")
 
-    return [payload for _seq, payload in fetch_events_after(task.run_id, -1)]
+
+def _events(task: store.AnalysisTask) -> list[dict[str, Any]]:
+    from app.repository.chat_runs import fetch_events_excluding
+
+    return fetch_events_excluding(task.run_id, _DELTA_EVENTS)
+
+
+def _step(event: dict[str, Any]) -> dict[str, Any]:
+    step = event.get("step")
+    return step if isinstance(step, dict) else {}
+
+
+def _step_tool(step: dict[str, Any]) -> Optional[str]:
+    action = step.get("action")
+    if isinstance(action, dict):
+        name = action.get("tool") or action.get("name")
+        return str(name) if name else None
+    return str(action) if isinstance(action, str) and action else None
 
 
 def _progress_notes(events: list[dict[str, Any]], limit: int = 3) -> list[str]:
     notes: list[str] = []
     for event in reversed(events):
-        kind = str(event.get("type") or "")
-        if kind in {"final", "error", "start", "delta", "heartbeat"}:
+        if event.get("type") != "thinking_step":
             continue
-        text = ""
-        for key in ("summary", "message", "title", "label", "tool", "name"):
-            value = event.get(key)
-            if isinstance(value, str) and value.strip():
-                text = value.strip()
-                break
-        if text:
-            notes.append(f"{kind}: {text[:200]}")
+        step = _step(event)
+        text = str(step.get("display_text") or step.get("thought") or "").strip()
+        tool = _step_tool(step)
+        if tool:
+            text = f"[{tool}] {text}".strip()
+        if text and text[:200] not in notes:
+            notes.append(text[:200])
         if len(notes) >= limit:
             break
     return notes
@@ -355,8 +369,8 @@ async def get_analysis_result(token: store.McpToken, arguments: dict[str, Any]) 
         kind = event.get("type")
         if kind in {"final", "error"}:
             final = event
-        tool = event.get("tool") or event.get("tool_name")
-        if kind in {"tool_start", "tool_call"} and isinstance(tool, str):
+        tool = _step_tool(_step(event)) if kind == "thinking_step" else None
+        if tool:
             tools_used[tool] = tools_used.get(tool, 0) + 1
     body = final.get("payload") if isinstance(final.get("payload"), dict) else {}
     summary = str(body.get("response") or final.get("message") or row.get("error") or "")
