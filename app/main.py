@@ -327,9 +327,17 @@ async def lifespan(_fastapi_app: FastAPI):
     # 默认关闭、失败不阻塞启动，详见 app/consul_registration.py
     start_consul_registration()
 
+    from contextlib import AsyncExitStack
+
+    from .services.phagescope_mcp.server import endpoint as phagescope_mcp_endpoint
+
+    mcp_stack = AsyncExitStack()
+    await mcp_stack.enter_async_context(phagescope_mcp_endpoint.lifespan())
+
     try:
         yield
     finally:
+        await mcp_stack.aclose()
         # Running chat workers are about to be cancelled by the shutdown; mark it
         # so they stay resumable instead of closing as user cancels.
         try:
@@ -614,6 +622,13 @@ def _register_spa(app: "FastAPI") -> None:
             return FileResponse(candidate)
         return FileResponse(dist / "index.html")
 
+def _register_phagescope_mcp(app: FastAPI) -> None:
+    """External PhageScope MCP endpoint at exactly /mcp (bearer-token auth, own limits)."""
+    from .services.phagescope_mcp.server import MCP_PATH, endpoint
+
+    app.router.add_route(MCP_PATH, endpoint, methods=["GET", "POST", "DELETE"], include_in_schema=False)
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="AI-Driven Task Orchestration System",
@@ -631,6 +646,7 @@ def create_app() -> FastAPI:
     app.add_middleware(ProxyAuthMiddleware)
     _register_exception_handlers(app)
     _register_routes(app)
+    _register_phagescope_mcp(app)
     _register_spa(app)
     return app
 

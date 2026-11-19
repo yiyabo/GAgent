@@ -47,6 +47,13 @@ try:
 except Exception:
     _DOTENV_LOADED = False
 
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 # Absolute ceiling for injected chat history (env `CHAT_HISTORY_MAX_MESSAGES` is clamped to this).
 CHAT_HISTORY_ABS_MAX = 200
 
@@ -292,6 +299,14 @@ if _USE_PYDANTIC:
         quality_analytics_admin_ids: str = Field(
             default="", env="QUALITY_ANALYTICS_ADMIN_IDS"
         )
+
+        # External PhageScope MCP endpoint (/mcp)
+        phagescope_mcp_enabled: bool = Field(default=False, env="PHAGESCOPE_MCP_ENABLED")
+        phagescope_mcp_allowed_users: str = Field(default="", env="PHAGESCOPE_MCP_ALLOWED_USERS")
+        phagescope_mcp_daily_bytes: int = Field(default=2 * 1024**3, env="PHAGESCOPE_MCP_DAILY_BYTES")
+        phagescope_mcp_requests_per_minute: int = Field(default=60, env="PHAGESCOPE_MCP_REQUESTS_PER_MINUTE")
+        phagescope_mcp_max_concurrency: int = Field(default=4, env="PHAGESCOPE_MCP_MAX_CONCURRENCY")
+        phagescope_mcp_max_result_bytes: int = Field(default=512 * 1024, env="PHAGESCOPE_MCP_MAX_RESULT_BYTES")
 
         # Plan rubric evaluation & auto-optimization
         plan_rubric_threshold: int = Field(default=80, env="PLAN_RUBRIC_THRESHOLD")
@@ -715,6 +730,13 @@ else:
             self.quality_analytics_admin_ids = os.getenv(
                 "QUALITY_ANALYTICS_ADMIN_IDS", ""
             )
+
+            self.phagescope_mcp_enabled = os.getenv("PHAGESCOPE_MCP_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+            self.phagescope_mcp_allowed_users = os.getenv("PHAGESCOPE_MCP_ALLOWED_USERS", "")
+            self.phagescope_mcp_daily_bytes = _int_env("PHAGESCOPE_MCP_DAILY_BYTES", 2 * 1024**3)
+            self.phagescope_mcp_requests_per_minute = _int_env("PHAGESCOPE_MCP_REQUESTS_PER_MINUTE", 60)
+            self.phagescope_mcp_max_concurrency = _int_env("PHAGESCOPE_MCP_MAX_CONCURRENCY", 4)
+            self.phagescope_mcp_max_result_bytes = _int_env("PHAGESCOPE_MCP_MAX_RESULT_BYTES", 512 * 1024)
 
             # Plan rubric evaluation & auto-optimization
             try:
