@@ -201,6 +201,81 @@ def test_reply_start_failure_releases_unused_quota_reservation(analysis_client, 
     assert reply["status"] == "working" and store.analysis_counts(record)["user_today"] == 2
 
 
+def test_reply_reservation_reclaimed_after_restart_before_run(analysis_client, monkeypatch):
+    from datetime import timedelta
+    from app.services.foundation.settings import get_settings
+
+    client, spawned = analysis_client
+    monkeypatch.setenv("PHAGESCOPE_MCP_ANALYSIS_DAILY_SUBMISSIONS", "2")
+    get_settings.cache_clear()
+    token, record = _token()
+    _, body = _call(client, token, "submit_analysis", {"instructions": "restart before run"})
+    task = store.get_analysis_task(body["task_id"])
+    _finish(task.run_id, "succeeded")
+    client_message_id = f"{task.task_id}:reply:restart"
+    assert store.reserve_analysis_reply(task, client_message_id, 2)
+    monkeypatch.setattr(store, "_schema_ready", False)
+    args = {"task_id": task.task_id, "message": "recover", "idempotency_key": "restart"}
+    _, live = _call(client, token, "reply_analysis", args)
+    assert live["deduplicated"] and live["status"] == "working" and len(spawned) == 1
+    now = store._now()
+    monkeypatch.setattr(store, "_now", lambda: now + timedelta(seconds=store.REPLY_RESERVATION_TTL_SECONDS + 1))
+    _, recovered = _call(client, token, "reply_analysis", args)
+    assert recovered["status"] == "working" and not recovered.get("deduplicated")
+    assert len(spawned) == 2 and store.analysis_counts(record)["user_today"] == 2
+    assert store.get_analysis_reply(task.task_id, client_message_id)["run_id"] == spawned[-1]
+
+
+def test_reply_reservation_attaches_existing_run_after_restart(analysis_client, monkeypatch):
+    from app.routers.chat.models import ChatRequest
+    from app.routers.chat.run_routes import start_background_chat_run
+
+    client, spawned = analysis_client
+    token, record = _token()
+    _, body = _call(client, token, "submit_analysis", {"instructions": "restart after run"})
+    task = store.get_analysis_task(body["task_id"])
+    _finish(task.run_id, "succeeded")
+    client_message_id = f"{task.task_id}:reply:restart"
+    assert store.reserve_analysis_reply(task, client_message_id, 2)
+    async def start_run():
+        return start_background_chat_run(ChatRequest(message="recover", session_id=task.session_id,
+                                                     client_message_id=client_message_id),
+                                         session_id=task.session_id, owner_id=record.user_id)
+
+    run_id = client.portal.call(start_run)
+    monkeypatch.setattr(store, "_schema_ready", False)
+    _, recovered = _call(client, token, "reply_analysis", {"task_id": task.task_id, "message": "recover", "idempotency_key": "restart"})
+    assert recovered["deduplicated"] and recovered["status"] == "working"
+    assert len(spawned) == 2 and store.analysis_counts(record)["user_today"] == 2
+    assert store.get_analysis_reply(task.task_id, client_message_id)["run_id"] == run_id
+    assert store.get_analysis_task(task.task_id).run_id == run_id
+
+
+def test_only_one_concurrent_reply_reclaim_wins(analysis_client, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import timedelta
+    from threading import Barrier
+
+    client, _ = analysis_client
+    token, record = _token()
+    _, body = _call(client, token, "submit_analysis", {"instructions": "race reclaim"})
+    task = store.get_analysis_task(body["task_id"])
+    client_message_id = f"{task.task_id}:reply:race"
+    assert store.reserve_analysis_reply(task, client_message_id, 2)
+    now = store._now()
+    monkeypatch.setattr(store, "_now", lambda: now + timedelta(seconds=store.REPLY_RESERVATION_TTL_SECONDS + 1))
+    barrier = Barrier(2)
+
+    def reclaim():
+        barrier.wait(timeout=5)
+        return store.reserve_analysis_reply(task, client_message_id, 2)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: reclaim(), range(2)))
+    assert sorted(results) == [False, True]
+    assert store.analysis_counts(record)["user_today"] == 2
+
+
 def test_existing_reply_runs_are_backfilled_once(analysis_client, monkeypatch):
     client, _ = analysis_client
     token, record = _token()

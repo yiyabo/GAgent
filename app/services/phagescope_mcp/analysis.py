@@ -15,6 +15,7 @@ import secrets
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, Optional
 from urllib.parse import quote
 
@@ -426,18 +427,25 @@ async def reply_analysis(token: store.McpToken, arguments: dict[str, Any]) -> di
         raise AnalysisError("invalid_argument", f"message is required and limited to {MAX_INSTRUCTIONS} characters.")
     key = str(arguments.get("idempotency_key") or "").strip()[:128]
     client_message_id = f"{task.task_id}:reply:{key or uuid.uuid4().hex}"
+    reply = None
     if key:
         reply = store.get_analysis_reply(task.task_id, client_message_id)
-        if reply is not None:
-            row = get_chat_run(reply["run_id"]) if reply["run_id"] else {"status": "queued"}
+        if reply is not None and reply["run_id"]:
+            row = get_chat_run(reply["run_id"])
             return {"task_id": task.task_id, "status": _status(row or {}), "deduplicated": True}
         existing = get_chat_run_by_idempotency_key(task.session_id, client_message_id)
         if existing is not None:
+            if reply is not None:
+                store.finish_analysis_reply(task.task_id, client_message_id, existing["run_id"])
             return {"task_id": task.task_id, "status": _status(existing), "deduplicated": True}
+        if reply is not None:
+            reserved_at = datetime.fromisoformat(reply["reserved_at"] or reply["created_at"])
+            if reserved_at > store._now() - timedelta(seconds=store.REPLY_RESERVATION_TTL_SECONDS):
+                return {"task_id": task.task_id, "status": "working", "deduplicated": True}
     if _status(_run_row(task)) == "working":
         raise AnalysisError("task_busy", "The task is still working; wait for it to finish or cancel it first.")
     settings = get_settings()
-    if store.analysis_counts(token)["user_today"] >= int(settings.phagescope_mcp_analysis_daily_submissions):
+    if reply is None and store.analysis_counts(token)["user_today"] >= int(settings.phagescope_mcp_analysis_daily_submissions):
         raise AnalysisError("daily_task_quota_exceeded", DAILY_QUOTA_ERROR)
     _check_capacity(token)
     request = ChatRequest(

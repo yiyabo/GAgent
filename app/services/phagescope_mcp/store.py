@@ -26,6 +26,7 @@ TOKEN_PREFIX = "gpsk_"
 SCOPE_DATA_READ = "data:read"
 SCOPE_ANALYSIS_SUBMIT = "analysis:submit"
 KNOWN_SCOPES = (SCOPE_DATA_READ, SCOPE_ANALYSIS_SUBMIT)
+REPLY_RESERVATION_TTL_SECONDS = 300
 
 _schema_lock = threading.Lock()
 _schema_ready = False
@@ -93,6 +94,7 @@ _SCHEMA = (
         user_id TEXT NOT NULL,
         client_message_id TEXT NOT NULL,
         run_id TEXT,
+        reserved_at TEXT,
         created_at TEXT NOT NULL,
         PRIMARY KEY (task_id, client_message_id)
     )
@@ -158,6 +160,9 @@ def ensure_schema() -> None:
         with get_db() as conn:
             for stmt in _SCHEMA:
                 conn.execute(stmt)
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(phagescope_mcp_analysis_replies)")}
+            if "reserved_at" not in columns:
+                conn.execute("ALTER TABLE phagescope_mcp_analysis_replies ADD COLUMN reserved_at TEXT")
             if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chat_runs'").fetchone():
                 conn.execute(
                     """
@@ -550,18 +555,39 @@ def reserve_analysis_reply(task: AnalysisTask, client_message_id: str, daily_lim
         conn.execute("BEGIN IMMEDIATE")
         try:
             existing = conn.execute(
-                "SELECT 1 FROM phagescope_mcp_analysis_replies WHERE task_id = ? AND client_message_id = ?",
+                "SELECT * FROM phagescope_mcp_analysis_replies WHERE task_id = ? AND client_message_id = ?",
                 (task.task_id, client_message_id),
             ).fetchone()
             if existing:
+                run = conn.execute(
+                    "SELECT run_id FROM chat_runs WHERE session_id = ? AND idempotency_key = ?",
+                    (task.session_id, client_message_id),
+                ).fetchone()
+                if existing["run_id"] is None and run:
+                    conn.execute(
+                        "UPDATE phagescope_mcp_analysis_replies SET run_id = ? WHERE task_id = ? AND client_message_id = ? AND run_id IS NULL",
+                        (run["run_id"], task.task_id, client_message_id),
+                    )
+                    conn.execute("UPDATE phagescope_mcp_analysis_tasks SET run_id = ? WHERE task_id = ?", (run["run_id"], task.task_id))
+                elif existing["run_id"] is None:
+                    now = _now()
+                    claimed = conn.execute(
+                        """UPDATE phagescope_mcp_analysis_replies SET reserved_at = ?
+                           WHERE task_id = ? AND client_message_id = ? AND run_id IS NULL
+                             AND datetime(COALESCE(reserved_at, created_at)) <= datetime(?)""",
+                        (_iso(now), task.task_id, client_message_id,
+                         _iso(now - timedelta(seconds=REPLY_RESERVATION_TTL_SECONDS))),
+                    ).rowcount
+                    conn.commit()
+                    return claimed > 0
                 conn.commit()
                 return False
             if _daily_analysis_count(conn, task.user_id) >= daily_limit:
                 raise AnalysisQuotaExceeded()
             conn.execute(
                 """INSERT INTO phagescope_mcp_analysis_replies
-                   (task_id, user_id, client_message_id, created_at) VALUES (?, ?, ?, ?)""",
-                (task.task_id, task.user_id, client_message_id, _iso(_now())),
+                   (task_id, user_id, client_message_id, created_at, reserved_at) VALUES (?, ?, ?, ?, ?)""",
+                (task.task_id, task.user_id, client_message_id, _iso(_now()), _iso(_now())),
             )
             conn.commit()
             return True
