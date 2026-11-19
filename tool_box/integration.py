@@ -92,6 +92,12 @@ class ToolBoxIntegration:
         if not tool_def:
             raise ValueError(f"Tool '{registered_tool_name}' not found")
 
+        from app.services.phagescope_mcp.analysis import tool_refusal
+
+        refusal = tool_refusal(registered_tool_name, kwargs, getattr(tool_context, "session_id", None))
+        if refusal is not None:
+            return refusal
+
         # Inject tool_context into kwargs so prepare_handler_kwargs can
         # deliver it to handlers that declare the parameter.
         if tool_context is not None:

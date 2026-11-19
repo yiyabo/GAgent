@@ -36,7 +36,7 @@ from starlette.types import Receive, Scope, Send
 from app.services.foundation.settings import get_settings
 from tool_box.tools_impl.phagescope_data.config import PhageScopeDataError
 
-from . import store
+from . import analysis, store
 from .limits import limiter
 from .tools import (
     FEATURE_TYPES,
@@ -85,16 +85,69 @@ def _error(code: str, message: str) -> CallToolResult:
     return CallToolResult(content=[TextContent(type="text", text=json.dumps(payload, ensure_ascii=False))], is_error=True)
 
 
+def _analysis_allowed(token: Optional[store.McpToken]) -> bool:
+    return token is not None and analysis.enabled() and store.SCOPE_ANALYSIS_SUBMIT in token.scopes
+
+
 async def _list_tools(ctx: ServerRequestContext, params: Optional[PaginatedRequestParams]) -> ListToolsResult:
+    token = _token_for(ctx)
     annotations = ToolAnnotations(
         read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
     )
-    return ListToolsResult(
-        tools=[
+    tools: list[Tool] = []
+    if token is not None and store.SCOPE_DATA_READ in token.scopes:
+        tools += [
             Tool(name=t.name, title=t.title, description=t.description, input_schema=t.input_schema, annotations=annotations)
             for t in TOOLS
         ]
-    )
+    if _analysis_allowed(token):
+        for spec in analysis.ANALYSIS_TOOLS:
+            hints = ToolAnnotations(
+                read_only_hint=spec.read_only,
+                destructive_hint=False,
+                idempotent_hint=spec.read_only,
+                open_world_hint=False,
+            )
+            tools.append(
+                Tool(name=spec.name, title=spec.title, description=spec.description, input_schema=spec.input_schema, annotations=hints)
+            )
+    return ListToolsResult(tools=tools)
+
+
+async def _call_analysis_tool(token: store.McpToken, name: str, arguments: dict[str, Any]) -> CallToolResult:
+    spec = analysis.ANALYSIS_TOOLS_BY_NAME[name]
+    started = time.monotonic()
+    status, code, nbytes = "error", None, 0
+    try:
+        if not _analysis_allowed(token):
+            code = "insufficient_scope"
+            return _error(code, "This token cannot submit analysis tasks.")
+        try:
+            data = await spec.run(token, arguments)
+        except analysis.AnalysisError as exc:
+            code = exc.code
+            return _error(exc.code, str(exc))
+        except Exception:
+            logger.exception("PhageScope MCP analysis tool %s failed", name)
+            code = "internal_error"
+            return _error(code, f"{name} failed unexpectedly.")
+        text = json.dumps(data, ensure_ascii=False, default=str)
+        nbytes = len(text.encode("utf-8"))
+        status = "ok"
+        return CallToolResult(content=[TextContent(type="text", text=text)], is_error=False)
+    finally:
+        try:
+            store.record_audit(
+                token=token,
+                tool=name,
+                arguments={k: v for k, v in arguments.items() if k != "inline_data"},
+                status=status,
+                error_code=code,
+                duration_ms=int((time.monotonic() - started) * 1000),
+                result_bytes=nbytes,
+            )
+        except Exception:
+            logger.exception("PhageScope MCP audit write failed")
 
 
 async def _call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) -> CallToolResult:
@@ -103,8 +156,12 @@ async def _call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) -
         return _error("unauthorized", "A valid PhageScope MCP token is required.")
     spec = TOOLS_BY_NAME.get(params.name)
     arguments = dict(params.arguments or {})
+    if spec is None and params.name in analysis.ANALYSIS_TOOLS_BY_NAME:
+        return await _call_analysis_tool(token, params.name, arguments)
     if spec is None:
         return _error("unknown_tool", f"Unknown tool: {params.name}")
+    if store.SCOPE_DATA_READ not in token.scopes:
+        return _error("insufficient_scope", "Token lacks the data:read scope.")
 
     settings = get_settings()
     daily = int(settings.phagescope_mcp_daily_bytes)
@@ -251,8 +308,8 @@ class PhageScopeMcpEndpoint:
         if token is None:
             await _refuse(401, "unauthorized", "A valid PhageScope MCP bearer token is required.")(scope, receive, send)
             return
-        if store.SCOPE_DATA_READ not in token.scopes:
-            await _refuse(403, "insufficient_scope", "Token lacks the data:read scope.")(scope, receive, send)
+        if not set(token.scopes) & set(store.KNOWN_SCOPES):
+            await _refuse(403, "insufficient_scope", "Token has no PhageScope MCP scope.")(scope, receive, send)
             return
         refusal = limiter.acquire(
             token.id,

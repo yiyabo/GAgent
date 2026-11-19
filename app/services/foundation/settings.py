@@ -308,6 +308,11 @@ if _USE_PYDANTIC:
         phagescope_mcp_requests_per_minute: int = Field(default=60, env="PHAGESCOPE_MCP_REQUESTS_PER_MINUTE")
         phagescope_mcp_max_concurrency: int = Field(default=4, env="PHAGESCOPE_MCP_MAX_CONCURRENCY")
         phagescope_mcp_max_result_bytes: int = Field(default=512 * 1024, env="PHAGESCOPE_MCP_MAX_RESULT_BYTES")
+        phagescope_mcp_analysis_enabled: bool = Field(default=False, env="PHAGESCOPE_MCP_ANALYSIS_ENABLED")
+        phagescope_mcp_analysis_max_active_per_token: int = Field(default=1, env="PHAGESCOPE_MCP_ANALYSIS_MAX_ACTIVE_PER_TOKEN")
+        phagescope_mcp_analysis_global_max_active: int = Field(default=2, env="PHAGESCOPE_MCP_ANALYSIS_GLOBAL_MAX_ACTIVE")
+        phagescope_mcp_analysis_daily_submissions: int = Field(default=10, env="PHAGESCOPE_MCP_ANALYSIS_DAILY_SUBMISSIONS")
+        phagescope_mcp_analysis_retention_days: int = Field(default=30, env="PHAGESCOPE_MCP_ANALYSIS_RETENTION_DAYS")
 
         # Plan rubric evaluation & auto-optimization
         plan_rubric_threshold: int = Field(default=80, env="PLAN_RUBRIC_THRESHOLD")
@@ -739,6 +744,11 @@ else:
             self.phagescope_mcp_requests_per_minute = _int_env("PHAGESCOPE_MCP_REQUESTS_PER_MINUTE", 60)
             self.phagescope_mcp_max_concurrency = _int_env("PHAGESCOPE_MCP_MAX_CONCURRENCY", 4)
             self.phagescope_mcp_max_result_bytes = _int_env("PHAGESCOPE_MCP_MAX_RESULT_BYTES", 512 * 1024)
+            self.phagescope_mcp_analysis_enabled = os.getenv("PHAGESCOPE_MCP_ANALYSIS_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+            self.phagescope_mcp_analysis_max_active_per_token = _int_env("PHAGESCOPE_MCP_ANALYSIS_MAX_ACTIVE_PER_TOKEN", 1)
+            self.phagescope_mcp_analysis_global_max_active = _int_env("PHAGESCOPE_MCP_ANALYSIS_GLOBAL_MAX_ACTIVE", 2)
+            self.phagescope_mcp_analysis_daily_submissions = _int_env("PHAGESCOPE_MCP_ANALYSIS_DAILY_SUBMISSIONS", 10)
+            self.phagescope_mcp_analysis_retention_days = _int_env("PHAGESCOPE_MCP_ANALYSIS_RETENTION_DAYS", 30)
 
             # Plan rubric evaluation & auto-optimization
             try:
