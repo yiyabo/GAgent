@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from .models import ChatMessage, ChatResponse
 from app.services.llm.structured_response import LLMAction
 from app.services.llm.llm_service import LLMService, get_llm_service, get_llm_service_for_provider
+from app.services.session_access import ensure_session_alias_owner
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -904,6 +905,7 @@ def _ensure_session_exists(
 ) -> Optional[int]:
     """Ensure the chat_sessions table contains this session."""
     normalized_owner_id = _resolve_session_owner_id(conn, session_id, owner_id)
+    ensure_session_alias_owner(conn, session_id, normalized_owner_id)
     cursor = conn.cursor()
     cursor.execute(
         "SELECT id, plan_id, owner_id, project_id FROM chat_sessions WHERE id = ?",

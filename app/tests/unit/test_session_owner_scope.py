@@ -89,6 +89,25 @@ def test_alias_guard_handles_lossy_normalization(scoped_client):
     assert client.get("/upload/list", params={"session_id": "v-ictim"}).status_code == 403
 
 
+def test_patch_cannot_create_another_owners_session_alias(scoped_client):
+    client, root = scoped_client
+    response = client.patch("/chat/sessions/victim", json={"name": "Bob alias"})
+    assert response.status_code == 403
+    with get_db() as conn:
+        assert conn.execute("SELECT owner_id FROM chat_sessions WHERE id='victim'").fetchone() is None
+
+    alice = {"x-user": "alice"}
+    assert client.post(
+        "/upload/file",
+        data={"session_id": "session_victim"},
+        files={"file": ("note.txt", b"alice upload", "text/plain")},
+        headers=alice,
+    ).status_code == 200
+    assert client.get("/upload/list", params={"session_id": "session_victim"}, headers=alice).status_code == 200
+    assert client.delete("/chat/sessions/session_victim", headers=alice).status_code == 204
+    assert not (root / "runtime/session_victim").exists()
+
+
 def test_workspace_image_is_session_scoped(scoped_client):
     client, root = scoped_client
     params = {"path": "runtime/session_victim/private.png"}
