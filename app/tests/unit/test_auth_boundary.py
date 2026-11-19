@@ -128,6 +128,7 @@ def test_execution_workspace_owner_is_the_principal(app_client_factory, monkeypa
 
     monkeypatch.setenv("AUTH_MODE", "proxy")
     monkeypatch.setenv("PROXY_AUTH_REQUIRED", "1")
+    monkeypatch.setenv("EXECUTION_SHELL_ENABLED", "1")
     get_settings.cache_clear()
     alice = {"X-Forwarded-User": "alice"}
     with app_client_factory(raise_server_exceptions=False) as client:

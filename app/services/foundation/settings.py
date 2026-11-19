@@ -247,6 +247,7 @@ if _USE_PYDANTIC:
         backup_dir: str = Field(default="data/backups", env="BACKUP_DIR")
 
         agent_runtime_v2_enabled: bool = Field(default=False, env="AGENT_RUNTIME_V2_ENABLED")
+        execution_shell_enabled: bool = Field(default=False, env="EXECUTION_SHELL_ENABLED")
         plan_execution_budget_enabled: bool = Field(default=False, env="PLAN_EXECUTION_BUDGET_ENABLED")
         plan_output_contracts_required: bool = Field(default=False, env="PLAN_OUTPUT_CONTRACTS_REQUIRED")
         plan_acceptance_enabled: bool = Field(default=False, env="PLAN_ACCEPTANCE_ENABLED")
@@ -670,6 +671,7 @@ else:
             self.chat_model_action_selection_enabled = os.getenv("CHAT_MODEL_ACTION_SELECTION_ENABLED", "0").lower() in ("1", "true", "yes")
             self.plan_input_discovery_enabled = os.getenv("PLAN_INPUT_DISCOVERY_ENABLED", "1").lower() in ("1", "true", "yes")
             self.plan_execution_budget_enabled = os.getenv('PLAN_EXECUTION_BUDGET_ENABLED','0').lower() in {'1','true','yes','on'}
+            self.execution_shell_enabled = os.getenv('EXECUTION_SHELL_ENABLED','0').lower() in {'1','true','yes','on'}
             self.plan_output_contracts_required = os.getenv('PLAN_OUTPUT_CONTRACTS_REQUIRED','0').lower() in {'1','true','yes','on'}
             self.plan_acceptance_enabled = os.getenv('PLAN_ACCEPTANCE_ENABLED','0').lower() in {'1','true','yes','on'}
             self.pipelines_enabled = os.getenv('PIPELINES_ENABLED','0').lower() in {'1','true','yes','on'}
