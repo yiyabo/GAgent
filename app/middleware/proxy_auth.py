@@ -36,7 +36,8 @@ logger = logging.getLogger("app.proxy_auth")
 # "/mcp" (exact) is the external PhageScope MCP endpoint, which authenticates
 # its own bearer tokens; "/mcp/..." memory routes stay protected here.
 _ANONYMOUS_EXACT = frozenset({"/", "/health", "/health/llm", "/health/ready", "/mcp"})
-_ANONYMOUS_PREFIXES: Tuple[str, ...] = ("/auth/", "/sso/")
+# "/phagescope-mcp/analysis-files/" serves MCP task deliverables behind short-lived HMAC links.
+_ANONYMOUS_PREFIXES: Tuple[str, ...] = ("/auth/", "/sso/", "/phagescope-mcp/analysis-files/")
 # API schema/docs stay anonymous only outside production.
 _DOCS_PATHS = frozenset({"/openapi.json", "/docs", "/redoc", "/docs/oauth2-redirect"})
 # Static SPA assets served by the catch-all in app.main._register_spa. API

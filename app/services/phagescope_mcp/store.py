@@ -20,6 +20,8 @@ from app.database_pool import get_db
 
 TOKEN_PREFIX = "gpsk_"
 SCOPE_DATA_READ = "data:read"
+SCOPE_ANALYSIS_SUBMIT = "analysis:submit"
+KNOWN_SCOPES = (SCOPE_DATA_READ, SCOPE_ANALYSIS_SUBMIT)
 
 _schema_lock = threading.Lock()
 _schema_ready = False
@@ -67,6 +69,25 @@ _SCHEMA = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_phagescope_mcp_audit_token ON phagescope_mcp_audit(token_id, created_at)",
+    """
+    CREATE TABLE IF NOT EXISTS phagescope_mcp_analysis_tasks (
+        task_id TEXT PRIMARY KEY,
+        token_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        session_id TEXT NOT NULL UNIQUE,
+        run_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        idempotency_key TEXT,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_phagescope_mcp_tasks_token ON phagescope_mcp_analysis_tasks(token_id, created_at)",
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_phagescope_mcp_tasks_idem
+        ON phagescope_mcp_analysis_tasks(token_id, idempotency_key)
+    """,
+    "CREATE TABLE IF NOT EXISTS phagescope_mcp_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
 )
 
 
@@ -322,3 +343,151 @@ def recent_audit(token_id: str, limit: int = 50) -> list[dict[str, Any]]:
             (token_id, int(limit)),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def set_token_scopes(token_id: str, scopes: tuple[str, ...]) -> Optional[McpToken]:
+    """Replace a token's scopes (admin action); unknown scopes are rejected."""
+    unknown = [s for s in scopes if s not in KNOWN_SCOPES]
+    if unknown or not scopes:
+        raise ValueError(f"Unknown or empty scopes: {unknown}")
+    ensure_schema()
+    ordered = [s for s in KNOWN_SCOPES if s in scopes]
+    with get_db() as conn:
+        cur = conn.execute(
+            "UPDATE phagescope_mcp_tokens SET scopes = ? WHERE id = ?", (json.dumps(ordered), token_id)
+        )
+        conn.commit()
+    return get_token(token_id) if cur.rowcount else None
+
+
+def meta_value(key: str, factory) -> str:
+    """Return a persistent server-side value, creating it with ``factory()`` once."""
+    ensure_schema()
+    with get_db() as conn:
+        conn.execute("INSERT OR IGNORE INTO phagescope_mcp_meta (key, value) VALUES (?, ?)", (key, factory()))
+        conn.commit()
+        row = conn.execute("SELECT value FROM phagescope_mcp_meta WHERE key = ?", (key,)).fetchone()
+    return str(row["value"])
+
+
+@dataclass(frozen=True)
+class AnalysisTask:
+    task_id: str
+    token_id: str
+    user_id: str
+    session_id: str
+    run_id: str
+    title: str
+    created_at: str
+    expires_at: str
+
+
+def _row_to_task(row: Any) -> AnalysisTask:
+    return AnalysisTask(
+        task_id=row["task_id"],
+        token_id=row["token_id"],
+        user_id=row["user_id"],
+        session_id=row["session_id"],
+        run_id=row["run_id"],
+        title=row["title"],
+        created_at=row["created_at"],
+        expires_at=row["expires_at"],
+    )
+
+
+def insert_analysis_task(
+    *,
+    task_id: str,
+    token: McpToken,
+    session_id: str,
+    run_id: str,
+    title: str,
+    idempotency_key: Optional[str],
+    retention_days: int,
+) -> AnalysisTask:
+    ensure_schema()
+    now = _now()
+    with get_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO phagescope_mcp_analysis_tasks
+                (task_id, token_id, user_id, session_id, run_id, title, idempotency_key, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                task_id,
+                token.id,
+                token.user_id,
+                session_id,
+                run_id,
+                title[:120],
+                idempotency_key,
+                _iso(now),
+                _iso(now + timedelta(days=max(1, int(retention_days)))),
+            ),
+        )
+        conn.commit()
+    task = get_analysis_task(task_id)
+    assert task is not None
+    return task
+
+
+def get_analysis_task(task_id: str) -> Optional[AnalysisTask]:
+    ensure_schema()
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM phagescope_mcp_analysis_tasks WHERE task_id = ?", (task_id,)).fetchone()
+    return _row_to_task(row) if row else None
+
+
+def find_analysis_task_by_key(token_id: str, idempotency_key: str) -> Optional[AnalysisTask]:
+    ensure_schema()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM phagescope_mcp_analysis_tasks WHERE token_id = ? AND idempotency_key = ?",
+            (token_id, idempotency_key),
+        ).fetchone()
+    return _row_to_task(row) if row else None
+
+
+def is_analysis_session(session_id: str) -> bool:
+    ensure_schema()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM phagescope_mcp_analysis_tasks WHERE session_id = ?", (session_id,)
+        ).fetchone()
+    return row is not None
+
+
+def analysis_counts(token: McpToken) -> dict[str, int]:
+    """Active runs for this token, for all MCP tasks, and this user's submissions today (UTC)."""
+    ensure_schema()
+    day_start = utc_day() + "T00:00:00"
+    active_sql = """
+        SELECT COUNT(*) AS n FROM phagescope_mcp_analysis_tasks t
+        JOIN chat_runs r ON r.run_id = t.run_id
+        WHERE r.status IN ('queued', 'running')
+    """
+    with get_db() as conn:
+        token_active = conn.execute(active_sql + " AND t.token_id = ?", (token.id,)).fetchone()["n"]
+        global_active = conn.execute(active_sql).fetchone()["n"]
+        today = conn.execute(
+            "SELECT COUNT(*) AS n FROM phagescope_mcp_analysis_tasks WHERE user_id = ? AND created_at >= ?",
+            (token.user_id, day_start),
+        ).fetchone()["n"]
+    return {"token_active": int(token_active), "global_active": int(global_active), "user_today": int(today)}
+
+
+def set_analysis_task_run(task_id: str, run_id: str) -> None:
+    ensure_schema()
+    with get_db() as conn:
+        conn.execute("UPDATE phagescope_mcp_analysis_tasks SET run_id = ? WHERE task_id = ?", (run_id, task_id))
+        conn.commit()
+
+
+def name_session(session_id: str, name: str) -> None:
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE chat_sessions SET name = ?, name_source = 'mcp' WHERE id = ? AND COALESCE(is_user_named, 0) = 0",
+            (name[:120], session_id),
+        )
+        conn.commit()

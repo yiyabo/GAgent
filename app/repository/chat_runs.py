@@ -366,6 +366,25 @@ def fetch_events_after(run_id: str, after_seq: int) -> List[Tuple[int, Dict[str,
     return out
 
 
+def fetch_events_excluding(run_id: str, excluded_types: Tuple[str, ...]) -> List[Dict[str, Any]]:
+    """Return a run's event payloads in seq order, skipping high-volume types (e.g. token deltas)."""
+    marks = ",".join("?" for _ in excluded_types) or "''"
+    with get_db() as conn:
+        rows = conn.execute(
+            f"SELECT payload_json FROM chat_run_events WHERE run_id = ? AND event_type NOT IN ({marks}) ORDER BY seq ASC",
+            (run_id, *excluded_types),
+        ).fetchall()
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            out.append(payload)
+    return out
+
+
 def get_last_event_seq(run_id: str) -> int:
     row = get_chat_run(run_id)
     if not row:
