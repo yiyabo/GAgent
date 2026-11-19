@@ -33,7 +33,9 @@ logger = logging.getLogger("app.proxy_auth")
 # *protected* prefixes instead, so every router whose prefix was missing from
 # that list (/tools, /usage, /tasks, /skill-learning) was silently public.
 # Anything not matched here requires authentication.
-_ANONYMOUS_EXACT = frozenset({"/", "/health", "/health/llm", "/health/ready"})
+# "/mcp" (exact) is the external PhageScope MCP endpoint, which authenticates
+# its own bearer tokens; "/mcp/..." memory routes stay protected here.
+_ANONYMOUS_EXACT = frozenset({"/", "/health", "/health/llm", "/health/ready", "/mcp"})
 _ANONYMOUS_PREFIXES: Tuple[str, ...] = ("/auth/", "/sso/")
 # API schema/docs stay anonymous only outside production.
 _DOCS_PATHS = frozenset({"/openapi.json", "/docs", "/redoc", "/docs/oauth2-redirect"})
