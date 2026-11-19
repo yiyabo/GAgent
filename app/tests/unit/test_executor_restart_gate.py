@@ -92,3 +92,75 @@ def test_gate_counts_pipeline_runs_and_tolerates_databases_without_them(tmp_path
         conn.execute("INSERT INTO pipeline_runs VALUES('running')")
     state = probe(tmp_path)
     assert state['state'] == 'busy' and state['active_pipeline_runs'] == 1
+
+
+@pytest.fixture
+def build_stack(tmp_path):
+    root = Path(__file__).resolve().parents[3]
+    for d in ('deploy', 'web-ui', 'bin', 'image-html'):
+        (tmp_path/d).mkdir()
+    shutil.copy2(root/'deploy/gagentctl', tmp_path/'deploy/gagentctl')
+    (tmp_path/'deploy/.env').write_text('GAGENT_TAG=pTEST\n')
+    (tmp_path/'web-ui/src.txt').write_text('v1\n')
+    git = ['git', '-C', str(tmp_path), '-c', 'user.name=t', '-c', 'user.email=t@t']
+    subprocess.run([*git, 'init', '-q'], check=True)
+    subprocess.run([*git, 'add', '-A'], check=True)
+    subprocess.run([*git, 'commit', '-qm', 'init'], check=True)
+    sha = subprocess.run([*git, 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True).stdout.strip()
+    npm = tmp_path/'bin/npm'
+    npm.write_text('#!/bin/sh\nrm -rf dist && mkdir -p dist/assets && cp src.txt dist/assets/index.js && echo "<html>" > dist/index.html\n')
+    npm.chmod(0o755)
+    # Fake docker: `run` executes inside image-html (the gateway image's
+    # /usr/share/nginx/html); `build` of the gateway copies dist there unless
+    # DOCKER_TEST_STALE is set, which simulates a reused older layer.
+    fake = tmp_path/'bin/docker'
+    fake.write_text(f'#!{sys.executable}\n' + '''import os,shutil,subprocess,sys
+args=sys.argv[1:]
+root=os.environ['BUILD_ROOT'];html=os.path.join(root,'image-html')
+with open(os.path.join(root,'calls'),'a') as f:f.write(' '.join(args)+'\\n')
+if args[0]=='build':
+    if 'Dockerfile.gateway' in ' '.join(args) and not os.getenv('DOCKER_TEST_STALE'):
+        shutil.rmtree(html);shutil.copytree(os.path.join(root,'web-ui/dist'),html)
+    sys.exit(0)
+if args[0]=='run':
+    if '-c' in args:
+        sys.exit(subprocess.run(['sh','-c',args[args.index('-c')+1]],cwd=html).returncode)
+    sys.exit(subprocess.run(['cat',os.path.join(html,os.path.basename(args[-1]))]).returncode)
+sys.exit(0)
+''')
+    fake.chmod(0o755)
+    env = {**os.environ, 'PATH': str(tmp_path/'bin')+os.pathsep+os.environ['PATH'], 'BUILD_ROOT': str(tmp_path)}
+    return tmp_path, env, sha
+
+
+def test_build_stamps_commit_and_verifies_gateway_frontend(build_stack):
+    root, env, sha = build_stack
+    result = subprocess.run(['bash', str(root/'deploy/gagentctl'), 'build'], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    info = json.loads((root/'web-ui/dist/build-info.json').read_text())
+    assert info == {'commit': sha, 'dirty': False}
+    assert (root/'image-html/build-info.json').read_text() == (root/'web-ui/dist/build-info.json').read_text()
+    builds = [l for l in (root/'calls').read_text().splitlines() if l.startswith('build ')]
+    assert len(builds) == 2 and all(f'org.opencontainers.image.revision={sha}' in l for l in builds)
+    assert f'verify OK: gagent-gateway:pTEST serves web-ui/dist of {sha}' in result.stdout
+
+
+def test_build_fails_when_gateway_image_serves_a_stale_frontend(build_stack):
+    root, env, sha = build_stack
+    assert subprocess.run(['bash', str(root/'deploy/gagentctl'), 'build'], env=env, capture_output=True).returncode == 0
+    (root/'web-ui/src.txt').write_text('v2\n')
+    subprocess.run(['git', '-C', str(root), '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qam', 'v2'], check=True)
+    env['DOCKER_TEST_STALE'] = '1'
+    result = subprocess.run(['bash', str(root/'deploy/gagentctl'), 'build'], env=env, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert 'does not serve this build' in result.stderr
+    assert 'images built' not in result.stdout
+
+
+def test_verify_gateway_rejects_frontend_from_another_commit(build_stack):
+    root, env, sha = build_stack
+    assert subprocess.run(['bash', str(root/'deploy/gagentctl'), 'build'], env=env, capture_output=True).returncode == 0
+    subprocess.run(['git', '-C', str(root), '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'next'], check=True)
+    result = subprocess.run(['bash', str(root/'deploy/gagentctl'), 'verify-gateway'], env=env, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert f"from commit '{sha}'" in result.stderr
