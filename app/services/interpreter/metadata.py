@@ -25,6 +25,9 @@ except ImportError:
     HAS_H5PY = False
 
 
+_UNSAFE_DESERIALIZATION_EXTENSIONS = frozenset({'.pickle', '.pkl'})
+
+
 class ColumnMetadata(BaseModel):
     """"""
     name: str
@@ -50,7 +53,12 @@ class DataProcessor:
     @staticmethod
     def _process_npy_file(file_path: str) -> DatasetMetadata:
         """ .npy file"""
-        data = np.load(file_path, allow_pickle=True)
+        try:
+            data = np.load(file_path, allow_pickle=False)
+        except ValueError as exc:
+            raise ValueError(
+                f"Failed to read .npy file without unpickling object arrays: {exc}"
+            ) from exc
 
         columns_metadata = []
         dtype_str = str(data.dtype)
@@ -310,6 +318,13 @@ class DataProcessor:
 
         file_ext = os.path.splitext(file_path)[1].lower()
 
+        if file_ext in _UNSAFE_DESERIALIZATION_EXTENSIONS:
+            raise ValueError(
+                f"Unsupported file format: {file_ext}. Pickle files can execute "
+                "code when loaded and are not read; convert the data to "
+                ".csv, .parquet or .feather."
+            )
+
         if file_ext == '.mat':
             return DataProcessor._process_mat_file(file_path)
 
@@ -347,8 +362,6 @@ class DataProcessor:
                 df = pd.read_parquet(file_path)
             elif file_ext == '.feather':
                 df = pd.read_feather(file_path)
-            elif file_ext in ('.pickle', '.pkl'):
-                df = pd.read_pickle(file_path)
             elif file_ext == '.txt':
                 df = pd.read_csv(file_path, sep=None, engine='python')
             elif file_ext == '.sas7bdat':
@@ -361,7 +374,7 @@ class DataProcessor:
                 raise ValueError(
                     f"Unsupported file format: {file_ext}. "
                     "Supported: .csv, .tsv, .txt, .xlsx, .xls, .xlsm, .ods, "
-                    ".json, .jsonl, .ndjson, .parquet, .feather, .pickle, .pkl, "
+                    ".json, .jsonl, .ndjson, .parquet, .feather, "
                     ".sas7bdat, .sav, .dta, .mat, .npy, .h5ad"
                 )
         except ValueError:
