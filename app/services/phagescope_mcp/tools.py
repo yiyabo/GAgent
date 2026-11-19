@@ -460,7 +460,7 @@ async def snapshot_info() -> dict[str, Any]:
         except PhageScopeDataError:
             return {}
         keep = {}
-        for key in ("snapshot_id", "snapshot_at", "generated_at", "data_version", "computed_at", "version"):
+        for key in ("snapshot_id", "snapshot_at", "generated_at", "data_version", "computed_at", "version", "checked_on"):
             if overview.get(key) is not None:
                 keep[key] = overview[key]
         _overview_cache.update(at=now, value=keep)

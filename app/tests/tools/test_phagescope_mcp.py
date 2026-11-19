@@ -25,7 +25,7 @@ class FakeDataService:
     async def __call__(self, path, *, method="GET", query=None, body=None, timeout=45.0):
         self.calls.append((method, path, body if body is not None else query))
         if path == "stats/overview/":
-            return {"phages": 2576926, "proteins": 131509307, "snapshot_id": "snap-test"}
+            return {"phages": 2576926, "proteins": 131509307, "snapshot_id": "snap-test", "checked_on": "2026-09-11"}
         if path == "datasets/":
             return {"results": [{"name": "RefSeq"}, {"name": "MGV"}]}
         if path == "v2/phages/query/":
@@ -115,7 +115,7 @@ def test_mcp_search_phages_envelope_audit_and_usage(mcp_client):
     assert result["isError"] is False
     assert payload["limits"]["returned_rows"] == 5
     assert payload["limits"]["truncated"] is False
-    assert payload["provenance"]["snapshot"] == {"snapshot_id": "snap-test"}
+    assert payload["provenance"]["snapshot"] == {"snapshot_id": "snap-test", "checked_on": "2026-09-11"}
     assert any("unknown" in note for note in payload["notes"])
     assert ("POST", "v2/phages/query/", {"filters": {"host": "Salmonella"}, "page": 1, "pagesize": 5,
             "include_total": False, "sort_by": "id"}) in fake.calls
