@@ -491,3 +491,14 @@ def name_session(session_id: str, name: str) -> None:
             (name[:120], session_id),
         )
         conn.commit()
+
+
+def list_analysis_tasks(token_id: str, limit: int = 20) -> list[AnalysisTask]:
+    ensure_schema()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM phagescope_mcp_analysis_tasks WHERE token_id = ? AND expires_at > ? "
+            "ORDER BY created_at DESC, task_id DESC LIMIT ?",
+            (token_id, _iso(_now()), int(limit)),
+        ).fetchall()
+    return [_row_to_task(row) for row in rows]

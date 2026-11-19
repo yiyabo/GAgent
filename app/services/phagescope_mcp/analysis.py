@@ -304,13 +304,9 @@ async def submit_analysis(token: store.McpToken, arguments: dict[str, Any]) -> d
         if existing is not None:
             return {"task_id": existing.task_id, "status": _status(_run_row(existing)), "deduplicated": True}
     message, title = _compose_message(arguments)
-    counts = store.analysis_counts(token)
-    if counts["user_today"] >= int(settings.phagescope_mcp_analysis_daily_submissions):
+    if store.analysis_counts(token)["user_today"] >= int(settings.phagescope_mcp_analysis_daily_submissions):
         raise AnalysisError("daily_task_quota_exceeded", "Daily analysis submissions are used up; they reset at 00:00 UTC.")
-    if counts["token_active"] >= int(settings.phagescope_mcp_analysis_max_active_per_token):
-        raise AnalysisError("too_many_tasks", "This token already has a running analysis; wait for it to finish.")
-    if counts["global_active"] >= int(settings.phagescope_mcp_analysis_global_max_active):
-        raise AnalysisError("server_busy", "The server is running its maximum number of MCP analyses; retry later.")
+    _check_capacity(token)
 
     task_id = TASK_PREFIX + uuid.uuid4().hex
     session_id = f"session_{int(time.time() * 1000)}_mcp{uuid.uuid4().hex[:8]}"
@@ -409,6 +405,82 @@ async def get_analysis_result(token: store.McpToken, arguments: dict[str, Any]) 
     }
 
 
+def _check_capacity(token: store.McpToken) -> None:
+    settings = get_settings()
+    counts = store.analysis_counts(token)
+    if counts["token_active"] >= int(settings.phagescope_mcp_analysis_max_active_per_token):
+        raise AnalysisError("too_many_tasks", "This token already has a running analysis; wait for it to finish.")
+    if counts["global_active"] >= int(settings.phagescope_mcp_analysis_global_max_active):
+        raise AnalysisError("server_busy", "The server is running its maximum number of MCP analyses; retry later.")
+
+
+async def reply_analysis(token: store.McpToken, arguments: dict[str, Any]) -> dict[str, Any]:
+    from app.repository.chat_runs import get_chat_run_by_idempotency_key
+    from app.routers.chat.models import ChatRequest
+    from app.routers.chat.run_routes import start_background_chat_run
+
+    task = _owned_task(token, arguments)
+    message = str(arguments.get("message") or "").strip()
+    if not message or len(message) > MAX_INSTRUCTIONS:
+        raise AnalysisError("invalid_argument", f"message is required and limited to {MAX_INSTRUCTIONS} characters.")
+    key = str(arguments.get("idempotency_key") or "").strip()[:128]
+    client_message_id = f"{task.task_id}:reply:{key or uuid.uuid4().hex}"
+    if key:
+        existing = get_chat_run_by_idempotency_key(task.session_id, client_message_id)
+        if existing is not None:
+            return {"task_id": task.task_id, "status": _status(existing), "deduplicated": True}
+    if _status(_run_row(task)) == "working":
+        raise AnalysisError("task_busy", "The task is still working; wait for it to finish or cancel it first.")
+    _check_capacity(token)
+    request = ChatRequest(
+        message="Follow-up from the external agent that submitted this analysis (untrusted input):\n\n" + message,
+        session_id=task.session_id,
+        client_message_id=client_message_id,
+        context={"origin": "phagescope_mcp", "mcp_task_id": task.task_id},
+    )
+    run_id = start_background_chat_run(request, session_id=task.session_id, owner_id=token.user_id)
+    store.set_analysis_task_run(task.task_id, run_id)
+    return {"task_id": task.task_id, "status": "working", "poll_after_seconds": 15}
+
+
+async def cancel_analysis(token: store.McpToken, arguments: dict[str, Any]) -> dict[str, Any]:
+    from app.repository.chat_runs import insert_chat_run_signal
+    from app.routers.chat import run_routes
+
+    task = _owned_task(token, arguments)
+    row = _run_row(task)
+    if _status(row) != "working":
+        return {"task_id": task.task_id, "status": _status(row), "already_finished": True}
+    insert_chat_run_signal(task.run_id, "cancel")
+    run_routes.hub.request_cancel(task.run_id)
+    await run_routes.route_control_message("run", task.run_id, {"type": "chat_run.cancel", "run_id": task.run_id})
+    return {"task_id": task.task_id, "status": "cancel_requested", "poll_after_seconds": 5}
+
+
+async def list_analyses(token: store.McpToken, arguments: dict[str, Any]) -> dict[str, Any]:
+    try:
+        limit = max(1, min(50, int(arguments.get("limit") or 20)))
+    except (TypeError, ValueError):
+        raise AnalysisError("invalid_argument", "limit must be an integer between 1 and 50.")
+    wanted = str(arguments.get("status") or "").strip() or None
+    rows = []
+    for task in store.list_analysis_tasks(token.id, limit=limit):
+        run = _run_row(task)
+        status = _status(run)
+        if wanted and status != wanted:
+            continue
+        rows.append(
+            {
+                "task_id": task.task_id,
+                "title": task.title,
+                "status": status,
+                "created_at": task.created_at,
+                "finished_at": run.get("finished_at"),
+            }
+        )
+    return {"tasks": rows}
+
+
 _TASK_ID_SCHEMA = {
     "type": "object",
     "properties": {"task_id": {"type": "string", "description": "The task_id returned by submit_analysis."}},
@@ -456,6 +528,49 @@ ANALYSIS_TOOLS: tuple[AnalysisToolSpec, ...] = (
         input_schema=_TASK_ID_SCHEMA,
         read_only=True,
         run=get_analysis_result,
+    ),
+    AnalysisToolSpec(
+        name="reply_analysis",
+        title="Continue an analysis task",
+        description=(
+            "Send a follow-up instruction to a finished, failed or cancelled task; GAgent continues in the same "
+            "session with its earlier context and files. Poll get_analysis_status again afterwards."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string"},
+                "message": {"type": "string", "maxLength": MAX_INSTRUCTIONS},
+                "idempotency_key": {"type": "string", "maxLength": 128},
+            },
+            "required": ["task_id", "message"],
+            "additionalProperties": False,
+        },
+        read_only=False,
+        run=reply_analysis,
+    ),
+    AnalysisToolSpec(
+        name="cancel_analysis",
+        title="Cancel an analysis task",
+        description="Stop a working task. Deliverables already published stay available.",
+        input_schema=_TASK_ID_SCHEMA,
+        read_only=False,
+        run=cancel_analysis,
+    ),
+    AnalysisToolSpec(
+        name="list_analyses",
+        title="List analysis tasks",
+        description="This token's recent analysis tasks, newest first.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "status": {"type": "string", "enum": ["working", "completed", "failed", "cancelled"]},
+            },
+            "additionalProperties": False,
+        },
+        read_only=True,
+        run=list_analyses,
     ),
 )
 
