@@ -26,6 +26,7 @@ _BLACKLISTED_COMMANDS = {
     "halt",
     "poweroff",
 }
+_CHILD_ENV_KEYS = frozenset({"PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM"})
 
 
 @dataclass
@@ -109,9 +110,13 @@ async def run_shell_command(
     if not cwd_path.is_dir():
         raise ValueError(f"Working directory does not exist: {cwd_path}")
 
-    merged_env: MutableMapping[str, str] = os.environ.copy()
+    merged_env: MutableMapping[str, str] = {
+        key: os.environ[key]
+        for key in _CHILD_ENV_KEYS
+        if key in os.environ
+    }
     if env:
-        merged_env.update(env)
+        merged_env.update({key: str(value) for key, value in env.items() if key in _CHILD_ENV_KEYS})
 
     preexec_fn = _build_preexec_fn()
 
