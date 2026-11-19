@@ -8,11 +8,18 @@ from datetime import datetime
 from typing import Any, Dict, List
 
 import psutil
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from ..services.embeddings.vector_adapter import get_vector_adapter
 from ..services.storage.hybrid_vector_storage import get_hybrid_storage
+from ..services.request_principal import (
+    ensure_owner_access,
+    is_admin_principal,
+    require_admin_principal,
+    require_authenticated_principal,
+)
+from ..database import get_db
 from . import register_router
 
 router = APIRouter(prefix="/system", tags=["system"])
@@ -225,8 +232,9 @@ async def get_vector_metrics():
 
 
 @router.post("/maintenance/optimize", summary="Run maintenance optimization")
-async def system_optimization():
+async def system_optimization(request: Request):
     """Execute basic system maintenance tasks."""
+    require_admin_principal(request)
     try:
         optimization_results = {
             "timestamp": datetime.now().isoformat(),
@@ -300,8 +308,9 @@ class TokenUsageResponse(BaseModel):
 
 
 @router.get("/stats/token-usage", response_model=TokenUsageResponse, summary="Get LLM token usage statistics")
-async def get_token_usage(hours: int = 24):
+async def get_token_usage(request: Request, hours: int = 24):
     """Get LLM token usage statistics for the specified time period."""
+    require_admin_principal(request)
     try:
         from ..repository.llm_usage import get_usage_summary
         return get_usage_summary(hours=hours)
@@ -325,7 +334,14 @@ class SessionTokenUsageResponse(BaseModel):
     response_model=SessionTokenUsageResponse,
     summary="Get per-session LLM token usage",
 )
-async def get_session_token_usage(session_id: str):
+async def get_session_token_usage(request: Request, session_id: str):
+    principal = require_authenticated_principal(request)
+    with get_db() as conn:
+        row = conn.execute("SELECT owner_id FROM chat_sessions WHERE id=?", (session_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "Session not found")
+    if not is_admin_principal(principal):
+        ensure_owner_access(request, row["owner_id"], detail="session owner mismatch")
     try:
         from ..repository.llm_usage import get_session_usage_summary
         return get_session_usage_summary(session_id)
@@ -354,7 +370,12 @@ class PlanTasksTokenUsageResponse(BaseModel):
     response_model=PlanTasksTokenUsageResponse,
     summary="Get per-task LLM token usage for a plan",
 )
-async def get_plan_tasks_token_usage(plan_id: int):
+async def get_plan_tasks_token_usage(request: Request, plan_id: int):
+    principal = require_authenticated_principal(request)
+    if not is_admin_principal(principal):
+        from .plan_routes import _ensure_plan_access
+
+        _ensure_plan_access(plan_id, request)
     try:
         from ..repository.llm_usage import get_plan_tasks_usage_summary
         from ..repository.plan_repository import PlanRepository
@@ -403,4 +424,3 @@ def _collect_descendant_ids(tree, node_id: int) -> set:
         result.add(child_id)
         result.update(_collect_descendant_ids(tree, child_id))
     return result
-
