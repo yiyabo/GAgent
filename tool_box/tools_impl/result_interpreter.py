@@ -36,7 +36,6 @@ _PROFILE_SUPPORTED_EXTENSIONS = {
     ".xlsx", ".xls", ".xlsm", ".ods",
     ".json", ".jsonl", ".ndjson",
     ".parquet", ".feather",
-    ".pickle", ".pkl",
     ".sas7bdat", ".sav", ".dta",
     ".mat", ".npy", ".h5ad",
 }
@@ -270,7 +269,7 @@ def _build_deterministic_profile(
             raise ValueError(
                 f"Unsupported file format for profile: {file_path}. "
                 "Supported: .csv, .tsv, .txt, .xlsx, .xls, .xlsm, .ods, "
-                ".json, .jsonl, .ndjson, .parquet, .feather, .pickle, .pkl, "
+                ".json, .jsonl, .ndjson, .parquet, .feather, "
                 ".sas7bdat, .sav, .dta, .mat, .npy, .h5ad"
             )
 
