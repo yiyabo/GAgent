@@ -136,3 +136,17 @@ def test_signed_links_and_scope_admin_route(analysis_client):
         store.SCOPE_DATA_READ,
         store.SCOPE_ANALYSIS_SUBMIT,
     )
+
+
+def test_execute_tool_refuses_phagescope_submit_in_mcp_session(analysis_client):
+    import asyncio
+
+    from tool_box import execute_tool
+    from tool_box.context import ToolContext
+
+    client, _ = analysis_client
+    token, _ = _token()
+    _, body = _call(client, token, "submit_analysis", {"instructions": "guard via toolbox"})
+    session_id = store.get_analysis_task(body["task_id"]).session_id
+    result = asyncio.run(execute_tool("phagescope", action="submit", tool_context=ToolContext(session_id=session_id)))
+    assert result["error"] == "tool_not_allowed_for_mcp_task"
