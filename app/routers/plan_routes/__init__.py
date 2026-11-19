@@ -783,6 +783,7 @@ def get_plan_active_job(plan_id: int, request: Request):
 
     Returns null if no active job exists.
     """
+    _ensure_plan_access(plan_id, request)
     job_ids = _list_plan_execute_job_ids(plan_id, limit=5)
     for job_id in job_ids:
         payload = plan_decomposition_jobs.get_job_payload(job_id, include_logs=False)

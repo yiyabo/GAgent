@@ -8,8 +8,10 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from fastapi import BackgroundTasks
+from fastapi import BackgroundTasks, Request
 
+from app.database import get_db
+from app.database_pool import initialize_connection_pool
 from app.routers.chat import confirmation, routes
 from app.routers.chat.models import AgentStep, ConfirmActionRequest
 from app.services.llm.structured_response import (
@@ -20,7 +22,12 @@ from app.services.llm.structured_response import (
 
 
 @pytest.fixture(autouse=True)
-def isolated_pending_confirmations() -> Iterator[None]:
+def isolated_pending_confirmations(isolated_app_env, tmp_path) -> Iterator[None]:
+    initialize_connection_pool(db_path=str(tmp_path / "confirmation.db"), pool_size=1, max_overflow=1)
+    with get_db() as conn:
+        conn.execute("CREATE TABLE chat_sessions (id TEXT PRIMARY KEY, owner_id TEXT)")
+        conn.execute("INSERT INTO chat_sessions VALUES ('session_test', 'legacy-local')")
+        conn.commit()
     confirmation._pending_confirmations.clear()
     yield
     confirmation._pending_confirmations.clear()
@@ -94,7 +101,8 @@ async def test_confirmation_schedules_structured_actions_once(
     )
     background = BackgroundTasks()
     response = await routes.confirm_pending_action(
-        ConfirmActionRequest(confirmation_id="confirm_test", confirmed=True), background
+        ConfirmActionRequest(confirmation_id="confirm_test", confirmed=True), background,
+        Request({"type": "http"}),
     )
     assert response.success is True and response.executed is True
     assert response.result and response.result["tracking_id"].startswith("act_")
@@ -142,6 +150,7 @@ async def test_cancelled_confirmation_never_schedules_actions() -> None:
     response = await routes.confirm_pending_action(
         ConfirmActionRequest(confirmation_id="confirm_cancel", confirmed=False),
         background,
+        Request({"type": "http"}),
     )
     assert response.success is True and response.executed is False
     assert background.tasks == []

@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response
 
+from app.database import get_db
 from app.config.executor_config import get_executor_settings
 from app.repository.chat_action_runs import create_action_run
 from app.repository.plan_storage import append_action_log_entry
@@ -31,7 +32,8 @@ from app.services.plans.decomposition_jobs import plan_decomposition_jobs
 from app.services.plans.plan_session import PlanSession
 from app.services.platform_access import bind_chat_request_to_principal
 from app.services.platform_api import get_platform_api_client
-from app.services.request_principal import get_request_owner_id, get_request_principal
+from app.services.request_principal import ensure_owner_access, get_request_owner_id, get_request_principal
+from app.services.session_access import ensure_session_alias_access
 from app.services.session_title_service import SessionNotFoundError
 from app.services.upload_storage import delete_session_storage
 
@@ -1325,6 +1327,7 @@ async def delete_chat_session(
                 )
                 logger.info("Archived chat session %s", session_id)
             else:
+                ensure_session_alias_access(conn, session_id, raw_request)
                 conn.execute(
                     "DELETE FROM chat_sessions WHERE id=? AND owner_id=?",
                     (session_id, owner_id),
@@ -1359,6 +1362,7 @@ async def delete_chat_session(
 async def confirm_pending_action(
     request: ConfirmActionRequest,
     background_tasks: BackgroundTasks,
+    raw_request: Request,
 ) -> ConfirmActionResponse:
     """
     Confirm or cancel a pending action.
@@ -1369,12 +1373,15 @@ async def confirm_pending_action(
     """
     _cleanup_old_confirmations()  # Clean up expired confirmations.
 
-    pending = _remove_pending_confirmation(request.confirmation_id)
+    pending = _get_pending_confirmation(request.confirmation_id)
     if not pending:
         raise HTTPException(
             status_code=404,
             detail=f"Confirmation {request.confirmation_id} not found or expired"
         )
+
+    _ensure_confirmation_session_access(pending, raw_request)
+    _remove_pending_confirmation(request.confirmation_id)
 
     if not request.confirmed:
         logger.info(f"[CONFIRMATION] User cancelled: {request.confirmation_id}")
@@ -1417,11 +1424,23 @@ async def confirm_pending_action(
         logger.error(f"[CONFIRMATION] Execution failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-async def get_pending_confirmation_status(confirmation_id: str) -> Dict[str, Any]:
+def _ensure_confirmation_session_access(pending: Dict[str, Any], request: Request) -> None:
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT owner_id FROM chat_sessions WHERE id=?", (pending.get("session_id"),)
+        ).fetchone()
+    if row is None or not str(row["owner_id"] or "").strip():
+        raise HTTPException(status_code=404, detail="Session not found")
+    ensure_owner_access(request, row["owner_id"], detail="session owner mismatch")
+
+
+async def get_pending_confirmation_status(confirmation_id: str, request: Request) -> Dict[str, Any]:
     """Get status of a pending confirmation action."""
     pending = _get_pending_confirmation(confirmation_id)
     if not pending:
         raise HTTPException(status_code=404, detail="Confirmation not found or expired")
+
+    _ensure_confirmation_session_access(pending, request)
 
     return {
         "confirmation_id": confirmation_id,

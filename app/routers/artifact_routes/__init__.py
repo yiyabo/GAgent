@@ -275,6 +275,13 @@ async def get_session_workspace_file(
     target = candidate.resolve(strict=False)
 
     _assert_path_within(target, workspace_root, detail="Invalid workspace path")
+    for storage_root in (_runtime_root_dir(), _info_sessions_root_dir()):
+        if target.is_relative_to(storage_root):
+            session_dirs = _find_session_candidates(
+                storage_root, session_base=normalize_session_base(session_id)
+            )
+            if not any(target.is_relative_to(directory) for directory in session_dirs):
+                raise HTTPException(status_code=403, detail="session owner mismatch")
     if not is_image_artifact_path(target.name):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

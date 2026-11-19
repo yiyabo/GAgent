@@ -22,6 +22,7 @@ from . import register_router
 from ..database import get_db
 from ..services.foundation.settings import get_settings
 from ..services.request_principal import ensure_owner_access, get_request_owner_id
+from ..services.session_access import ensure_session_alias_access
 from ..services.upload_storage import ensure_session_dir
 
 logger = logging.getLogger(__name__)
@@ -312,6 +313,7 @@ def _get_session_upload_dir(session_id: str) -> Path:
 def _ensure_session_access(session_id: str, request: Request) -> None:
     owner_id = get_request_owner_id(request)
     with get_db() as conn:
+        ensure_session_alias_access(conn, session_id, request)
         row = conn.execute(
             "SELECT owner_id FROM chat_sessions WHERE id=?",
             (session_id,),

@@ -1360,9 +1360,14 @@ def get_job_status(job_id: str, request: Request):
     response_model=JobLogTailResponse,
     summary="Read job log tail",
 )
-def get_job_logs(job_id: str, tail: int = Query(200, ge=1, le=2000)):
+def get_job_logs(job_id: str, request: Request, tail: int = Query(200, ge=1, le=2000)):
     if not _is_safe_job_id(job_id):
         raise HTTPException(status_code=400, detail="Invalid job_id")
+
+    payload = plan_decomposition_jobs.get_job_payload(job_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    ensure_owner_access(request, payload.get("owner_id"), detail="job owner mismatch")
 
     log_path = _CLAUDE_LOG_DIR / f"{job_id}.log"
     if not log_path.exists():
