@@ -150,3 +150,46 @@ def test_execute_tool_refuses_phagescope_submit_in_mcp_session(analysis_client):
     session_id = store.get_analysis_task(body["task_id"]).session_id
     result = asyncio.run(execute_tool("phagescope", action="submit", tool_context=ToolContext(session_id=session_id)))
     assert result["error"] == "tool_not_allowed_for_mcp_task"
+
+
+def test_reply_cancel_and_list(analysis_client):
+    from app.repository.chat_runs import fetch_unconsumed_chat_run_signals, get_chat_run
+
+    client, spawned = analysis_client
+    token, _ = _token()
+    assert {"reply_analysis", "cancel_analysis", "list_analyses"} <= _names(client, token)
+    _, body = _call(client, token, "submit_analysis", {"instructions": "Phase two"})
+    task_id = body["task_id"]
+    first_run = store.get_analysis_task(task_id).run_id
+
+    res, err = _call(client, token, "reply_analysis", {"task_id": task_id, "message": "more"})
+    assert res["isError"] and err["error"]["code"] == "task_busy"
+
+    _, cancelled = _call(client, token, "cancel_analysis", {"task_id": task_id})
+    assert cancelled["status"] == "cancel_requested"
+    assert [s["kind"] for s in fetch_unconsumed_chat_run_signals(first_run)] == ["cancel"]
+
+    _finish(first_run, "cancelled")
+    _, again = _call(client, token, "cancel_analysis", {"task_id": task_id})
+    assert again["already_finished"] and again["status"] == "cancelled"
+
+    args = {"task_id": task_id, "message": "Now add a histogram", "idempotency_key": "r1"}
+    _, replied = _call(client, token, "reply_analysis", args)
+    assert replied["status"] == "working" and len(spawned) == 2
+    second_run = store.get_analysis_task(task_id).run_id
+    assert second_run != first_run
+    run = get_chat_run(second_run)
+    assert run["session_id"] == store.get_analysis_task(task_id).session_id and run["owner_id"] == "alice"
+    assert "Now add a histogram" in json.loads(run["request_json"])["message"]
+    _, dup = _call(client, token, "reply_analysis", args)
+    assert dup["deduplicated"] and len(spawned) == 2
+
+    _, listed = _call(client, token, "list_analyses", {})
+    assert [t["task_id"] for t in listed["tasks"]] == [task_id] and listed["tasks"][0]["status"] == "working"
+    _, filtered = _call(client, token, "list_analyses", {"status": "completed"})
+    assert filtered["tasks"] == []
+    other, _ = _token(user="bob")
+    _, theirs = _call(client, other, "list_analyses", {})
+    assert theirs["tasks"] == []
+    res, err = _call(client, other, "cancel_analysis", {"task_id": task_id})
+    assert err["error"]["code"] == "not_found"
