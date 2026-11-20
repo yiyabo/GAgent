@@ -48,6 +48,7 @@ async def test_terminal_write_resize_interrupt_and_cleanup(monkeypatch, tmp_path
         return subprocess.CompletedProcess(argv, 0, '', '')
     monkeypatch.setattr(module.subprocess, 'run', docker)
     backend = SandboxPTYBackend();backend.session_id = 'session_demo'
+    prompt = b'pty_prompt> '
     async def until(token):
         output = bytearray()
         async def collect():
@@ -58,7 +59,7 @@ async def test_terminal_write_resize_interrupt_and_cleanup(monkeypatch, tmp_path
             return bytes(output)
         try:
             return await asyncio.wait_for(collect(), 8)
-        except TimeoutError as exc:
+        except asyncio.TimeoutError as exc:  # not the builtin TimeoutError before Python 3.11
             raise AssertionError(
                 f'PTY did not produce {token!r}; output={bytes(output)!r}; closed={backend.is_closed}'
             ) from exc
@@ -66,6 +67,9 @@ async def test_terminal_write_resize_interrupt_and_cleanup(monkeypatch, tmp_path
         await backend.spawn(cwd=str(cwd), exec_args=['/bin/bash'])
         assert not any('passwd' in arg for arg in captured['argv'])
         assert f'{root}/session_demo:{root}/session_demo:ro' in captured['argv']
+        # The quotes keep the echoed command line from matching the prompt it sets.
+        await backend.write(b"PS1='pty''_prompt> '\n")
+        await until(prompt)
         await backend.write(b"printf 'real_%s\\n' pty_ok\n")
         assert b'real_pty_ok' in await until(b'real_pty_ok')
         await backend.resize(101, 37)
@@ -74,6 +78,9 @@ async def test_terminal_write_resize_interrupt_and_cleanup(monkeypatch, tmp_path
         await backend.write(b"printf 'read_%s\\n' ready; read -r ignored\n")
         assert b'read_ready' in await until(b'read_ready')
         await backend.write(b'\x03')
+        # Bash may hand a line typed right after ^C to the interrupted `read` instead of the next prompt,
+        # so type the next command only once the prompt is back.
+        await until(prompt)
         await backend.write(b"printf 'after_%s\\n' interrupt\n")
         assert b'after_interrupt' in await until(b'after_interrupt')
     finally:
