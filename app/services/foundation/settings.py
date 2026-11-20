@@ -305,6 +305,7 @@ if _USE_PYDANTIC:
         phagescope_mcp_enabled: bool = Field(default=False, env="PHAGESCOPE_MCP_ENABLED")
         phagescope_mcp_allowed_users: str = Field(default="", env="PHAGESCOPE_MCP_ALLOWED_USERS")
         phagescope_mcp_allowed_user_ids: str = Field(default="", env="PHAGESCOPE_MCP_ALLOWED_USER_IDS")
+        phagescope_mcp_open_access: bool = Field(default=False, env="PHAGESCOPE_MCP_OPEN_ACCESS")
         phagescope_mcp_allowed_hosts: str = Field(
             default="phageagent.deepomics.org,localhost,127.0.0.1", env="PHAGESCOPE_MCP_ALLOWED_HOSTS"
         )
@@ -749,6 +750,7 @@ else:
             self.phagescope_mcp_enabled = os.getenv("PHAGESCOPE_MCP_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
             self.phagescope_mcp_allowed_users = os.getenv("PHAGESCOPE_MCP_ALLOWED_USERS", "")
             self.phagescope_mcp_allowed_user_ids = os.getenv("PHAGESCOPE_MCP_ALLOWED_USER_IDS", "")
+            self.phagescope_mcp_open_access = os.getenv("PHAGESCOPE_MCP_OPEN_ACCESS", "").strip().lower() in {"1", "true", "yes", "on"}
             self.phagescope_mcp_allowed_hosts = os.getenv(
                 "PHAGESCOPE_MCP_ALLOWED_HOSTS", "phageagent.deepomics.org,localhost,127.0.0.1"
             )

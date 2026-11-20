@@ -22,6 +22,7 @@ paging) and `notes`. A null field means unknown, never zero.
 | `PHAGESCOPE_MCP_ENABLED` | `0` | `/mcp` answers 404 until set to `1` |
 | `PHAGESCOPE_MCP_ALLOWED_USERS` | empty | user ids / emails that may self-issue tokens (admins always may) |
 | `PHAGESCOPE_MCP_ALLOWED_USER_IDS` | empty | immutable user ids that may self-issue/use tokens; required alongside email entries when open signup is enabled |
+| `PHAGESCOPE_MCP_OPEN_ACCESS` | `0` | `1` lets every signed-in, active user self-issue `data:read` tokens without an allowlist entry; `analysis:submit` is still granted only by an admin |
 | `PHAGESCOPE_MCP_ALLOWED_HOSTS` | `phageagent.deepomics.org,localhost,127.0.0.1` | exact Host values accepted by the `/mcp` transport |
 | `PHAGESCOPE_MCP_ALLOWED_ORIGINS` | `https://phageagent.deepomics.org,http://localhost,http://127.0.0.1` | exact Origin values accepted by the `/mcp` transport |
 | `PHAGESCOPE_MCP_DAILY_BYTES` | 2 GiB | returned bytes per token per UTC day |

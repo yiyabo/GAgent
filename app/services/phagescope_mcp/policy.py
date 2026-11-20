@@ -1,4 +1,4 @@
-"""Who may hold PhageScope MCP tokens (phase 1: an explicit allowlist)."""
+"""Who may hold PhageScope MCP tokens: an explicit allowlist, or every signed-in user when open."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ def may_self_issue(principal: RequestPrincipal) -> bool:
     """Current token eligibility; email-only matches require closed signup."""
     if not principal.is_authenticated:
         return False
-    if is_admin_principal(principal):
+    if is_admin_principal(principal) or get_settings().phagescope_mcp_open_access:
         return True
     user_id = str(principal.user_id or "")
     identities = allowed_identities()

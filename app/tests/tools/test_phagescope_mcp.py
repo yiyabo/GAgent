@@ -299,3 +299,30 @@ def test_email_allowlist_requires_user_id_during_open_signup(mcp_client, monkeyp
     assert client.post("/phagescope-mcp/tokens", json={"name": "id-allowed"}).status_code == 200
     _setenv(monkeypatch, "PHAGESCOPE_MCP_ALLOWED_USERS", "")
     assert _rpc(client, token, "tools/list").status_code == 200
+
+
+def test_open_access_issues_read_only_tokens_to_any_signed_in_user(mcp_client, monkeypatch):
+    from app.services.phagescope_mcp import analysis
+
+    client, _ = mcp_client
+    import app.routers.phagescope_mcp_routes as routes
+    from app.services.request_principal import RequestPrincipal
+
+    principal = RequestPrincipal(user_id="carol", email="carol@example.org", role="user", auth_source="test",
+                                 is_authenticated=True)
+    monkeypatch.setattr(routes, "require_authenticated_principal", lambda request: principal)
+    _setenv(monkeypatch, "AUTH_OPEN_SIGNUP", "1")
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ALLOWED_USERS", "")
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ALLOWED_USER_IDS", "")
+    assert client.post("/phagescope-mcp/tokens", json={"name": "closed"}).status_code == 403
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_OPEN_ACCESS", "1")
+    created = client.post("/phagescope-mcp/tokens", json={"name": "open"})
+    assert created.status_code == 200, created.text
+    body = created.json()
+    assert body["record"]["scopes"] == ["data:read"]
+    listed = _rpc(client, body["token"], "tools/list")
+    assert listed.status_code == 200
+    names = {tool["name"] for tool in listed.json()["result"]["tools"]}
+    assert "catalog_overview" in names and not names & set(analysis.ANALYSIS_TOOLS_BY_NAME)
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_OPEN_ACCESS", "0")
+    assert _rpc(client, body["token"], "tools/list").status_code == 401
