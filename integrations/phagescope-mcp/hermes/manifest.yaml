@@ -6,7 +6,7 @@ name: phagescope
 description: >-
   Read-only PhageScope phage database: 2.58M phages, 131M proteins and
   12.6M protein families, with provenance on every result.
-source: https://github.com/yiyabo/GAgent/tree/main/integrations/phagescope-mcp
+source: https://github.com/yiyabo/phagescope-mcp
 
 # Vendor-hosted remote MCP (Streamable HTTP). Personal bearer token.
 transport:

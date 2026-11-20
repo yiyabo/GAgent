@@ -8,7 +8,7 @@
       "name": "phagescope",
       "source": {
         "source": "local",
-        "path": "./integrations/phagescope-mcp/codex/phagescope"
+        "path": "./codex/phagescope"
       },
       "policy": {
         "installation": "AVAILABLE",
