@@ -17,18 +17,18 @@ function mcpEndpoint(): string {
 function clientSnippets(endpoint: string): Record<string, string> {
   return {
     claude: [
-      'claude plugin marketplace add yiyabo/phagescope-mcp',
-      'claude plugin install phagescope@phagescope',
+      'claude plugin marketplace add yiyabo/phageagent-mcp',
+      'claude plugin install phageagent@phageagent',
       '# or without the plugin:',
-      `claude mcp add --transport http phagescope ${endpoint} --header "Authorization: Bearer ${TOKEN_PLACEHOLDER}"`,
+      `claude mcp add --transport http phageagent ${endpoint} --header "Authorization: Bearer ${TOKEN_PLACEHOLDER}"`,
     ].join('\n'),
     codex: [
-      'codex plugin marketplace add yiyabo/phagescope-mcp',
-      'codex plugin add phagescope@phagescope',
-      `export PHAGESCOPE_MCP_TOKEN=${TOKEN_PLACEHOLDER}`,
+      'codex plugin marketplace add yiyabo/phageagent-mcp',
+      'codex plugin add phageagent@phageagent',
+      `export PHAGEAGENT_MCP_TOKEN=${TOKEN_PLACEHOLDER}`,
     ].join('\n'),
     generic: JSON.stringify(
-      { mcpServers: { phagescope: { type: 'http', url: endpoint, headers: { Authorization: `Bearer ${TOKEN_PLACEHOLDER}` } } } },
+      { mcpServers: { phageagent: { type: 'http', url: endpoint, headers: { Authorization: `Bearer ${TOKEN_PLACEHOLDER}` } } } },
       null,
       2,
     ),
@@ -174,7 +174,7 @@ const ExternalAccessTab: React.FC = () => {
         />
         <Paragraph type="secondary" style={{ marginBottom: 0 }}>
           {t('extensions.externalDocs')}{' '}
-          <a href="https://github.com/yiyabo/phagescope-mcp" target="_blank" rel="noreferrer">github.com/yiyabo/phagescope-mcp</a>
+          <a href="https://github.com/yiyabo/phageagent-mcp" target="_blank" rel="noreferrer">github.com/yiyabo/phageagent-mcp</a>
         </Paragraph>
       </Card>
     </Space>

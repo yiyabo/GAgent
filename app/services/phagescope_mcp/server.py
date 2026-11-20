@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 
 SERVER_NAME = "phageagent"
 MCP_PATH = "/mcp"
-REFERENCE_URI = "phagescope://reference/query-guide"
+REFERENCE_URI = "phageagent://reference/query-guide"
 _STATE_KEY = "phagescope_mcp_token"
 
 INSTRUCTIONS = (

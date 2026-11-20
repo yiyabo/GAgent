@@ -14,7 +14,7 @@ and never logged. A per-token daily byte counter enforces the usage limit.
 
 Analysis tasks: the request text you submit, the agent run and its output
 files are stored on the server under your account, and the request is sent to
-the language model provider the PhageAgent agent uses. A task stops being
+the language model provider PhageAgent uses. A task stops being
 reachable through MCP 30 days after submission; the stored data is not deleted
 automatically yet.
 

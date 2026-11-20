@@ -649,7 +649,7 @@ describe('Extensions external access tab', () => {
     fireEvent.click(await screen.findByRole('tab', { name: /External access|外部接入/ }));
     const tab = await screen.findByTestId('external-access-tab');
     expect(within(tab).getByTestId('mcp-endpoint').textContent).toContain('/mcp');
-    expect(within(tab).getByTestId('snippet-claude').textContent).toContain('claude plugin marketplace add yiyabo/phagescope-mcp');
+    expect(within(tab).getByTestId('snippet-claude').textContent).toContain('claude plugin marketplace add yiyabo/phageagent-mcp');
 
     fireEvent.click(await within(tab).findByTestId('mcp-token-create'));
     expect(await within(tab).findByTestId('mcp-token-plaintext')).toHaveTextContent('gpsk_secret_value');

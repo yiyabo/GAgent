@@ -1,5 +1,5 @@
 {
-  "name": "phagescope",
+  "name": "phageagent",
   "owner": {
     "name": "PhageAgent team",
     "url": "https://phageagent.deepomics.org"
@@ -10,8 +10,8 @@
   },
   "plugins": [
     {
-      "name": "phagescope",
-      "source": "./claude/phagescope",
+      "name": "phageagent",
+      "source": "./claude/phageagent",
       "description": "PhageAgent MCP: PhageScope phage database (2.58M phages, 131M proteins, 12.6M protein families) plus agent-run analysis tasks.",
       "version": "0.1.1",
       "category": "science",
@@ -23,7 +23,7 @@
         "proteins",
         "phagescope"
       ],
-      "homepage": "https://github.com/yiyabo/phagescope-mcp"
+      "homepage": "https://github.com/yiyabo/phageagent-mcp"
     }
   ]
 }

@@ -1,14 +1,14 @@
 {
-  "name": "phagescope",
+  "name": "phageagent",
   "interface": {
     "displayName": "PhageAgent"
   },
   "plugins": [
     {
-      "name": "phagescope",
+      "name": "phageagent",
       "source": {
         "source": "local",
-        "path": "./codex/phagescope"
+        "path": "./codex/phageagent"
       },
       "policy": {
         "installation": "AVAILABLE",

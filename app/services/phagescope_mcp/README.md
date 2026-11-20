@@ -9,7 +9,7 @@ responses). Design: `design/2026-11-19-phagescope-mcp.md` (phase 1).
 `catalog_overview`, `search_phages`, `cohort_report`, `aggregate_phages`,
 `get_phage`, `get_sequence`, `search_proteins`, `search_families`,
 `family_members`, `query_features`, `get_structures`, plus the resource
-`phagescope://reference/query-guide`. Every tool is annotated read-only.
+`phageagent://reference/query-guide`. Every tool is annotated read-only.
 
 Each result is one JSON text block: `data` (service payload), `provenance`
 (source, snapshot, retrieval time), `limits` (`returned_rows`, `truncated`,
@@ -72,37 +72,37 @@ Issue tokens:
 
 ## Client setup
 
-Replace `$PHAGESCOPE_MCP_TOKEN` with the token.
+Replace `$PHAGEAGENT_MCP_TOKEN` with the token.
 
 Codex (`~/.codex/config.toml`):
 
 ```toml
-[mcp_servers.phagescope]
+[mcp_servers.phageagent]
 url = "https://phageagent.deepomics.org/mcp"
-bearer_token_env_var = "PHAGESCOPE_MCP_TOKEN"
+bearer_token_env_var = "PHAGEAGENT_MCP_TOKEN"
 ```
 
 Claude Code:
 
 ```bash
-claude mcp add --transport http phagescope https://phageagent.deepomics.org/mcp \
-  --header "Authorization: Bearer $PHAGESCOPE_MCP_TOKEN"
+claude mcp add --transport http phageagent https://phageagent.deepomics.org/mcp \
+  --header "Authorization: Bearer $PHAGEAGENT_MCP_TOKEN"
 ```
 
 Clients with a JSON `mcpServers` file and HTTP support (WorkBuddy, Cursor, Hermes, Devin):
 
 ```json
-{"mcpServers": {"phagescope": {
+{"mcpServers": {"phageagent": {
   "url": "https://phageagent.deepomics.org/mcp",
-  "headers": {"Authorization": "Bearer ${PHAGESCOPE_MCP_TOKEN}"}}}}
+  "headers": {"Authorization": "Bearer ${PHAGEAGENT_MCP_TOKEN}"}}}}
 ```
 
 stdio-only clients can bridge with `mcp-remote`:
 
 ```json
-{"mcpServers": {"phagescope": {"command": "npx", "args": [
+{"mcpServers": {"phageagent": {"command": "npx", "args": [
   "-y", "mcp-remote", "https://phageagent.deepomics.org/mcp",
-  "--header", "Authorization: Bearer ${PHAGESCOPE_MCP_TOKEN}"]}}}
+  "--header", "Authorization: Bearer ${PHAGEAGENT_MCP_TOKEN}"]}}}
 ```
 
 ## Verify

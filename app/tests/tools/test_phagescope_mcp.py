@@ -124,7 +124,7 @@ def test_mcp_initialize_and_lists_read_only_tools(mcp_client):
     assert {t["name"] for t in listed} == set(tools.TOOLS_BY_NAME)
     assert all(t["annotations"]["readOnlyHint"] and not t["annotations"]["destructiveHint"] for t in listed)
     resources = _rpc(client, token, "resources/list").json()["result"]["resources"]
-    assert resources[0]["uri"] == "phagescope://reference/query-guide"
+    assert resources[0]["uri"] == "phageagent://reference/query-guide"
 
 
 def test_mcp_search_phages_envelope_audit_and_usage(mcp_client):
