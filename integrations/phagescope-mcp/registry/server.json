@@ -1,0 +1,27 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.yiyabo/phagescope",
+  "title": "PhageScope",
+  "description": "Read-only access to the PhageScope phage, protein and protein-family database.",
+  "repository": {
+    "url": "https://github.com/yiyabo/GAgent",
+    "source": "github",
+    "subfolder": "integrations/phagescope-mcp"
+  },
+  "websiteUrl": "https://github.com/yiyabo/GAgent/tree/main/integrations/phagescope-mcp",
+  "version": "0.1.0",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://phageagent.deepomics.org/mcp",
+      "headers": [
+        {
+          "name": "Authorization",
+          "description": "Bearer <PhageScope MCP token (gpsk_...)>",
+          "isRequired": true,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

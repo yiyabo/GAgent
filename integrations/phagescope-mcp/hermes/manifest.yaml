@@ -1,0 +1,33 @@
+# Draft entry for NousResearch/hermes-agent optional-mcps/phagescope/manifest.yaml.
+# Not submitted. Validated locally with hermes_cli.mcp_catalog.
+manifest_version: 1
+
+name: phagescope
+description: >-
+  Read-only PhageScope phage database: 2.58M phages, 131M proteins and
+  12.6M protein families, with provenance on every result.
+source: https://github.com/yiyabo/GAgent/tree/main/integrations/phagescope-mcp
+
+# Vendor-hosted remote MCP (Streamable HTTP). Personal bearer token.
+transport:
+  type: http
+  url: https://phageagent.deepomics.org/mcp
+
+auth:
+  type: api_key
+  env:
+    - name: MCP_PHAGESCOPE_API_KEY
+      prompt: PhageScope MCP token (gpsk_...)
+      secret: true
+
+suggest:
+  keywords:
+    - phage
+    - bacteriophage
+    - phagescope
+  hosts:
+    - phageagent.deepomics.org
+
+post_install: |
+  Sign in at https://phageagent.deepomics.org, issue a token with
+  POST /phagescope-mcp/tokens, then restart the session so tools load.
