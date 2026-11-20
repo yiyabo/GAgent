@@ -338,3 +338,60 @@ def test_analysis_limits_of_zero_mean_unlimited(count, limit, blocked):
     from app.services.phagescope_mcp import analysis
 
     assert analysis._at_limit(count, limit) is blocked
+
+
+def test_anonymous_discovery_lists_tools_but_never_calls_them(mcp_client, monkeypatch):
+    client, fake = mcp_client
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ANON_DISCOVERY", "1")
+    init = _rpc(
+        client,
+        None,
+        "initialize",
+        {"protocolVersion": PROTOCOL, "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}},
+    )
+    assert init.status_code == 200 and init.json()["result"]["serverInfo"]["name"] == "phagescope"
+    assert _rpc(client, None, "ping").status_code == 200
+    listed = _rpc(client, None, "tools/list").json()["result"]["tools"]
+    assert {"search_phages", "get_phage"} <= {tool["name"] for tool in listed}
+    for tool in listed:
+        assert tool["description"] and tool["annotations"]["readOnlyHint"] is not None
+        for name, prop in tool["inputSchema"].get("properties", {}).items():
+            assert prop.get("description"), (tool["name"], name)
+    call = _rpc(client, None, "tools/call", {"name": "catalog_overview", "arguments": {}})
+    assert call.status_code == 401 and call.headers["www-authenticate"].startswith("Bearer")
+    assert _rpc(client, None, "resources/list").status_code == 401
+    assert _rpc(client, "gpsk_not-a-real-token", "tools/list").status_code == 401
+    assert client.get("/mcp", headers=ACCEPT).status_code == 401
+    batch = [
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "catalog_overview", "arguments": {}}},
+    ]
+    headers = dict(ACCEPT, **{"MCP-Protocol-Version": PROTOCOL})
+    assert client.post("/mcp", headers=headers, content=json.dumps(batch)).status_code == 401
+    assert fake.calls == []
+
+
+def test_anonymous_discovery_is_off_by_default_and_rate_limited_per_ip(mcp_client, monkeypatch):
+    client, _ = mcp_client
+    assert _rpc(client, None, "tools/list").status_code == 401
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ANON_DISCOVERY", "1")
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ANON_REQUESTS_PER_MINUTE", "2")
+    ip_a = {"X-Real-IP": "203.0.113.5"}
+    assert _rpc(client, None, "tools/list", extra_headers=ip_a).status_code == 200
+    assert _rpc(client, None, "tools/list", extra_headers=ip_a).status_code == 200
+    resp = _rpc(client, None, "tools/list", extra_headers=ip_a)
+    assert resp.status_code == 429 and resp.headers["retry-after"]
+    assert _rpc(client, None, "tools/list", extra_headers={"X-Real-IP": "203.0.113.6"}).status_code == 200
+    token, _ = store.issue_token("u1", name="t")
+    assert _rpc(client, token, "tools/list", extra_headers=ip_a).status_code == 200
+
+
+def test_anonymous_tool_list_includes_analysis_only_under_open_access(mcp_client, monkeypatch):
+    client, _ = mcp_client
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ANON_DISCOVERY", "1")
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ANALYSIS_ENABLED", "1")
+    names = {tool["name"] for tool in _rpc(client, None, "tools/list").json()["result"]["tools"]}
+    assert "submit_analysis" not in names
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_OPEN_ACCESS", "1")
+    names = {tool["name"] for tool in _rpc(client, None, "tools/list").json()["result"]["tools"]}
+    assert "submit_analysis" in names

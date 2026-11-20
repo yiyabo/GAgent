@@ -22,10 +22,10 @@ OVERVIEW_TTL_SECONDS = 600
 
 _FILTER_PROPERTIES: dict[str, Any] = {
     "accession": {"type": "string", "description": "Exact phage accession."},
-    "accessions": {"type": "array", "items": {"type": "string"}, "maxItems": 200},
-    "phage_ids": {"type": "array", "items": {"type": "integer"}, "maxItems": 200},
+    "accessions": {"description": "Exact phage accessions.", "type": "array", "items": {"type": "string"}, "maxItems": 200},
+    "phage_ids": {"description": "PhageScope numeric phage ids.", "type": "array", "items": {"type": "integer"}, "maxItems": 200},
     "dataset": {"type": "string", "description": "Source dataset name, e.g. RefSeq, GenBank, MGV (see catalog_overview)."},
-    "datasets": {"type": "array", "items": {"type": "string"}, "maxItems": 30},
+    "datasets": {"description": "Only these source datasets.", "type": "array", "items": {"type": "string"}, "maxItems": 30},
     "completeness": {"type": "string", "description": "Genome completeness label, e.g. Complete, High-quality."},
     "lifestyle": {"type": "string", "description": "Predicted lifestyle, e.g. virulent or temperate."},
     "taxonomy": {"type": "string", "description": "Phage taxonomy name."},
@@ -33,20 +33,20 @@ _FILTER_PROPERTIES: dict[str, Any] = {
     "host": {"type": "string", "description": "Host name, e.g. Salmonella or Escherichia coli."},
     "host_match": {"type": "string", "description": "How to match host (service default when omitted)."},
     "host_rank": {"type": "string", "description": "Host rank used with host_name, e.g. genus or species."},
-    "host_name": {"type": "string"},
-    "cluster": {"type": "string"},
-    "subcluster": {"type": "string"},
-    "length_min": {"type": "integer", "minimum": 0},
-    "length_max": {"type": "integer", "minimum": 0},
-    "gc_min": {"type": "number", "minimum": 0, "maximum": 100},
-    "gc_max": {"type": "number", "minimum": 0, "maximum": 100},
-    "is_mapped": {"type": "boolean"},
+    "host_name": {"description": "Host name at the given host_rank.", "type": "string"},
+    "cluster": {"description": "Phage cluster id.", "type": "string"},
+    "subcluster": {"description": "Phage subcluster id.", "type": "string"},
+    "length_min": {"description": "Minimum genome length in bp.", "type": "integer", "minimum": 0},
+    "length_max": {"description": "Maximum genome length in bp.", "type": "integer", "minimum": 0},
+    "gc_min": {"description": "Minimum GC content in percent.", "type": "number", "minimum": 0, "maximum": 100},
+    "gc_max": {"description": "Maximum GC content in percent.", "type": "number", "minimum": 0, "maximum": 100},
+    "is_mapped": {"description": "Filter on the data service's is_mapped flag.", "type": "boolean"},
     "is_rep": {"type": "boolean", "description": "Only cluster representatives."},
     "amr_free": {"type": "boolean", "description": "No annotated antimicrobial-resistance genes (columnar layer)."},
     "virulence_free": {"type": "boolean", "description": "No annotated virulence factors (columnar layer)."},
-    "min_trna": {"type": "integer", "minimum": 0},
-    "has_crispr": {"type": "boolean"},
-    "has_anticrispr": {"type": "boolean"},
+    "min_trna": {"description": "Minimum number of annotated tRNAs.", "type": "integer", "minimum": 0},
+    "has_crispr": {"description": "Has annotated CRISPR arrays.", "type": "boolean"},
+    "has_anticrispr": {"description": "Has annotated anti-CRISPR proteins.", "type": "boolean"},
 }
 
 FILTERS_SCHEMA: dict[str, Any] = {
@@ -100,8 +100,8 @@ def _obj(properties: dict[str, Any], required: Optional[list[str]] = None) -> di
 
 def _page_props(max_pagesize: int, default: int = 20) -> dict[str, Any]:
     return {
-        "page": {"type": "integer", "minimum": 1, "default": 1},
-        "pagesize": {"type": "integer", "minimum": 1, "maximum": max_pagesize, "default": default},
+        "page": {"description": "Page number, starting at 1.", "type": "integer", "minimum": 1, "default": 1},
+        "pagesize": {"description": "Rows per page.", "type": "integer", "minimum": 1, "maximum": max_pagesize, "default": default},
     }
 
 
@@ -351,8 +351,8 @@ TOOLS: tuple[ToolSpec, ...] = (
             {
                 "filters": FILTERS_SCHEMA,
                 **_page_props(100),
-                "include_total": {"type": "boolean", "default": False},
-                "sort_by": {"type": "string", "enum": ["id", "length_desc", "length_asc"], "default": "id"},
+                "include_total": {"description": "Also return the total number of matches (slower).", "type": "boolean", "default": False},
+                "sort_by": {"description": "Row order: id, length_desc or length_asc.", "type": "string", "enum": ["id", "length_desc", "length_asc"], "default": "id"},
             },
             ["filters"],
         ),
@@ -365,8 +365,8 @@ TOOLS: tuple[ToolSpec, ...] = (
         _obj(
             {
                 "filters": FILTERS_SCHEMA,
-                "sample_limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
-                "sort_by": {"type": "string", "enum": ["id", "length_desc", "length_asc"], "default": "id"},
+                "sample_limit": {"description": "How many example phages to include in the report.", "type": "integer", "minimum": 1, "maximum": 20, "default": 5},
+                "sort_by": {"description": "Row order: id, length_desc or length_asc.", "type": "string", "enum": ["id", "length_desc", "length_asc"], "default": "id"},
             },
             ["filters"],
         ),
@@ -379,6 +379,7 @@ TOOLS: tuple[ToolSpec, ...] = (
         _obj(
             {
                 "group_by": {
+                    "description": "Dimension, or list of dimensions, to group counts by (see the query-guide resource).",
                     "oneOf": [
                         {"type": "string", "enum": list(GROUP_BY_DIMENSIONS)},
                         {
@@ -390,7 +391,7 @@ TOOLS: tuple[ToolSpec, ...] = (
                     ]
                 },
                 "filters": FILTERS_SCHEMA,
-                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+                "limit": {"description": "Maximum number of groups to return.", "type": "integer", "minimum": 1, "maximum": 200, "default": 50},
             },
             ["group_by"],
         ),
@@ -407,7 +408,7 @@ TOOLS: tuple[ToolSpec, ...] = (
         "get_sequence",
         "Get genome sequence",
         "Genome nucleotide sequence of one phage, capped at max_bases.",
-        _obj({**_PHAGE_REF, "max_bases": {"type": "integer", "minimum": 100, "maximum": 200000, "default": 20000}}),
+        _obj({**_PHAGE_REF, "max_bases": {"description": "Maximum number of sequence bases to return.", "type": "integer", "minimum": 100, "maximum": 200000, "default": 20000}}),
         _get_sequence,
     ),
     ToolSpec(
@@ -417,10 +418,10 @@ TOOLS: tuple[ToolSpec, ...] = (
         _obj(
             {
                 **_PHAGE_REF,
-                "protein_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 100},
-                "product_query": {"type": "string"},
-                "function_class": {"type": "string"},
-                "include_sequence": {"type": "boolean", "default": False},
+                "protein_ids": {"description": "Exact PhageScope protein ids.", "type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 100},
+                "product_query": {"description": "Text to match in the protein product annotation.", "type": "string"},
+                "function_class": {"description": "Protein function class to filter by.", "type": "string"},
+                "include_sequence": {"description": "Include amino-acid sequences in each row.", "type": "boolean", "default": False},
                 **_page_props(100, 50),
             }
         ),
@@ -432,13 +433,13 @@ TOOLS: tuple[ToolSpec, ...] = (
         "Find protein families by keyword (e.g. endolysin, holin), by member protein_id, or by family_id.",
         _obj(
             {
-                "keyword": {"type": "string"},
-                "protein_id": {"type": "string"},
-                "family_id": {"type": "string"},
-                "dominant_class": {"type": "string"},
-                "min_members": {"type": "integer", "minimum": 1},
-                "min_datasets": {"type": "integer", "minimum": 1},
-                "non_singleton_only": {"type": "boolean"},
+                "keyword": {"description": "Case-insensitive text to match in the annotations.", "type": "string"},
+                "protein_id": {"description": "Return the family that contains this protein id.", "type": "string"},
+                "family_id": {"description": "Protein family id.", "type": "string"},
+                "dominant_class": {"description": "Dominant function class of the family.", "type": "string"},
+                "min_members": {"description": "Minimum number of member proteins.", "type": "integer", "minimum": 1},
+                "min_datasets": {"description": "Minimum number of source datasets among the members.", "type": "integer", "minimum": 1},
+                "non_singleton_only": {"description": "Skip families with a single member.", "type": "boolean"},
                 **_page_props(100),
             }
         ),
@@ -450,10 +451,10 @@ TOOLS: tuple[ToolSpec, ...] = (
         "Member proteins of one family (optionally one subfamily or dataset). Paged.",
         _obj(
             {
-                "family_id": {"type": "string"},
-                "subfamily_id": {"type": "string"},
-                "dataset": {"type": "string"},
-                "include_sequence": {"type": "boolean", "default": False},
+                "family_id": {"description": "Protein family id.", "type": "string"},
+                "subfamily_id": {"description": "Subfamily id within the family.", "type": "string"},
+                "dataset": {"description": "Source dataset name, e.g. RefSeq or GenBank (see catalog_overview).", "type": "string"},
+                "include_sequence": {"description": "Include amino-acid sequences in each row.", "type": "boolean", "default": False},
                 **_page_props(100, 50),
             },
             ["family_id"],
@@ -466,10 +467,10 @@ TOOLS: tuple[ToolSpec, ...] = (
         "Annotated features of one type (tRNA, CRISPR, anti-CRISPR, terminator, virulence, AMR, transmembrane).",
         _obj(
             {
-                "feature_type": {"type": "string", "enum": list(FEATURE_TYPES)},
+                "feature_type": {"description": "Feature layer to query.", "type": "string", "enum": list(FEATURE_TYPES)},
                 **_PHAGE_REF,
-                "dataset": {"type": "string"},
-                "keyword": {"type": "string"},
+                "dataset": {"description": "Source dataset name, e.g. RefSeq or GenBank (see catalog_overview).", "type": "string"},
+                "keyword": {"description": "Case-insensitive text to match in the annotations.", "type": "string"},
                 **_page_props(100, 50),
             },
             ["feature_type"],
@@ -480,7 +481,7 @@ TOOLS: tuple[ToolSpec, ...] = (
         "get_structures",
         "Get protein structures",
         "Resolve predicted (ESMFold) structure availability and links for protein ids.",
-        _obj({"protein_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 50}}, ["protein_ids"]),
+        _obj({"protein_ids": {"description": "Exact PhageScope protein ids.", "type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 50}}, ["protein_ids"]),
         _get_structures,
     ),
     ToolSpec(
@@ -505,14 +506,14 @@ TOOLS: tuple[ToolSpec, ...] = (
                         },
                     ],
                 },
-                "sensitivity": {"type": "string", "enum": ["fast", "default", "sensitive"], "default": "default"},
+                "sensitivity": {"description": "MMseqs2 search sensitivity: fast, default or sensitive.", "type": "string", "enum": ["fast", "default", "sensitive"], "default": "default"},
                 "max_hits": {"type": "integer", "minimum": 1, "maximum": 500, "default": 50, "description": "Hits kept per query."},
-                "evalue": {"type": "number", "exclusiveMinimum": 0, "maximum": 10, "default": 0.001},
-                "min_identity": {"type": "number", "minimum": 0, "maximum": 1},
+                "evalue": {"description": "Maximum E-value of reported hits.", "type": "number", "exclusiveMinimum": 0, "maximum": 10, "default": 0.001},
+                "min_identity": {"description": "Minimum sequence identity of hits, from 0 to 1.", "type": "number", "minimum": 0, "maximum": 1},
                 "min_coverage": {"type": "number", "minimum": 0, "maximum": 1, "description": "Minimum of query and target coverage."},
                 "exclude_low_quality": {"type": "boolean", "default": False, "description": "Drop proteins only found in LQ_* datasets."},
-                "datasets": {"type": "array", "items": {"type": "string"}, "maxItems": 40},
-                "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 20, "default": 20},
+                "datasets": {"description": "Only these source datasets.", "type": "array", "items": {"type": "string"}, "maxItems": 40},
+                "wait_seconds": {"description": "Seconds to wait for the result before returning a search_id to poll.", "type": "integer", "minimum": 0, "maximum": 20, "default": 20},
                 **_page_props(200, 50),
             },
             ["sequences"],
@@ -523,7 +524,7 @@ TOOLS: tuple[ToolSpec, ...] = (
         "get_similarity_result",
         "Similarity search result",
         "Status and paged hits of a similarity_search by its search_id (kept 7 days).",
-        _obj({"search_id": {"type": "string", "pattern": _SIMILARITY_ID}, **_page_props(200, 50)}, ["search_id"]),
+        _obj({"search_id": {"description": "The search_id returned by similarity_search.", "type": "string", "pattern": _SIMILARITY_ID}, **_page_props(200, 50)}, ["search_id"]),
         _get_similarity_result,
     ),
 )

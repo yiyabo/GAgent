@@ -1,3 +1,5 @@
+[![mcptry](https://mcptry.com/badge/io.github.yiyabo/phagescope)](https://mcptry.com/servers/io.github.yiyabo/phagescope)
+
 # PhageScope MCP — client packages and directory listings
 
 Source of the public repo https://github.com/yiyabo/phagescope-mcp (this folder becomes its root).

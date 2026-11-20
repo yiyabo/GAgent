@@ -23,6 +23,8 @@ paging) and `notes`. A null field means unknown, never zero.
 | `PHAGESCOPE_MCP_ALLOWED_USERS` | empty | user ids / emails that may self-issue tokens (admins always may) |
 | `PHAGESCOPE_MCP_ALLOWED_USER_IDS` | empty | immutable user ids that may self-issue/use tokens; required alongside email entries when open signup is enabled |
 | `PHAGESCOPE_MCP_OPEN_ACCESS` | `0` | `1` lets every signed-in, active user self-issue tokens without an allowlist entry; they get `data:read`, plus `analysis:submit` when analysis is enabled |
+| `PHAGESCOPE_MCP_ANON_DISCOVERY` | `0` | `1` lets requests without a token `initialize`, `ping` and `tools/list` (no tool calls, no resources), so directories such as mcptry can list the tools |
+| `PHAGESCOPE_MCP_ANON_REQUESTS_PER_MINUTE` | `30` | rate limit for those token-less requests, per client IP (`X-Real-IP` from the gateway) |
 | `PHAGESCOPE_MCP_ALLOWED_HOSTS` | `phageagent.deepomics.org,localhost,127.0.0.1` | exact Host values accepted by the `/mcp` transport |
 | `PHAGESCOPE_MCP_ALLOWED_ORIGINS` | `https://phageagent.deepomics.org,http://localhost,http://127.0.0.1` | exact Origin values accepted by the `/mcp` transport |
 | `PHAGESCOPE_MCP_DAILY_BYTES` | 2 GiB | returned bytes per token per UTC day |
