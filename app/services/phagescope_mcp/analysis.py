@@ -536,10 +536,10 @@ ANALYSIS_TOOLS: tuple[AnalysisToolSpec, ...] = (
             "type": "object",
             "properties": {
                 "instructions": {"type": "string", "maxLength": MAX_INSTRUCTIONS, "description": "What to analyse or model, and what to report."},
-                "phage_accessions": {"type": "array", "items": {"type": "string"}, "maxItems": MAX_ACCESSIONS},
+                "phage_accessions": {"description": "Phage accessions to include in the analysis.", "type": "array", "items": {"type": "string"}, "maxItems": MAX_ACCESSIONS},
                 "inline_data": {"type": "string", "description": f"Optional small CSV/TSV/FASTA text (at most {MAX_INLINE_BYTES} bytes)."},
                 "deliverables_hint": {"type": "array", "items": {"type": "string"}, "description": "e.g. table, figure, model, report"},
-                "idempotency_key": {"type": "string", "maxLength": 128},
+                "idempotency_key": {"description": "Optional client key; resending the same request with the same key does not start a second task.", "type": "string", "maxLength": 128},
             },
             "required": ["instructions"],
             "additionalProperties": False,
@@ -573,9 +573,9 @@ ANALYSIS_TOOLS: tuple[AnalysisToolSpec, ...] = (
         input_schema={
             "type": "object",
             "properties": {
-                "task_id": {"type": "string"},
-                "message": {"type": "string", "maxLength": MAX_INSTRUCTIONS},
-                "idempotency_key": {"type": "string", "maxLength": 128},
+                "task_id": {"description": "The task_id returned by submit_analysis.", "type": "string"},
+                "message": {"description": "Follow-up message for the task, e.g. an answer to its question or a new instruction.", "type": "string", "maxLength": MAX_INSTRUCTIONS},
+                "idempotency_key": {"description": "Optional client key; resending the same request with the same key does not start a second task.", "type": "string", "maxLength": 128},
             },
             "required": ["task_id", "message"],
             "additionalProperties": False,
@@ -598,8 +598,8 @@ ANALYSIS_TOOLS: tuple[AnalysisToolSpec, ...] = (
         input_schema={
             "type": "object",
             "properties": {
-                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
-                "status": {"type": "string", "enum": ["working", "completed", "failed", "cancelled"]},
+                "limit": {"description": "Maximum number of tasks to return.", "type": "integer", "minimum": 1, "maximum": 50},
+                "status": {"description": "Only tasks in this status.", "type": "string", "enum": ["working", "completed", "failed", "cancelled"]},
             },
             "additionalProperties": False,
         },
