@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from app.database import get_db
 from app.services.phagescope_mcp import limits, store, tools
 
 ACCEPT = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
@@ -41,12 +42,22 @@ class FakeDataService:
 @pytest.fixture
 def mcp_client(app_client_factory, monkeypatch):
     monkeypatch.setenv("PHAGESCOPE_MCP_ENABLED", "1")
+    monkeypatch.setenv("PHAGESCOPE_MCP_ALLOWED_USER_IDS", "u1,alice,bob")
+    monkeypatch.setenv("PHAGESCOPE_MCP_ALLOWED_HOSTS", "testserver,localhost,127.0.0.1")
+    monkeypatch.setenv("PHAGESCOPE_MCP_ALLOWED_ORIGINS", "http://testserver,http://localhost,http://127.0.0.1")
     fake = FakeDataService()
     monkeypatch.setattr(tools.client, "call_service", fake)
     tools._overview_cache.update(at=0.0, value=None)
     limits.limiter.reset()
     monkeypatch.setattr(store, "_schema_ready", False)
     with app_client_factory() as client:
+        with get_db() as conn:
+            for user_id in ("u1", "alice", "bob"):
+                conn.execute(
+                    "INSERT OR IGNORE INTO users (id, email, password_hash, role, is_active) VALUES (?, ?, ?, 'user', 1)",
+                    (user_id, f"{user_id}@example.org", "synthetic-test-hash"),
+                )
+            conn.commit()
         yield client, fake
 
 
@@ -57,8 +68,16 @@ def _setenv(monkeypatch, name: str, value: str) -> None:
     get_settings.cache_clear()
 
 
-def _rpc(client, token: str | None, method: str, params: dict | None = None, rpc_id: int = 1):
+def _rpc(
+    client,
+    token: str | None,
+    method: str,
+    params: dict | None = None,
+    rpc_id: int = 1,
+    extra_headers: dict[str, str] | None = None,
+):
     headers = dict(ACCEPT, **{"MCP-Protocol-Version": PROTOCOL})
+    headers.update(extra_headers or {})
     if token:
         headers["Authorization"] = f"Bearer {token}"
     body = {"jsonrpc": "2.0", "id": rpc_id, "method": method, "params": params or {}}
@@ -169,6 +188,72 @@ def test_mcp_rate_limit_returns_429(mcp_client, monkeypatch):
     assert resp.status_code == 429 and resp.headers["retry-after"]
 
 
+def test_mcp_token_rechecks_user_status_and_current_policy(mcp_client, monkeypatch):
+    client, _ = mcp_client
+    _setenv(monkeypatch, "AUTH_MODE", "local")
+    token, record = store.issue_token("u1", name="lifecycle")
+    assert _rpc(client, token, "tools/list").status_code == 200
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ALLOWED_USER_IDS", "")
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ALLOWED_USERS", "")
+    assert _rpc(client, token, "tools/list").status_code == 401
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ALLOWED_USER_IDS", "u1")
+    assert _rpc(client, token, "tools/list").status_code == 200
+    with get_db() as conn:
+        conn.execute("UPDATE users SET is_active = 0 WHERE id = ?", ("u1",))
+        conn.commit()
+    assert _rpc(client, token, "tools/list").status_code == 401
+    with get_db() as conn:
+        conn.execute("UPDATE users SET is_active = 1 WHERE id = ?", ("u1",))
+        conn.commit()
+    assert _rpc(client, token, "tools/list").status_code == 200
+    with get_db() as conn:
+        conn.execute("DELETE FROM users WHERE id = ?", ("u1",))
+        conn.commit()
+    assert _rpc(client, token, "tools/list").status_code == 401
+    assert store.get_token(record.id) is not None
+
+
+def test_mcp_rejects_foreign_host_and_origin(mcp_client):
+    client, _ = mcp_client
+    token, _ = store.issue_token("u1", name="transport")
+    assert _rpc(client, token, "tools/list").status_code == 200
+    assert _rpc(client, token, "tools/list", extra_headers={"Host": "evil.example"}).status_code == 421
+    assert _rpc(client, token, "tools/list", extra_headers={"Origin": "https://evil.example"}).status_code == 403
+
+
+def test_proxy_identity_without_local_user_can_issue_and_use_token(app_client_factory, monkeypatch):
+    _setenv(monkeypatch, "AUTH_MODE", "proxy")
+    _setenv(monkeypatch, "AUTH_OPEN_SIGNUP", "1")
+    _setenv(monkeypatch, "PROXY_AUTH_REQUIRED", "1")
+    _setenv(monkeypatch, "PROXY_AUTH_SHARED_SECRET", "synthetic-proxy-secret")
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ENABLED", "1")
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ALLOWED_HOSTS", "testserver")
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ALLOWED_USERS", "")
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ALLOWED_USER_IDS", "proxy-alice")
+    monkeypatch.setattr(store, "_schema_ready", False)
+    with app_client_factory() as client:
+        identity_headers = {"X-Forwarded-User": "proxy-alice", "X-Gagent-Proxy-Secret": "synthetic-proxy-secret"}
+        assert client.post("/phagescope-mcp/tokens", json={"name": "untrusted"},
+                           headers={"X-Forwarded-User": "proxy-alice"}).status_code == 401
+        created = client.post("/phagescope-mcp/tokens", json={"name": "proxy"}, headers=identity_headers)
+        assert created.status_code == 200, created.text
+        token = created.json()["token"]
+        with get_db() as conn:
+            assert conn.execute("SELECT id FROM users WHERE id = 'proxy-alice'").fetchone() is None
+        assert _rpc(client, token, "tools/list").status_code == 200
+        _setenv(monkeypatch, "PHAGESCOPE_MCP_ALLOWED_USER_IDS", "")
+        _setenv(monkeypatch, "PHAGESCOPE_MCP_ALLOWED_USERS", "alice@example.org")
+        assert _rpc(client, token, "tools/list").status_code == 401
+        assert client.post("/phagescope-mcp/tokens", json={"name": "email-only"},
+                           headers={**identity_headers, "X-Forwarded-Email": "alice@example.org"}).status_code == 403
+        _setenv(monkeypatch, "PHAGESCOPE_MCP_ALLOWED_USER_IDS", "proxy-alice")
+        with get_db() as conn:
+            conn.execute("INSERT INTO users (id, email, password_hash, is_active) VALUES (?, ?, ?, 0)",
+                         ("proxy-alice", "alice@example.org", "synthetic"))
+            conn.commit()
+        assert _rpc(client, token, "tools/list").status_code == 401
+
+
 def test_token_routes_enforce_allowlist(app_client_factory, monkeypatch):
     from app.services.request_principal import RequestPrincipal
 
@@ -177,6 +262,7 @@ def test_token_routes_enforce_allowlist(app_client_factory, monkeypatch):
     import app.routers.phagescope_mcp_routes as routes
 
     monkeypatch.setattr(routes, "require_authenticated_principal", lambda request: principal)
+    _setenv(monkeypatch, "AUTH_OPEN_SIGNUP", "0")
     with app_client_factory() as client:
         assert client.post("/phagescope-mcp/tokens", json={"name": "codex"}).status_code == 403
         _setenv(monkeypatch, "PHAGESCOPE_MCP_ALLOWED_USERS", "bob, Alice@example.org")
@@ -189,3 +275,27 @@ def test_token_routes_enforce_allowlist(app_client_factory, monkeypatch):
         assert "token" not in listed["tokens"][0]
         assert client.delete(f"/phagescope-mcp/tokens/{body['record']['id']}").status_code == 200
         assert store.authenticate(body["token"]) is None
+
+
+@pytest.mark.parametrize("open_signup", [False, True])
+def test_email_allowlist_requires_user_id_during_open_signup(mcp_client, monkeypatch, open_signup):
+    client, _ = mcp_client
+    import app.routers.phagescope_mcp_routes as routes
+    from app.services.request_principal import RequestPrincipal
+
+    principal = RequestPrincipal(user_id="alice", email="alice@example.org", role="user", auth_source="test",
+                                 is_authenticated=True)
+    monkeypatch.setattr(routes, "require_authenticated_principal", lambda request: principal)
+    _setenv(monkeypatch, "AUTH_OPEN_SIGNUP", "1" if open_signup else "0")
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ALLOWED_USER_IDS", "")
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ALLOWED_USERS", "ALICE@example.org")
+    token, _ = store.issue_token("alice", name="legacy")
+    expected = 401 if open_signup else 200
+    assert _rpc(client, token, "tools/list").status_code == expected
+    response = client.post("/phagescope-mcp/tokens", json={"name": "email-only"})
+    assert response.status_code == (403 if open_signup else 200)
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ALLOWED_USER_IDS", "alice")
+    assert _rpc(client, token, "tools/list").status_code == 200
+    assert client.post("/phagescope-mcp/tokens", json={"name": "id-allowed"}).status_code == 200
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ALLOWED_USERS", "")
+    assert _rpc(client, token, "tools/list").status_code == 200

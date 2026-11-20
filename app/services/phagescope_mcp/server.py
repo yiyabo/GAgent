@@ -270,6 +270,10 @@ def _bearer(scope: Scope) -> str:
     return ""
 
 
+def _csv_setting(value: str) -> list[str]:
+    return [item.strip() for item in str(value or "").split(",") if item.strip()]
+
+
 def _refuse(status: int, code: str, message: str, extra_headers: Optional[dict[str, str]] = None) -> JSONResponse:
     headers = {"Cache-Control": "no-store"}
     if status == 401:
@@ -290,7 +294,11 @@ class PhageScopeMcpEndpoint:
             app=build_server(),
             json_response=True,
             stateless=True,
-            security_settings=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+            security_settings=TransportSecuritySettings(
+                enable_dns_rebinding_protection=True,
+                allowed_hosts=_csv_setting(get_settings().phagescope_mcp_allowed_hosts),
+                allowed_origins=_csv_setting(get_settings().phagescope_mcp_allowed_origins),
+            ),
         )
         async with manager.run():
             self._manager = manager

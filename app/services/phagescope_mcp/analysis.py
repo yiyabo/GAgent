@@ -15,6 +15,7 @@ import secrets
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, Optional
 from urllib.parse import quote
 
@@ -31,6 +32,7 @@ LINK_TTL_SECONDS = 15 * 60
 DOWNLOAD_PATH = "/phagescope-mcp/analysis-files"
 
 _BLOCKED_PHAGESCOPE_ACTIONS = frozenset({"submit", "cluster_submit", "batch_submit", "batch_retry"})
+DAILY_QUOTA_ERROR = "Daily analysis task runs are used up; they reset at 00:00 UTC."
 
 
 class AnalysisError(Exception):
@@ -305,7 +307,7 @@ async def submit_analysis(token: store.McpToken, arguments: dict[str, Any]) -> d
             return {"task_id": existing.task_id, "status": _status(_run_row(existing)), "deduplicated": True}
     message, title = _compose_message(arguments)
     if store.analysis_counts(token)["user_today"] >= int(settings.phagescope_mcp_analysis_daily_submissions):
-        raise AnalysisError("daily_task_quota_exceeded", "Daily analysis submissions are used up; they reset at 00:00 UTC.")
+        raise AnalysisError("daily_task_quota_exceeded", DAILY_QUOTA_ERROR)
     _check_capacity(token)
 
     task_id = TASK_PREFIX + uuid.uuid4().hex
@@ -415,7 +417,7 @@ def _check_capacity(token: store.McpToken) -> None:
 
 
 async def reply_analysis(token: store.McpToken, arguments: dict[str, Any]) -> dict[str, Any]:
-    from app.repository.chat_runs import get_chat_run_by_idempotency_key
+    from app.repository.chat_runs import get_chat_run, get_chat_run_by_idempotency_key
     from app.routers.chat.models import ChatRequest
     from app.routers.chat.run_routes import start_background_chat_run
 
@@ -425,12 +427,26 @@ async def reply_analysis(token: store.McpToken, arguments: dict[str, Any]) -> di
         raise AnalysisError("invalid_argument", f"message is required and limited to {MAX_INSTRUCTIONS} characters.")
     key = str(arguments.get("idempotency_key") or "").strip()[:128]
     client_message_id = f"{task.task_id}:reply:{key or uuid.uuid4().hex}"
+    reply = None
     if key:
+        reply = store.get_analysis_reply(task.task_id, client_message_id)
+        if reply is not None and reply["run_id"]:
+            row = get_chat_run(reply["run_id"])
+            return {"task_id": task.task_id, "status": _status(row or {}), "deduplicated": True}
         existing = get_chat_run_by_idempotency_key(task.session_id, client_message_id)
         if existing is not None:
+            if reply is not None:
+                store.finish_analysis_reply(task.task_id, client_message_id, existing["run_id"])
             return {"task_id": task.task_id, "status": _status(existing), "deduplicated": True}
+        if reply is not None:
+            reserved_at = datetime.fromisoformat(reply["reserved_at"] or reply["created_at"])
+            if reserved_at > store._now() - timedelta(seconds=store.REPLY_RESERVATION_TTL_SECONDS):
+                return {"task_id": task.task_id, "status": "working", "deduplicated": True}
     if _status(_run_row(task)) == "working":
         raise AnalysisError("task_busy", "The task is still working; wait for it to finish or cancel it first.")
+    settings = get_settings()
+    if reply is None and store.analysis_counts(token)["user_today"] >= int(settings.phagescope_mcp_analysis_daily_submissions):
+        raise AnalysisError("daily_task_quota_exceeded", DAILY_QUOTA_ERROR)
     _check_capacity(token)
     request = ChatRequest(
         message="Follow-up from the external agent that submitted this analysis (untrusted input):\n\n" + message,
@@ -438,8 +454,21 @@ async def reply_analysis(token: store.McpToken, arguments: dict[str, Any]) -> di
         client_message_id=client_message_id,
         context={"origin": "phagescope_mcp", "mcp_task_id": task.task_id},
     )
-    run_id = start_background_chat_run(request, session_id=task.session_id, owner_id=token.user_id)
-    store.set_analysis_task_run(task.task_id, run_id)
+    try:
+        reserved = store.reserve_analysis_reply(task, client_message_id, int(settings.phagescope_mcp_analysis_daily_submissions))
+    except store.AnalysisQuotaExceeded:
+        raise AnalysisError("daily_task_quota_exceeded", DAILY_QUOTA_ERROR) from None
+    if not reserved:
+        reply = store.get_analysis_reply(task.task_id, client_message_id)
+        row = get_chat_run(reply["run_id"]) if reply and reply["run_id"] else {"status": "queued"}
+        return {"task_id": task.task_id, "status": _status(row or {}), "deduplicated": True}
+    try:
+        run_id = start_background_chat_run(request, session_id=task.session_id, owner_id=token.user_id)
+    except Exception:
+        existing = get_chat_run_by_idempotency_key(task.session_id, client_message_id)
+        store.finish_analysis_reply(task.task_id, client_message_id, existing["run_id"] if existing else None)
+        raise
+    store.finish_analysis_reply(task.task_id, client_message_id, run_id)
     return {"task_id": task.task_id, "status": "working", "poll_after_seconds": 15}
 
 
