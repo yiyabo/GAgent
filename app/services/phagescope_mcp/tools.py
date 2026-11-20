@@ -296,6 +296,45 @@ async def _get_structures(args: dict[str, Any]) -> tuple[Any, list[str]]:
     ]
 
 
+_SIMILARITY_ID = "^sim_[0-9a-f]{32}$"
+SIMILARITY_NOTE = (
+    "Hits are PhageScope proteins with the same sequence; use search_proteins with protein_ids for details."
+)
+
+
+async def _similarity_search(args: dict[str, Any]) -> tuple[Any, list[str]]:
+    seqs = args.get("sequences")
+    if not seqs:
+        raise ToolInputError("sequences is required: FASTA text or a list of {id, sequence}.")
+    body: dict[str, Any] = {"sequences": seqs}
+    for key in ("sensitivity", "max_hits", "evalue", "min_identity", "min_coverage", "exclude_low_quality", "datasets"):
+        if args.get(key) is not None:
+            body[key] = args[key]
+    body["wait_seconds"] = _clamp(args.get("wait_seconds"), 0, 20, 20)
+    body["page"] = _clamp(args.get("page"), 1, 10_000, 1)
+    body["pagesize"] = _clamp(args.get("pagesize"), 1, 200, 50)
+    data = await client.call_service("v2/similarity/search/", method="POST", body=body, timeout=60.0)
+    return data, _similarity_notes(data)
+
+
+async def _get_similarity_result(args: dict[str, Any]) -> tuple[Any, list[str]]:
+    search_id = str(args.get("search_id") or "").strip()
+    if not search_id.startswith("sim_") or len(search_id) != 36:
+        raise ToolInputError("search_id must be the sim_... id returned by similarity_search.")
+    query = {"page": _clamp(args.get("page"), 1, 10_000, 1), "pagesize": _clamp(args.get("pagesize"), 1, 200, 50)}
+    data = await _get(f"v2/similarity/search/{search_id}/", query)
+    return data, _similarity_notes(data)
+
+
+def _similarity_notes(data: Any) -> list[str]:
+    notes = [SIMILARITY_NOTE]
+    if isinstance(data, dict):
+        if data.get("status") in ("queued", "running"):
+            notes.insert(0, "Search still running: call get_similarity_result with this search_id after poll_after_seconds.")
+        notes.extend(str(n) for n in data.pop("notes", []) or [])
+    return notes
+
+
 TOOLS: tuple[ToolSpec, ...] = (
     ToolSpec(
         "catalog_overview",
@@ -443,6 +482,49 @@ TOOLS: tuple[ToolSpec, ...] = (
         "Resolve predicted (ESMFold) structure availability and links for protein ids.",
         _obj({"protein_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 50}}, ["protein_ids"]),
         _get_structures,
+    ),
+    ToolSpec(
+        "similarity_search",
+        "Protein similarity search",
+        "Find PhageScope proteins similar to 1-50 protein sequences (MMseqs2 over ~45 M unique proteins). "
+        "Returns hits within wait_seconds, otherwise a search_id for get_similarity_result.",
+        _obj(
+            {
+                "sequences": {
+                    "description": "Protein FASTA text, or a list of {id, sequence}. 30-10000 aa each, 50000 aa in total.",
+                    "oneOf": [
+                        {"type": "string", "maxLength": 120000},
+                        {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 50,
+                            "items": _obj(
+                                {"id": {"type": "string", "maxLength": 64}, "sequence": {"type": "string", "maxLength": 10000}},
+                                ["sequence"],
+                            ),
+                        },
+                    ],
+                },
+                "sensitivity": {"type": "string", "enum": ["fast", "default", "sensitive"], "default": "default"},
+                "max_hits": {"type": "integer", "minimum": 1, "maximum": 500, "default": 50, "description": "Hits kept per query."},
+                "evalue": {"type": "number", "exclusiveMinimum": 0, "maximum": 10, "default": 0.001},
+                "min_identity": {"type": "number", "minimum": 0, "maximum": 1},
+                "min_coverage": {"type": "number", "minimum": 0, "maximum": 1, "description": "Minimum of query and target coverage."},
+                "exclude_low_quality": {"type": "boolean", "default": False, "description": "Drop proteins only found in LQ_* datasets."},
+                "datasets": {"type": "array", "items": {"type": "string"}, "maxItems": 40},
+                "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 20, "default": 20},
+                **_page_props(200, 50),
+            },
+            ["sequences"],
+        ),
+        _similarity_search,
+    ),
+    ToolSpec(
+        "get_similarity_result",
+        "Similarity search result",
+        "Status and paged hits of a similarity_search by its search_id (kept 7 days).",
+        _obj({"search_id": {"type": "string", "pattern": _SIMILARITY_ID}, **_page_props(200, 50)}, ["search_id"]),
+        _get_similarity_result,
     ),
 )
 
