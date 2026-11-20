@@ -20,6 +20,9 @@ vi.mock('@api/extensions', () => ({
     listSkills: vi.fn(),
     enableSkill: vi.fn(),
     disableSkill: vi.fn(),
+    listMcpTokens: vi.fn(),
+    createMcpToken: vi.fn(),
+    revokeMcpToken: vi.fn(),
   },
 }));
 
@@ -599,5 +602,70 @@ describe('Extensions page in English', () => {
     expect(screen.getByText(/1234 chars · Scripts: 2 · References: 1/)).toBeInTheDocument();
     expect(screen.getByText('Modified')).toBeInTheDocument();
     expect(container.textContent).not.toMatch(cjk);
+  });
+});
+
+
+describe('Extensions external access tab', () => {
+  const token = {
+    id: 'mcpt_1',
+    name: 'claude-code',
+    token_hint: 'gpsk_abcd',
+    scopes: ['data:read', 'analysis:submit'],
+    created_at: '2026-11-20T01:00:00Z',
+    expires_at: '2027-02-18T01:00:00Z',
+    revoked_at: null,
+    last_used_at: null,
+  };
+
+  function renderPage() {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(
+      <QueryClientProvider client={client}>
+        <AntdApp>
+          <Extensions />
+        </AntdApp>
+      </QueryClientProvider>,
+    );
+  }
+
+  beforeEach(() => {
+    api.listMcp.mockResolvedValue({ servers: [], custom: [] } as unknown as McpListResponse);
+    api.listSkills.mockResolvedValue({ skills: [] } as unknown as SkillListResponse);
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('creates a token, shows it once and revokes it', async () => {
+    api.listMcpTokens
+      .mockResolvedValueOnce({ eligible: true, daily_bytes_limit: 1, tokens: [] })
+      .mockResolvedValue({ eligible: true, daily_bytes_limit: 1, tokens: [token] });
+    api.createMcpToken.mockResolvedValue({ token: 'gpsk_secret_value', record: token });
+    api.revokeMcpToken.mockResolvedValue({ revoked: token.id });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('tab', { name: /External access|外部接入/ }));
+    const tab = await screen.findByTestId('external-access-tab');
+    expect(within(tab).getByTestId('mcp-endpoint').textContent).toContain('/mcp');
+    expect(within(tab).getByTestId('snippet-claude').textContent).toContain('claude plugin marketplace add yiyabo/phagescope-mcp');
+
+    fireEvent.click(await within(tab).findByTestId('mcp-token-create'));
+    expect(await within(tab).findByTestId('mcp-token-plaintext')).toHaveTextContent('gpsk_secret_value');
+    expect(api.createMcpToken).toHaveBeenCalledWith('my-client');
+
+    fireEvent.click(await within(tab).findByTestId('mcp-token-revoke-mcpt_1'));
+    const confirm = await screen.findByRole('button', { name: /OK|确定/ });
+    fireEvent.click(confirm);
+    await waitFor(() => expect(api.revokeMcpToken).toHaveBeenCalledWith('mcpt_1'));
+  });
+
+  it('explains when the account cannot get tokens', async () => {
+    api.listMcpTokens.mockResolvedValue({ eligible: false, daily_bytes_limit: 1, tokens: [] });
+    renderPage();
+    fireEvent.click(await screen.findByRole('tab', { name: /External access|外部接入/ }));
+    expect(await screen.findByText(/not available for this account|暂时不能使用/)).toBeInTheDocument();
+    expect(screen.queryByTestId('mcp-token-create')).toBeNull();
   });
 });

@@ -2,6 +2,7 @@ import React from 'react';
 import { Tabs, Typography } from 'antd';
 import McpTab from '@components/extensions/McpTab';
 import SkillsTab from '@components/extensions/SkillsTab';
+import ExternalAccessTab from '@components/extensions/ExternalAccessTab';
 import { useT } from '@/i18n/useT';
 
 const { Title, Paragraph } = Typography;
@@ -22,6 +23,7 @@ const Extensions: React.FC = () => {
         items={[
           { key: 'mcp', label: t('extensions.tabMcp'), children: <McpTab /> },
           { key: 'skills', label: t('extensions.tabSkills'), children: <SkillsTab /> },
+          { key: 'external', label: t('extensions.tabExternal'), children: <ExternalAccessTab /> },
         ]}
       />
     </div>
