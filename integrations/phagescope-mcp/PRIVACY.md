@@ -17,7 +17,7 @@ Retention: audit records and usage counters are kept until the operator deletes 
 Sharing: data is not sold or shared with third parties. Your AI client and its
 model provider see the results the tools return, under their own policies.
 
-Access: on request; tokens are granted only after approval.
+Access: any registered user can create read-only tokens.
 
 Revocation: revoke a token at any time with
 `DELETE /phagescope-mcp/tokens/{id}`; contact us to delete your account.

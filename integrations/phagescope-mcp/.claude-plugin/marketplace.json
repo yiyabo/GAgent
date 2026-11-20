@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "PhageScope MCP for Claude Code",
-    "version": "0.1.0"
+    "version": "0.1.1"
   },
   "plugins": [
     {
       "name": "phagescope",
       "source": "./claude/phagescope",
       "description": "Read-only PhageScope phage database: 2.58M phages, 131M proteins, 12.6M protein families.",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "category": "science",
       "keywords": [
         "phage",

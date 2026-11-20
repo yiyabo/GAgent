@@ -1,8 +1,8 @@
 {
   "name": "phagescope",
   "displayName": "PhageScope",
-  "version": "0.1.0",
-  "description": "Read-only PhageScope phage database: 2.58M phages, 131M proteins, 12.6M protein families. Access on request: tokens are granted after approval.",
+  "version": "0.1.1",
+  "description": "Read-only PhageScope phage database: 2.58M phages, 131M proteins, 12.6M protein families. Sign up at https://phageagent.deepomics.org and create your own read-only token.",
   "author": {
     "name": "PhageScope / GAgent team",
     "url": "https://phageagent.deepomics.org"

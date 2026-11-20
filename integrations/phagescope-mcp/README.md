@@ -14,7 +14,7 @@ the `analysis:submit` scope (invite only); these packages do not mention them.
 
 ## Access
 
-Access is on request: tokens are granted only after approval. Ask xxwang5587@gmail.com.
+Anyone can use it: sign up at https://phageagent.deepomics.org, then create a read-only token yourself (see "Get a token" below). Questions: xxwang5587@gmail.com.
 
 ## Layout
 
@@ -28,7 +28,7 @@ Access is on request: tokens are granted only after approval. Ask xxwang5587@gma
 
 ## Install
 
-Once your account is approved, sign in at https://phageagent.deepomics.org and `POST /phagescope-mcp/tokens {"name": "<client>"}`.
+Sign up or sign in at https://phageagent.deepomics.org and `POST /phagescope-mcp/tokens {"name": "<client>"}`.
 
 Claude Code:
 
