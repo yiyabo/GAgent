@@ -12,7 +12,7 @@
     {
       "name": "phagescope",
       "source": "./claude/phagescope",
-      "description": "Read-only PhageScope phage database: 2.58M phages, 131M proteins, 12.6M protein families.",
+      "description": "PhageScope phage database (2.58M phages, 131M proteins, 12.6M protein families) plus agent-run analysis tasks.",
       "version": "0.1.1",
       "category": "science",
       "keywords": [

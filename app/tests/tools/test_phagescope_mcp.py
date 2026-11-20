@@ -324,5 +324,17 @@ def test_open_access_issues_read_only_tokens_to_any_signed_in_user(mcp_client, m
     assert listed.status_code == 200
     names = {tool["name"] for tool in listed.json()["result"]["tools"]}
     assert "catalog_overview" in names and not names & set(analysis.ANALYSIS_TOOLS_BY_NAME)
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ANALYSIS_ENABLED", "1")
+    with_analysis = client.post("/phagescope-mcp/tokens", json={"name": "open-analysis"}).json()
+    assert with_analysis["record"]["scopes"] == ["data:read", "analysis:submit"]
+    names = {tool["name"] for tool in _rpc(client, with_analysis["token"], "tools/list").json()["result"]["tools"]}
+    assert set(analysis.ANALYSIS_TOOLS_BY_NAME) <= names
     _setenv(monkeypatch, "PHAGESCOPE_MCP_OPEN_ACCESS", "0")
     assert _rpc(client, body["token"], "tools/list").status_code == 401
+
+
+@pytest.mark.parametrize(("count", "limit", "blocked"), [(9, 10, False), (10, 10, True), (10_000, 0, False), (5, -1, False)])
+def test_analysis_limits_of_zero_mean_unlimited(count, limit, blocked):
+    from app.services.phagescope_mcp import analysis
+
+    assert analysis._at_limit(count, limit) is blocked

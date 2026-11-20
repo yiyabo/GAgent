@@ -6,15 +6,17 @@ Remote MCP server: `https://phageagent.deepomics.org/mcp` (Streamable HTTP,
 bearer token `gpsk_...`). Server code and access settings:
 `app/services/phagescope_mcp/README.md`.
 
-Public scope is the 11 read-only tools (`catalog_overview`, `search_phages`,
-`cohort_report`, `aggregate_phages`, `get_phage`, `get_sequence`,
-`search_proteins`, `search_families`, `family_members`, `query_features`,
-`get_structures`). The 6 analysis-task tools are only listed for tokens with
-the `analysis:submit` scope (invite only); these packages do not mention them.
+Every self-issued token gets all 17 tools: 11 read-only data tools
+(`catalog_overview`, `search_phages`, `cohort_report`, `aggregate_phages`,
+`get_phage`, `get_sequence`, `search_proteins`, `search_families`,
+`family_members`, `query_features`, `get_structures`) and 6 analysis-task tools
+that hand a request to the PhageScope agent and return its results. Data reads
+are capped at 2 GB per token per day; analysis tasks have no quota during the
+test phase.
 
 ## Access
 
-Anyone can use it: sign up at https://phageagent.deepomics.org, then create a read-only token yourself (see "Get a token" below). Questions: xxwang5587@gmail.com.
+Anyone can use it: sign up at https://phageagent.deepomics.org, then create a token yourself (see "Get a token" below). Questions: xxwang5587@gmail.com.
 
 ## Layout
 

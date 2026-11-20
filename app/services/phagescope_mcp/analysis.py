@@ -306,7 +306,7 @@ async def submit_analysis(token: store.McpToken, arguments: dict[str, Any]) -> d
         if existing is not None:
             return {"task_id": existing.task_id, "status": _status(_run_row(existing)), "deduplicated": True}
     message, title = _compose_message(arguments)
-    if store.analysis_counts(token)["user_today"] >= int(settings.phagescope_mcp_analysis_daily_submissions):
+    if _at_limit(store.analysis_counts(token)["user_today"], settings.phagescope_mcp_analysis_daily_submissions):
         raise AnalysisError("daily_task_quota_exceeded", DAILY_QUOTA_ERROR)
     _check_capacity(token)
 
@@ -407,12 +407,17 @@ async def get_analysis_result(token: store.McpToken, arguments: dict[str, Any]) 
     }
 
 
+def _at_limit(count: int, limit: Any) -> bool:
+    """Limits of 0 or less mean unlimited."""
+    return int(limit) > 0 and count >= int(limit)
+
+
 def _check_capacity(token: store.McpToken) -> None:
     settings = get_settings()
     counts = store.analysis_counts(token)
-    if counts["token_active"] >= int(settings.phagescope_mcp_analysis_max_active_per_token):
+    if _at_limit(counts["token_active"], settings.phagescope_mcp_analysis_max_active_per_token):
         raise AnalysisError("too_many_tasks", "This token already has a running analysis; wait for it to finish.")
-    if counts["global_active"] >= int(settings.phagescope_mcp_analysis_global_max_active):
+    if _at_limit(counts["global_active"], settings.phagescope_mcp_analysis_global_max_active):
         raise AnalysisError("server_busy", "The server is running its maximum number of MCP analyses; retry later.")
 
 
@@ -445,7 +450,7 @@ async def reply_analysis(token: store.McpToken, arguments: dict[str, Any]) -> di
     if _status(_run_row(task)) == "working":
         raise AnalysisError("task_busy", "The task is still working; wait for it to finish or cancel it first.")
     settings = get_settings()
-    if reply is None and store.analysis_counts(token)["user_today"] >= int(settings.phagescope_mcp_analysis_daily_submissions):
+    if reply is None and _at_limit(store.analysis_counts(token)["user_today"], settings.phagescope_mcp_analysis_daily_submissions):
         raise AnalysisError("daily_task_quota_exceeded", DAILY_QUOTA_ERROR)
     _check_capacity(token)
     request = ChatRequest(

@@ -28,3 +28,13 @@ def may_self_issue(principal: RequestPrincipal) -> bool:
         return True
     email = str(principal.email or "").lower()
     return not get_settings().auth_open_signup and bool(email and email in identities)
+
+
+def self_issue_scopes() -> tuple[str, ...]:
+    """Open access hands out analysis:submit too while analysis is enabled."""
+    from app.services.phagescope_mcp import store
+
+    settings = get_settings()
+    if settings.phagescope_mcp_open_access and settings.phagescope_mcp_analysis_enabled:
+        return (store.SCOPE_DATA_READ, store.SCOPE_ANALYSIS_SUBMIT)
+    return (store.SCOPE_DATA_READ,)

@@ -22,14 +22,14 @@ paging) and `notes`. A null field means unknown, never zero.
 | `PHAGESCOPE_MCP_ENABLED` | `0` | `/mcp` answers 404 until set to `1` |
 | `PHAGESCOPE_MCP_ALLOWED_USERS` | empty | user ids / emails that may self-issue tokens (admins always may) |
 | `PHAGESCOPE_MCP_ALLOWED_USER_IDS` | empty | immutable user ids that may self-issue/use tokens; required alongside email entries when open signup is enabled |
-| `PHAGESCOPE_MCP_OPEN_ACCESS` | `0` | `1` lets every signed-in, active user self-issue `data:read` tokens without an allowlist entry; `analysis:submit` is still granted only by an admin |
+| `PHAGESCOPE_MCP_OPEN_ACCESS` | `0` | `1` lets every signed-in, active user self-issue tokens without an allowlist entry; they get `data:read`, plus `analysis:submit` when analysis is enabled |
 | `PHAGESCOPE_MCP_ALLOWED_HOSTS` | `phageagent.deepomics.org,localhost,127.0.0.1` | exact Host values accepted by the `/mcp` transport |
 | `PHAGESCOPE_MCP_ALLOWED_ORIGINS` | `https://phageagent.deepomics.org,http://localhost,http://127.0.0.1` | exact Origin values accepted by the `/mcp` transport |
 | `PHAGESCOPE_MCP_DAILY_BYTES` | 2 GiB | returned bytes per token per UTC day |
 | `PHAGESCOPE_MCP_REQUESTS_PER_MINUTE` | 60 | per token, per app process |
 | `PHAGESCOPE_MCP_MAX_CONCURRENCY` | 4 | in-flight requests per token, per app process |
 | `PHAGESCOPE_MCP_MAX_RESULT_BYTES` | 512 KiB | per call; larger results are trimmed by rows and flagged `truncated` |
-| `PHAGESCOPE_MCP_ANALYSIS_DAILY_SUBMISSIONS` | 10 | daily per-user cap for initial submissions plus reply runs |
+| `PHAGESCOPE_MCP_ANALYSIS_DAILY_SUBMISSIONS` | 10 | daily per-user cap for initial submissions plus reply runs; `0` = unlimited (also for the two concurrency caps) |
 
 When `AUTH_OPEN_SIGNUP=1`, an email entry in `PHAGESCOPE_MCP_ALLOWED_USERS` is
 not sufficient to issue or use a token: the user's immutable id must also be in

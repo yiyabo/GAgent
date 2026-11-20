@@ -1,7 +1,7 @@
 {
   "name": "phagescope",
   "version": "0.1.1",
-  "description": "Read-only PhageScope phage database: 2.58M phages, 131M proteins, 12.6M protein families.",
+  "description": "PhageScope phage database (2.58M phages, 131M proteins, 12.6M protein families) plus agent-run analysis tasks.",
   "author": {
     "name": "PhageScope / GAgent team",
     "url": "https://phageagent.deepomics.org"
@@ -20,8 +20,8 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "PhageScope",
-    "shortDescription": "Read-only PhageScope phage database: 2.58M phages, 131M proteins, 12.6M protein families.",
-    "longDescription": "Query the PhageScope phage genome database from your agent: search and aggregate phages by host, lifestyle, completeness and taxonomy, read phage details and genome sequences, search proteins and protein families, query annotated features and resolve predicted structures. Eleven read-only tools; every result carries provenance (source, data snapshot, retrieval time), paging and truncation limits, and keeps unknown values distinct from zero. Sign up at https://phageagent.deepomics.org and create your own read-only token.",
+    "shortDescription": "PhageScope phage database (2.58M phages, 131M proteins, 12.6M protein families) plus agent-run analysis tasks.",
+    "longDescription": "Query the PhageScope phage genome database from your agent: search and aggregate phages by host, lifestyle, completeness and taxonomy, read phage details and genome sequences, search proteins and protein families, query annotated features and resolve predicted structures. Eleven read-only tools; every result carries provenance (source, data snapshot, retrieval time), paging and truncation limits, and keeps unknown values distinct from zero. Sign up at https://phageagent.deepomics.org and create your own token.",
     "developerName": "PhageScope / GAgent team",
     "category": "Research",
     "capabilities": [
