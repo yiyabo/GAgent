@@ -119,12 +119,12 @@ def test_mcp_initialize_and_lists_read_only_tools(mcp_client):
         {"protocolVersion": PROTOCOL, "capabilities": {}, "clientInfo": {"name": "pytest", "version": "1"}},
     )
     assert init.status_code == 200, init.text
-    assert init.json()["result"]["serverInfo"]["name"] == "phagescope"
+    assert init.json()["result"]["serverInfo"]["name"] == "phageagent"
     listed = _rpc(client, token, "tools/list").json()["result"]["tools"]
     assert {t["name"] for t in listed} == set(tools.TOOLS_BY_NAME)
     assert all(t["annotations"]["readOnlyHint"] and not t["annotations"]["destructiveHint"] for t in listed)
     resources = _rpc(client, token, "resources/list").json()["result"]["resources"]
-    assert resources[0]["uri"] == "phagescope://reference/query-guide"
+    assert resources[0]["uri"] == "phageagent://reference/query-guide"
 
 
 def test_mcp_search_phages_envelope_audit_and_usage(mcp_client):
@@ -349,7 +349,7 @@ def test_anonymous_discovery_lists_tools_but_never_calls_them(mcp_client, monkey
         "initialize",
         {"protocolVersion": PROTOCOL, "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}},
     )
-    assert init.status_code == 200 and init.json()["result"]["serverInfo"]["name"] == "phagescope"
+    assert init.status_code == 200 and init.json()["result"]["serverInfo"]["name"] == "phageagent"
     assert _rpc(client, None, "ping").status_code == 200
     listed = _rpc(client, None, "tools/list").json()["result"]["tools"]
     assert {"search_phages", "get_phage"} <= {tool["name"] for tool in listed}

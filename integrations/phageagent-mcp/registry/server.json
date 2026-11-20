@@ -1,23 +1,23 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.yiyabo/phagescope",
-  "title": "PhageScope",
+  "name": "io.github.yiyabo/phageagent",
+  "title": "PhageAgent",
   "icons": [
     {
-      "src": "https://raw.githubusercontent.com/yiyabo/phagescope-mcp/main/icon.png",
+      "src": "https://raw.githubusercontent.com/yiyabo/phageagent-mcp/main/icon.png",
       "mimeType": "image/png",
       "sizes": [
         "256x256"
       ]
     }
   ],
-  "description": "PhageScope phage database and analysis tasks. Free sign-up at phageagent.deepomics.org.",
+  "description": "PhageAgent MCP: PhageScope phage database and analysis tasks. Sign up at phageagent.deepomics.org.",
   "repository": {
-    "url": "https://github.com/yiyabo/phagescope-mcp",
+    "url": "https://github.com/yiyabo/phageagent-mcp",
     "source": "github"
   },
-  "websiteUrl": "https://github.com/yiyabo/phagescope-mcp",
-  "version": "0.1.2",
+  "websiteUrl": "https://github.com/yiyabo/phageagent-mcp",
+  "version": "0.2.0",
   "remotes": [
     {
       "type": "streamable-http",
@@ -25,7 +25,7 @@
       "headers": [
         {
           "name": "Authorization",
-          "description": "Bearer <PhageScope MCP token (gpsk_...)>",
+          "description": "Bearer <PhageAgent MCP token (gpsk_...)>",
           "isRequired": true,
           "isSecret": true
         }

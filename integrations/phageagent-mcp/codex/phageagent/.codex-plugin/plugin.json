@@ -1,0 +1,37 @@
+{
+  "name": "phageagent",
+  "version": "0.1.1",
+  "description": "PhageAgent MCP: PhageScope phage database (2.58M phages, 131M proteins, 12.6M protein families) plus agent-run analysis tasks.",
+  "author": {
+    "name": "PhageAgent team",
+    "url": "https://phageagent.deepomics.org"
+  },
+  "homepage": "https://github.com/yiyabo/phageagent-mcp",
+  "repository": "https://github.com/yiyabo/phageagent-mcp",
+  "license": "MIT",
+  "keywords": [
+    "phage",
+    "bacteriophage",
+    "bioinformatics",
+    "genomics",
+    "proteins",
+    "phagescope"
+  ],
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "PhageAgent",
+    "shortDescription": "PhageAgent MCP: PhageScope phage database (2.58M phages, 131M proteins, 12.6M protein families) plus agent-run analysis tasks.",
+    "longDescription": "PhageAgent MCP: query the PhageScope phage genome database from your agent: search and aggregate phages by host, lifestyle, completeness and taxonomy, read phage details and genome sequences, search proteins and protein families, query annotated features and resolve predicted structures. Eleven read-only tools; every result carries provenance (source, data snapshot, retrieval time), paging and truncation limits, and keeps unknown values distinct from zero. Sign up at https://phageagent.deepomics.org and create your own token.",
+    "developerName": "PhageAgent team",
+    "category": "Research",
+    "capabilities": [
+      "Read"
+    ],
+    "websiteURL": "https://phageagent.deepomics.org",
+    "privacyPolicyURL": "https://github.com/yiyabo/phageagent-mcp/blob/main/PRIVACY.md",
+    "defaultPrompt": [
+      "How many complete Escherichia phages are virulent vs temperate?",
+      "Find holin and endolysin proteins of Pseudomonas phage phiKMV"
+    ]
+  }
+}
