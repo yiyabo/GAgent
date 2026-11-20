@@ -582,7 +582,7 @@ def reserve_analysis_reply(task: AnalysisTask, client_message_id: str, daily_lim
                     return claimed > 0
                 conn.commit()
                 return False
-            if _daily_analysis_count(conn, task.user_id) >= daily_limit:
+            if daily_limit > 0 and _daily_analysis_count(conn, task.user_id) >= daily_limit:
                 raise AnalysisQuotaExceeded()
             conn.execute(
                 """INSERT INTO phagescope_mcp_analysis_replies

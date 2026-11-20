@@ -2,13 +2,13 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.yiyabo/phagescope",
   "title": "PhageScope",
-  "description": "Read-only PhageScope phage database. Access on request; tokens granted after approval.",
+  "description": "PhageScope phage database and analysis tasks. Free sign-up at phageagent.deepomics.org.",
   "repository": {
     "url": "https://github.com/yiyabo/phagescope-mcp",
     "source": "github"
   },
   "websiteUrl": "https://github.com/yiyabo/phagescope-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "remotes": [
     {
       "type": "streamable-http",

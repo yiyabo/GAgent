@@ -63,6 +63,7 @@ async def issue_my_token(payload: IssueTokenRequest, request: Request) -> dict[s
         name=payload.name,
         created_by=principal.user_id,
         expires_in_days=payload.expires_in_days,
+        scopes=policy.self_issue_scopes(),
     )
     return {"token": plaintext, "record": record.public()}
 

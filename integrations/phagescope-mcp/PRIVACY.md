@@ -12,12 +12,18 @@ summary of the arguments, status, error code, duration, returned rows and
 bytes, and the time. Plaintext tokens are never stored (only a SHA-256 hash)
 and never logged. A per-token daily byte counter enforces the usage limit.
 
+Analysis tasks: the request text you submit, the agent run and its output
+files are stored on the server under your account, and the request is sent to
+the language model provider the PhageScope agent uses. A task stops being
+reachable through MCP 30 days after submission; the stored data is not deleted
+automatically yet.
+
 Retention: audit records and usage counters are kept until the operator deletes them; there is no automatic expiry yet. Revoking a token stops new records for it.
 
 Sharing: data is not sold or shared with third parties. Your AI client and its
 model provider see the results the tools return, under their own policies.
 
-Access: on request; tokens are granted only after approval.
+Access: any registered user can create tokens.
 
 Revocation: revoke a token at any time with
 `DELETE /phagescope-mcp/tokens/{id}`; contact us to delete your account.
