@@ -8,6 +8,7 @@ const { Paragraph, Text } = Typography;
 
 export const MCP_TOKENS_QUERY_KEY = ['extensions', 'mcp-tokens'] as const;
 const TOKEN_PLACEHOLDER = '<your-token>';
+const CLIENT_NAMES = { claude: 'Claude Code', codex: 'Codex' } as const;
 
 function mcpEndpoint(): string {
   return `${window.location.origin}/mcp`;
@@ -166,8 +167,8 @@ const ExternalAccessTab: React.FC = () => {
         <Tabs
           size="small"
           items={[
-            { key: 'claude', label: 'Claude Code', children: <CodeBlock text={snippets.claude} testId="snippet-claude" /> },
-            { key: 'codex', label: 'Codex', children: <CodeBlock text={snippets.codex} testId="snippet-codex" /> },
+            { key: 'claude', label: CLIENT_NAMES.claude, children: <CodeBlock text={snippets.claude} testId="snippet-claude" /> },
+            { key: 'codex', label: CLIENT_NAMES.codex, children: <CodeBlock text={snippets.codex} testId="snippet-codex" /> },
             { key: 'generic', label: t('extensions.externalGeneric'), children: <CodeBlock text={snippets.generic} testId="snippet-generic" /> },
           ]}
         />
