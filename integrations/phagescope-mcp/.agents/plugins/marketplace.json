@@ -1,0 +1,20 @@
+{
+  "name": "phagescope",
+  "interface": {
+    "displayName": "PhageScope"
+  },
+  "plugins": [
+    {
+      "name": "phagescope",
+      "source": {
+        "source": "local",
+        "path": "./codex/phagescope"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Research"
+    }
+  ]
+}
