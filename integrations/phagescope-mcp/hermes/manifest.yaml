@@ -4,7 +4,7 @@ manifest_version: 1
 
 name: phagescope
 description: >-
-  Read-only PhageScope phage database: 2.58M phages, 131M proteins and
+  PhageAgent MCP: read-only PhageScope phage database: 2.58M phages, 131M proteins and
   12.6M protein families, with provenance on every result.
 source: https://github.com/yiyabo/phagescope-mcp
 
@@ -17,7 +17,7 @@ auth:
   type: api_key
   env:
     - name: MCP_PHAGESCOPE_API_KEY
-      prompt: PhageScope MCP token (gpsk_...)
+      prompt: PhageAgent MCP token (gpsk_...)
       secret: true
 
 suggest:
@@ -25,6 +25,7 @@ suggest:
     - phage
     - bacteriophage
     - phagescope
+    - phageagent
   hosts:
     - phageagent.deepomics.org
 

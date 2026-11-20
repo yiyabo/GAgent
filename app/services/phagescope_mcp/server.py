@@ -1,4 +1,4 @@
-"""Streamable HTTP MCP endpoint for PhageScope, mounted at exactly ``/mcp``.
+"""Streamable HTTP MCP endpoint (PhageAgent MCP, PhageScope data), mounted at exactly ``/mcp``.
 
 Tool calls need ``Authorization: Bearer gpsk_...``. With
 ``PHAGESCOPE_MCP_ANON_DISCOVERY`` on, requests without a token may only
@@ -55,13 +55,13 @@ from .tools import (
 
 logger = logging.getLogger(__name__)
 
-SERVER_NAME = "phagescope"
+SERVER_NAME = "phageagent"
 MCP_PATH = "/mcp"
 REFERENCE_URI = "phagescope://reference/query-guide"
 _STATE_KEY = "phagescope_mcp_token"
 
 INSTRUCTIONS = (
-    "Read-only access to the PhageScope phage database (about 2.6M phage genomes, 131M proteins, "
+    "PhageAgent MCP: read-only access to the PhageScope phage database (about 2.6M phage genomes, 131M proteins, "
     "12.6M protein families). Start with catalog_overview, use cohort_report/aggregate_phages for "
     "counts, search_phages for rows, then get_phage/get_sequence/search_proteins for detail. "
     "Missing values are unknown, not zero. Results are paged and size-capped; page instead of "
@@ -161,7 +161,7 @@ async def _call_analysis_tool(token: store.McpToken, name: str, arguments: dict[
 async def _call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) -> CallToolResult:
     token = _token_for(ctx)
     if token is None:
-        return _error("unauthorized", "A valid PhageScope MCP token is required.")
+        return _error("unauthorized", "A valid PhageAgent MCP token is required.")
     spec = TOOLS_BY_NAME.get(params.name)
     arguments = dict(params.arguments or {})
     if spec is None and params.name in analysis.ANALYSIS_TOOLS_BY_NAME:
@@ -260,7 +260,7 @@ def build_server() -> Server:
     return Server(
         SERVER_NAME,
         version="1",
-        title="PhageScope",
+        title="PhageAgent",
         instructions=INSTRUCTIONS,
         on_list_tools=_list_tools,
         on_call_tool=_call_tool,
@@ -363,7 +363,7 @@ class PhageScopeMcpEndpoint:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         settings = get_settings()
         if not settings.phagescope_mcp_enabled or self._manager is None:
-            await _refuse(404, "not_enabled", "The PhageScope MCP endpoint is not enabled.")(scope, receive, send)
+            await _refuse(404, "not_enabled", "The PhageAgent MCP endpoint is not enabled.")(scope, receive, send)
             return
         presented = _bearer(scope)
         token = store.authenticate(presented) if presented else None
@@ -371,10 +371,10 @@ class PhageScopeMcpEndpoint:
             if not presented and settings.phagescope_mcp_anon_discovery and scope.get("method") == "POST":
                 await self._anonymous(scope, receive, send)
                 return
-            await _refuse(401, "unauthorized", "A valid PhageScope MCP bearer token is required.")(scope, receive, send)
+            await _refuse(401, "unauthorized", "A valid PhageAgent MCP bearer token is required.")(scope, receive, send)
             return
         if not set(token.scopes) & set(store.KNOWN_SCOPES):
-            await _refuse(403, "insufficient_scope", "Token has no PhageScope MCP scope.")(scope, receive, send)
+            await _refuse(403, "insufficient_scope", "Token has no PhageAgent MCP scope.")(scope, receive, send)
             return
         refusal = limiter.acquire(
             token.id,
@@ -400,7 +400,7 @@ class PhageScopeMcpEndpoint:
         body = await _read_body(receive, _MAX_ANONYMOUS_BODY)
         methods = _rpc_methods(body) if body is not None else None
         if not methods or not methods <= ANONYMOUS_METHODS:
-            await _refuse(401, "unauthorized", "A valid PhageScope MCP bearer token is required.")(scope, receive, send)
+            await _refuse(401, "unauthorized", "A valid PhageAgent MCP bearer token is required.")(scope, receive, send)
             return
         key = f"anon:{_client_ip(scope)}"
         refusal = limiter.acquire(

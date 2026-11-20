@@ -1,10 +1,10 @@
 {
   "name": "phagescope",
-  "displayName": "PhageScope",
+  "displayName": "PhageAgent",
   "version": "0.1.1",
-  "description": "PhageScope phage database (2.58M phages, 131M proteins, 12.6M protein families) plus agent-run analysis tasks. Sign up at https://phageagent.deepomics.org and create your own token.",
+  "description": "PhageAgent MCP: PhageScope phage database (2.58M phages, 131M proteins, 12.6M protein families) plus agent-run analysis tasks. Sign up at https://phageagent.deepomics.org and create your own token.",
   "author": {
-    "name": "PhageScope / GAgent team",
+    "name": "PhageAgent team",
     "url": "https://phageagent.deepomics.org"
   },
   "homepage": "https://github.com/yiyabo/phagescope-mcp",
@@ -24,7 +24,7 @@
   "userConfig": {
     "phagescope_token": {
       "type": "string",
-      "title": "PhageScope MCP token",
+      "title": "PhageAgent MCP token",
       "description": "Personal access token (gpsk_...) issued at https://phageagent.deepomics.org via POST /phagescope-mcp/tokens.",
       "sensitive": true
     }

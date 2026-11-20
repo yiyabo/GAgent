@@ -1,18 +1,18 @@
 {
   "name": "phagescope",
   "owner": {
-    "name": "PhageScope / GAgent team",
+    "name": "PhageAgent team",
     "url": "https://phageagent.deepomics.org"
   },
   "metadata": {
-    "description": "PhageScope MCP for Claude Code",
+    "description": "PhageAgent MCP for Claude Code",
     "version": "0.1.1"
   },
   "plugins": [
     {
       "name": "phagescope",
       "source": "./claude/phagescope",
-      "description": "PhageScope phage database (2.58M phages, 131M proteins, 12.6M protein families) plus agent-run analysis tasks.",
+      "description": "PhageAgent MCP: PhageScope phage database (2.58M phages, 131M proteins, 12.6M protein families) plus agent-run analysis tasks.",
       "version": "0.1.1",
       "category": "science",
       "keywords": [

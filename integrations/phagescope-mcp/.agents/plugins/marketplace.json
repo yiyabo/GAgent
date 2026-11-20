@@ -1,7 +1,7 @@
 {
   "name": "phagescope",
   "interface": {
-    "displayName": "PhageScope"
+    "displayName": "PhageAgent"
   },
   "plugins": [
     {

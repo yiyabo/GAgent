@@ -1,6 +1,6 @@
 [![mcptry](https://mcptry.com/badge/io.github.yiyabo/phagescope)](https://mcptry.com/servers/io.github.yiyabo/phagescope)
 
-# PhageScope MCP — client packages and directory listings
+# PhageAgent MCP — client packages and directory listings
 
 Source of the public repo https://github.com/yiyabo/phagescope-mcp (this folder becomes its root).
 
@@ -12,7 +12,7 @@ Every self-issued token gets all 17 tools: 11 read-only data tools
 (`catalog_overview`, `search_phages`, `cohort_report`, `aggregate_phages`,
 `get_phage`, `get_sequence`, `search_proteins`, `search_families`,
 `family_members`, `query_features`, `get_structures`) and 6 analysis-task tools
-that hand a request to the PhageScope agent and return its results. Data reads
+that hand a request to the PhageAgent agent and return its results. Data reads
 are capped at 2 GB per token per day; analysis tasks have no quota during the
 test phase.
 
