@@ -40,6 +40,11 @@ Each result is one JSON text block: `data` (service payload), `provenance`
 (source, snapshot, retrieval time), `limits` (`returned_rows`, `truncated`,
 paging) and `notes`. A null field means unknown, never zero.
 
+`search_proteins` with `protein_ids` trims and de-duplicates the ids (first
+occurrence kept), returns `results` in input order, and adds `missing_ids`
+(requested ids with no PhageScope protein, in input order) and
+`requested_count`; `count` is the number of ids found.
+
 ## Access and limits
 
 | Setting | Default | Meaning |

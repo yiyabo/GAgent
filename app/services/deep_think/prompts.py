@@ -324,6 +324,13 @@ def _get_structured_plan_retry_prompt(agent: DeepThinkAgent) -> str:
         required_ops.append("review")
     if flags["optimize_required"]:
         required_ops.append("optimize")
+    if required_ops == ["create"] and flags.get("contract_enforced") and agent._current_plan_id() is None:
+        return (
+            "Plan mode is on and no Plan is bound yet. If this message asks for work to be planned, "
+            "call `plan_operation` with operation create now. If it only asks a question (an explanation, "
+            "a file or tool name, a recommendation), finish with the answer instead; it is kept with a note "
+            "that no Plan was created. Do not create a Plan just to satisfy this reminder."
+        )
     if required_ops:
         return (
             "The user explicitly requested a structured plan lifecycle operation. "

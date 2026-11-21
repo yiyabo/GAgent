@@ -42,6 +42,10 @@ def test_candidate_feedback_review_edit_and_scope_over_real_http(app_client_fact
         assert review.status_code==200 and review.json()['state']=='candidate'
         feedback=client.post('/skill-learning/runs/writing-source/feedback',json={'session_id':'source-s','rating':'needs_work','comment':'结构需要修改'},headers=alice)
         assert feedback.status_code==200
+        stored=client.get('/skill-learning/runs/writing-source/feedback',params={'session_id':'source-s'},headers=alice)
+        assert stored.status_code==200 and stored.json()['feedback']['rating']=='needs_work'
+        assert client.get('/skill-learning/runs/writing-source/feedback',params={'session_id':'source-s'},headers=bob).status_code==403
+        assert client.get('/skill-learning/runs/writing-source/feedback',params={'session_id':'other-s'},headers=alice).status_code==403
         assert repo.get_skill(identity)['state']=='suspended'
         edit=skill['draft'];edit['steps'][0]['instruction']='先界定问题与证据范围，再组织报告。'
         updated=client.put('/skill-learning/skills/'+identity,json={'session_id':'source-s','version':1,'draft':edit},headers=alice)

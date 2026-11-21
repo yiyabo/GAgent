@@ -50,7 +50,7 @@ export interface ChatState {
     uploadedFiles: UploadedFile[];
     /** Unsent attachments per chat, keyed by the local session id. */
     attachmentDrafts: Record<string, UploadedFile[]>;
-    uploadingFiles: Array<{ id: string; name: string; sessionKey: string }>;
+    uploadingFiles: Array<{ id: string; name: string; sessionKey: string; progress?: number }>;
 
     // =========================
     // ACTIONS
