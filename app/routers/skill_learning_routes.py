@@ -83,6 +83,12 @@ async def capture_run(run_id:str,body:RunAction,request:Request):
     return {'run_id':run_id,'job':repository.job(run_id)}
 
 
+@router.get('/runs/{run_id}/feedback')
+async def run_feedback(run_id:str,request:Request,session_id:str=Query(...)):
+    scoped_run(run_id,session_id,request)
+    return {'run_id':run_id,'feedback':await asyncio.to_thread(repository.feedback,run_id)}
+
+
 @router.post('/runs/{run_id}/feedback')
 async def feedback(run_id:str,body:Feedback,request:Request):
     run=scoped_run(run_id,body.session_id,request)
