@@ -21,7 +21,7 @@
   "interface": {
     "displayName": "PhageAgent",
     "shortDescription": "PhageAgent MCP: PhageScope phage database (2.58M phages, 131M proteins, 12.6M protein families) plus agent-run analysis tasks.",
-    "longDescription": "PhageAgent MCP: query the PhageScope phage genome database from your agent: search and aggregate phages by host, lifestyle, completeness and taxonomy, read phage details and genome sequences, search proteins and protein families, query annotated features and resolve predicted structures. Eleven read-only tools; every result carries provenance (source, data snapshot, retrieval time), paging and truncation limits, and keeps unknown values distinct from zero. Sign up at https://phageagent.deepomics.org and create your own token.",
+    "longDescription": "PhageAgent MCP: query the PhageScope phage genome database from your agent: search and aggregate phages by host, lifestyle, completeness and taxonomy, read phage details and genome sequences, search proteins and protein families, query annotated features and resolve experimental and predicted structures. Eleven read-only tools; every result carries provenance (source, data snapshot, retrieval time), paging and truncation limits, and keeps unknown values distinct from zero. Sign up at https://phageagent.deepomics.org and create your own token.",
     "developerName": "PhageAgent team",
     "category": "Research",
     "capabilities": [

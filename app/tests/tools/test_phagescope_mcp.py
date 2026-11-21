@@ -36,7 +36,61 @@ class FakeDataService:
             if body.get("accession") == "missing":
                 raise tools.PhageScopeDataError("not_found", "No such phage.", 404)
             return {"id": 7, "Acession_ID": "PS00007", "lifestyle": None}
+        if path == "v2/structures/resolve/":
+            rows = [dict(STRUCTURE_ROWS.get(pid, {"protein_id": pid, "available": False})) for pid in body["protein_ids"]]
+            return {"count": len(rows), "results": rows}
         return {"results": []}
+
+
+STRUCTURE_ROWS = {
+    "NP_040587.1": {
+        "protein_id": "NP_040587.1", "available": True, "asset_id": "PDB:7vi9_A", "confidence_label": "experimental",
+        "match_type": "exact_external", "identity": 100.0, "qcov": 100.0, "tcov": 100.0, "source": "PDB",
+        "method": "experimental", "plddt_mean": None, "resolution_a": None, "file_format": "cif", "pdb_rel_path": "",
+    },
+    "MetaVR_jumbo_01_1": {
+        "protein_id": "MetaVR_jumbo_01_1", "available": True, "asset_id": "ESMFOLD:MetaVR_jumbo_01_1",
+        "confidence_label": "predicted", "match_type": "exact_internal", "identity": 100.0, "qcov": 100.0,
+        "tcov": 100.0, "source": "ESMFold", "method": "ESMFold", "plddt_mean": 88.4, "resolution_a": None,
+        "file_format": "pdb", "pdb_rel_path": "5/split_1/MetaVR_jumbo_01_1.pdb",
+    },
+}
+
+
+def _structure_notes(client, token, ids):
+    result, payload = _call(client, token, "get_structures", {"protein_ids": ids})
+    assert result["isError"] is False
+    return payload["data"]["results"], " ".join(payload["notes"])
+
+
+def test_get_structures_notes_follow_each_record_source_and_method(mcp_client):
+    client, _ = mcp_client
+    token, _ = store.issue_token("u1", name="t")
+
+    rows, notes = _structure_notes(client, token, ["NP_040587.1"])
+    assert rows[0]["evidence"] == "experimental"
+    assert rows[0]["source_url"] == "https://www.rcsb.org/structure/7VI9"
+    assert "experimentally determined" in notes and "PDB:7vi9_A" in notes
+    assert "ESMFold" not in notes and "computational" not in notes
+
+    rows, notes = _structure_notes(client, token, ["MetaVR_jumbo_01_1"])
+    assert rows[0]["evidence"] == "predicted" and "source_url" not in rows[0]
+    assert "computational models" in notes and "ESMFold ESMFold (1)" in notes
+    assert "experimentally determined" not in notes
+
+    rows, notes = _structure_notes(client, token, ["NP_999999999.1"])
+    assert rows == [{"protein_id": "NP_999999999.1", "available": False}]
+    assert "No structure record in PhageScope for 1 id(s): NP_999999999.1" in notes
+    assert "experimentally" not in notes and "computational" not in notes
+
+    rows, notes = _structure_notes(client, token, ["NP_040587.1", "NP_999999999.1", "MetaVR_jumbo_01_1"])
+    assert [r.get("evidence") for r in rows] == ["experimental", None, "predicted"]
+    assert "1 record(s) are experimentally determined" in notes
+    assert "1 record(s) are computational models" in notes
+    assert "NP_999999999.1" in notes
+
+    description = tools.TOOLS_BY_NAME["get_structures"].description
+    assert "experimental (PDB)" in description and "predicted" in description
 
 
 @pytest.fixture

@@ -21,7 +21,7 @@ OPERATIONS = (
 
 DESCRIPTION = (
     "PREFERRED read-only PhageScope V2 catalog query, aggregation, and untruncated sequence/annotation/structure "
-    "materializer (2.58M phages / 27 datasets, 131.5M proteins, 12.61M protein families, 7 feature tracks, ESMFold structures). "
+    "materializer (2.58M phages / 27 datasets, 131.5M proteins, 12.61M protein families, 7 feature tracks, PDB and predicted structures). "
     "Operations: "
     "(1) overview / datasets — catalog totals and live DB/mount status; "
     "(2) cohort_report — PREFERRED for cohort exploration: ONE call returns exact count, length stats, "
@@ -37,7 +37,7 @@ DESCRIPTION = (
     "(7) family_index_status — last GAgent-owned read-only drift check (counts plus fixed samples; a clean check is not full-content proof); "
     "(8) family_members — members of one family_id (optional subfamily_id, dataset, include_sequence); "
     "(9) features — trna, crispr, anticrispr, terminator, virulence, amr, transmembrane by phage or cross-dataset keyword; "
-    "(10) structures — ESMFold/AFDB availability/pLDDT for up to 50 protein_ids (materialize_pdb=true copies .pdb); "
+    "(10) structures — experimental (PDB) or predicted (ESMFold, ColabFold, AlphaFold...) structure per record source/method, pLDDT where reported, for up to 50 protein_ids (materialize_pdb=true copies .pdb); "
     "(11) materialize — UNTRUNCATED genomes (.fasta), proteins (.faa), annotations (.gff3), metadata (.tsv), "
     "structures (.pdb) into results/phagescope/<output_subdir>/ ready for bio_tools and execute_code."
 )
