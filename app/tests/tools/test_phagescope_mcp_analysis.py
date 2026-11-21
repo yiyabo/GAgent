@@ -461,3 +461,12 @@ def test_reply_cancel_and_list(analysis_client):
     assert theirs["tasks"] == []
     res, err = _call(client, other, "cancel_analysis", {"task_id": task_id})
     assert err["error"]["code"] == "not_found"
+
+
+def test_submitted_task_asks_for_plain_row_tables():
+    from app.services.phagescope_mcp.analysis import _compose_message
+
+    message, _title = _compose_message({"instructions": "Export a TSV of three accessions."})
+
+    assert "one header row, then data rows only" in message
+    assert "no '#' note lines" in message
