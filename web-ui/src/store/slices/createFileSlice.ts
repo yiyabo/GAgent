@@ -68,7 +68,15 @@ export const createFileSlice: ChatSliceCreator = (set, get) => {
     }));
 
     try {
-      const response = await uploadApi.uploadFile(file, apiSessionId(session));
+      let shownPercent = -1;
+      const response = await uploadApi.uploadFile(file, apiSessionId(session), (fraction) => {
+        const percent = Math.floor(fraction * 100);
+        if (percent === shownPercent) return;
+        shownPercent = percent;
+        set((state: ChatState) => ({
+          uploadingFiles: (state.uploadingFiles ?? []).map((u) => (u.id === uploadId ? { ...u, progress: percent } : u)),
+        }));
+      });
       const serverFileId = resolveServerFileId(response);
       const pathLeaf = response.file_path.split('/').pop() || response.file_name || '';
       const uploadedFile: UploadedFile = {
