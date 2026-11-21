@@ -329,8 +329,18 @@ async def _get_similarity_result(args: dict[str, Any]) -> tuple[Any, list[str]]:
 def _similarity_notes(data: Any) -> list[str]:
     notes = [SIMILARITY_NOTE]
     if isinstance(data, dict):
-        if data.get("status") in ("queued", "running"):
-            notes.insert(0, "Search still running: call get_similarity_result with this search_id after poll_after_seconds.")
+        status = data.get("status")
+        if status in ("queued", "running"):
+            notes.insert(
+                0,
+                f"Search not finished (status={status}): count and per-query hits are null, not zero. "
+                "Call get_similarity_result with this search_id after poll_after_seconds.",
+            )
+        elif status == "failed":
+            code = (data.get("error") or {}).get("code") or "search_failed"
+            notes.insert(0, f"Search failed ({code}): there is no result, which is not the same as zero hits.")
+        elif status == "done" and data.get("count") == 0:
+            notes.insert(0, "Search finished with zero hits under the given thresholds.")
         notes.extend(str(n) for n in data.pop("notes", []) or [])
     return notes
 
@@ -488,7 +498,9 @@ TOOLS: tuple[ToolSpec, ...] = (
         "similarity_search",
         "Protein similarity search",
         "Find PhageScope proteins similar to 1-50 protein sequences (MMseqs2 over ~45 M unique proteins). "
-        "Returns hits within wait_seconds, otherwise a search_id for get_similarity_result.",
+        "Returns hits within wait_seconds, otherwise a search_id for get_similarity_result. "
+        "status is queued, running, done or failed; outcome is pending, hits, no_hits or failed. "
+        "count is null until status=done. timings gives queued_seconds and run_seconds.",
         _obj(
             {
                 "sequences": {
@@ -523,7 +535,8 @@ TOOLS: tuple[ToolSpec, ...] = (
     ToolSpec(
         "get_similarity_result",
         "Similarity search result",
-        "Status and paged hits of a similarity_search by its search_id (kept 7 days).",
+        "Status, outcome (pending, hits, no_hits or failed), timings and paged hits of a similarity_search "
+        "by its search_id (kept 7 days). count is null until status=done.",
         _obj({"search_id": {"description": "The search_id returned by similarity_search.", "type": "string", "pattern": _SIMILARITY_ID}, **_page_props(200, 50)}, ["search_id"]),
         _get_similarity_result,
     ),

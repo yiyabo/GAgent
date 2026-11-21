@@ -5,6 +5,8 @@ import contextlib
 import json
 import sqlite3
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -52,14 +54,16 @@ def _index(tmp_path: Path, *, corrupt: bool = False) -> Path:
 
 
 class FakeRunner:
-    def __init__(self, returncode: int = 0) -> None:
+    def __init__(self, returncode: int = 0, m8: dict[str, list[str]] | None = None) -> None:
         self.calls: list[list[str]] = []
         self.returncode = returncode
+        self.m8 = M8 if m8 is None else m8
 
     def __call__(self, argv: list[str], timeout: float) -> subprocess.CompletedProcess:
         self.calls.append(argv)
         job_dir = Path(argv[-1]).parent
-        for name, lines in M8.items():
+        for name in se.DATABASES:
+            lines = self.m8.get(name, [])
             (job_dir / f"{name}.m8").write_text("".join(line + "\n" for line in lines), encoding="utf-8")
         return subprocess.CompletedProcess(argv, self.returncode, "", "boom" if self.returncode else "")
 
@@ -88,11 +92,11 @@ def _provider():
     yield _Conn()
 
 
-def _state(tmp_path: Path, runner: FakeRunner, mmseqs: Path) -> svc.DataServiceState:
+def _state(tmp_path: Path, runner, mmseqs: Path, *, runner_kind: str = "local") -> svc.DataServiceState:
     state = svc.DataServiceState(api_key="k", conn_provider=_provider, overview={})
     state.similarity_configured = True
     state.similarity = se.SimilarityEngine(
-        _index(tmp_path), mmseqs=str(mmseqs), runner="local", run_command=runner, family_lookup=state._family_ids
+        _index(tmp_path), mmseqs=str(mmseqs), runner=runner_kind, run_command=runner, family_lookup=state._family_ids
     )
     assert state.similarity.available, state.similarity.last_error
     return state
@@ -167,6 +171,91 @@ def test_failed_run_reports_error_and_unknown_id_is_404(tmp_path, mmseqs):
     assert _call(state, "GET", "search/../")[0] in (400, 404)
 
 
+def test_done_search_reports_outcome_and_timings(tmp_path, mmseqs):
+    body = _call(_state(tmp_path, FakeRunner(), mmseqs), "POST", "search/", {"sequences": PROTEIN})[1]
+    assert body["status"] == "done" and body["outcome"] == "hits" and body["count"] == 3
+    timings = body["timings"]
+    assert timings["final"] and timings["run_seconds"] is not None and timings["queued_seconds"] >= 0
+    assert body["elapsed_seconds"] == timings["run_seconds"] and body["started_at"]
+
+
+def test_zero_hit_search_is_distinct_from_pending_and_failed(tmp_path, mmseqs):
+    body = _call(_state(tmp_path, FakeRunner(m8={}), mmseqs), "POST", "search/", {"sequences": PROTEIN})[1]
+    assert body["status"] == "done" and body["outcome"] == "no_hits" and body["count"] == 0
+    assert body["queries"][0]["hits"] == 0
+
+
+def test_failed_search_has_no_count(tmp_path, mmseqs):
+    body = _call(_state(tmp_path, FakeRunner(returncode=1), mmseqs), "POST", "search/", {"sequences": PROTEIN})[1]
+    assert body["outcome"] == "failed" and body["count"] is None and body["queries"][0]["hits"] is None
+    assert body["timings"]["final"]
+
+
+class GatedSlurm(FakeRunner):
+    """Holds the fake sbatch until released; ``start`` writes the job script's start marker."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.dispatched = threading.Event()
+        self.release = threading.Event()
+        self.job_dir: Path | None = None
+
+    def start(self) -> None:
+        assert self.job_dir is not None
+        (self.job_dir / se.STARTED_MARKER).write_text(f"{time.time():.3f}\n", encoding="ascii")
+
+    def __call__(self, argv, timeout):
+        self.job_dir = Path(argv[-1]).parent
+        self.dispatched.set()
+        assert self.release.wait(10)
+        return super().__call__(argv, timeout)
+
+
+def test_slurm_pending_then_running_then_done(tmp_path, mmseqs):
+    runner = GatedSlurm()
+    state = _state(tmp_path, runner, mmseqs, runner_kind="slurm")
+    body = _call(state, "POST", "search/", {"sequences": PROTEIN, "wait_seconds": 0})[1]
+    assert runner.dispatched.wait(10)
+    sid = body["search_id"]
+    pending = _call(state, "GET", f"search/{sid}/")[1]
+    assert pending["status"] == "queued" and pending["outcome"] == "pending"
+    assert pending["count"] is None and pending["queries"][0]["hits"] is None and pending["poll_after_seconds"] == 5
+    assert pending["timings"]["run_seconds"] is None and not pending["timings"]["final"]
+    assert _call(state, "GET", "status/")[1]["queue"]["queued"] == 1
+    runner.start()
+    running = _call(state, "GET", f"search/{sid}/")[1]
+    assert running["status"] == "running" and running["count"] is None and running["started_at"]
+    assert running["timings"]["run_seconds"] is not None
+    runner.release.set()
+    job = state.similarity.get(sid)
+    assert job.done.wait(10)
+    done = state.similarity.view(job)
+    assert done["outcome"] == "hits" and done["count"] == 3 and done["timings"]["final"]
+    assert "date +%s.%N > started" in (runner.job_dir / "search.sh").read_text()
+
+
+def test_slurm_time_limit_reports_search_timeout(tmp_path, mmseqs):
+    class TimedOut(FakeRunner):
+        def __call__(self, argv, timeout):
+            job_dir = Path(argv[-1]).parent
+            (job_dir / se.STARTED_MARKER).write_text(f"{time.time():.3f}", encoding="ascii")
+            (job_dir / "slurm.log").write_text("slurmstepd: error: *** JOB 1 CANCELLED DUE TO TIME LIMIT ***\n")
+            return subprocess.CompletedProcess(argv, 1, "", "")
+
+    state = _state(tmp_path, TimedOut(), mmseqs, runner_kind="slurm")
+    body = _call(state, "POST", "search/", {"sequences": PROTEIN})[1]
+    assert body["status"] == "failed" and body["error"]["code"] == "search_timeout" and body["count"] is None
+    assert body["timings"]["run_seconds"] is not None
+
+
+def test_service_timeout_reports_search_timeout(tmp_path, mmseqs):
+    def expire(argv, timeout):
+        raise subprocess.TimeoutExpired(argv, timeout)
+
+    body = _call(_state(tmp_path, expire, mmseqs), "POST", "search/", {"sequences": PROTEIN})[1]
+    assert body["outcome"] == "failed" and body["error"]["code"] == "search_timeout"
+
+
 def test_saved_results_survive_a_restart(tmp_path, mmseqs):
     state = _state(tmp_path, FakeRunner(), mmseqs)
     body = _call(state, "POST", "search/", {"sequences": PROTEIN})[1]
@@ -192,8 +281,15 @@ async def test_mcp_similarity_tools_forward_to_data_service(monkeypatch):
     monkeypatch.setattr(tools.client, "call_service", fake)
     data, notes = await tools.TOOLS_BY_NAME["similarity_search"].run({"sequences": PROTEIN, "wait_seconds": 99})
     assert calls[0][:2] == ("POST", "v2/similarity/search/") and calls[0][2]["wait_seconds"] == 20
-    assert notes[0].startswith("Search still running") and "n1" in notes and "notes" not in data
+    assert notes[0].startswith("Search not finished (status=running)") and "n1" in notes and "notes" not in data
     await tools.TOOLS_BY_NAME["get_similarity_result"].run({"search_id": "sim_" + "a" * 32, "pagesize": 500})
     assert calls[1] == ("GET", f"v2/similarity/search/sim_{'a' * 32}/", {"page": 1, "pagesize": 200})
     with pytest.raises(tools.ToolInputError):
         await tools.TOOLS_BY_NAME["get_similarity_result"].run({"search_id": "../x"})
+
+
+def test_mcp_similarity_notes_separate_failed_and_zero_hits():
+    failed = tools._similarity_notes({"status": "failed", "count": None, "error": {"code": "search_timeout"}})
+    assert failed[0].startswith("Search failed (search_timeout)")
+    assert tools._similarity_notes({"status": "done", "count": 0})[0].startswith("Search finished with zero hits")
+    assert tools._similarity_notes({"status": "done", "count": 2})[0] == tools.SIMILARITY_NOTE
