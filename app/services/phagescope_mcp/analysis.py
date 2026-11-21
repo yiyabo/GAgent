@@ -278,6 +278,8 @@ def _compose_message(arguments: dict[str, Any]) -> tuple[str, str]:
         "This analysis was submitted by an external agent through the PhageScope MCP endpoint.",
         "Use read-only PhageScope data (phagescope_data) and local analysis; do not submit PhageScope website jobs.",
         "Publish tables, figures, models and the report with deliverable_submit, then reply with a concise summary.",
+        "CSV/TSV deliverables are read by scripts: one header row, then data rows only; leave missing values empty; "
+        "no '#' note lines; put provenance such as data snapshot or method in columns or a separate metadata file.",
         "",
         "## Task",
         instructions,
