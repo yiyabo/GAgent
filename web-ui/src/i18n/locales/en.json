@@ -1425,6 +1425,7 @@
     "needsWork": "This needs improvement",
     "feedbackLine": "Feedback for this run: {{rating}}",
     "ratingUseful": "Useful",
+    "feedbackSaved": "Thanks, your feedback is recorded",
     "ratingNeedsWork": "Needs improvement",
     "jobCompleted": "Candidate extraction finished",
     "jobSkipped": "Not enough evidence to extract a general skill this time",
