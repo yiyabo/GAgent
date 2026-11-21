@@ -20,12 +20,11 @@ describe('skill learning message panel',()=>{
  it('does not offer learning for an unfinished run',()=>{
   render(<SkillLearningPanel runId="r" sessionId="s" status="running"/>);expect(screen.queryByText('技能与反馈')).toBeNull();
  });
- it('shows candidate scope and sends feedback against the originating run',async()=>{
+ it('shows candidate scope and leaves rating to the reply thumbs',async()=>{
   render(<SkillLearningPanel runId="r" sessionId="s" status="completed"/>);
   fireEvent.click(screen.getByText('技能与反馈'));
   await screen.findByText('候选 · 未独立验证');expect(screen.getByText(/方法或内容还需要用户确认/)).toBeTruthy();
-  fireEvent.click(screen.getByText('这次需要改进'));
-  await waitFor(()=>expect(skillLearningApi.feedback).toHaveBeenCalledWith('r','s','needs_work'));
+  expect(screen.queryByText('这次需要改进')).toBeNull();expect(screen.queryByText('这次结果有用')).toBeNull();
  });
  it('provides the new sample and pinned version rather than replaying the source request',async()=>{
   render(<SkillLearningPanel runId="r" sessionId="s" status="completed"/>);
@@ -48,8 +47,7 @@ describe('skill learning message panel in English',()=>{
   await screen.findByText('Candidate · not independently verified');
   expect(screen.getByText(/the method or content still needs user confirmation/)).toBeTruthy();
   expect(screen.getByText('Source task: succeeded; checked: output_contract; the method or content still needs user confirmation')).toBeTruthy();
-  fireEvent.click(screen.getByText('This needs improvement'));
-  await waitFor(()=>expect(skillLearningApi.feedback).toHaveBeenCalledWith('r','s','needs_work'));
+  expect(screen.queryByText('This needs improvement')).toBeNull();
   fireEvent.click(await screen.findByText('View, correct or try'));
   await screen.findByLabelText('New task for the trial');
   expect(screen.getByText('Try it with different input')).toBeTruthy();

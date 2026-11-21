@@ -1425,6 +1425,7 @@
     "needsWork": "这次需要改进",
     "feedbackLine": "本轮反馈：{{rating}}",
     "ratingUseful": "有用",
+    "feedbackSaved": "已记录反馈，谢谢",
     "ratingNeedsWork": "需要改进",
     "jobCompleted": "候选提炼完成",
     "jobSkipped": "本次没有足够证据提炼通用技能",
