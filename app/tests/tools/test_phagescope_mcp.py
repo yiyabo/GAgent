@@ -16,6 +16,7 @@ from app.services.phagescope_mcp import limits, store, tools
 ACCEPT = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
 PROTOCOL = "2025-06-18"
 
+KNOWN_PROTEINS = {"NP_040645.1", "NP_040587.1"}
 FAKE_ROWS = [{"id": i, "Acession_ID": f"PS{i:05d}", "host": "Salmonella", "lifestyle": None} for i in range(1, 41)]
 
 
@@ -38,6 +39,9 @@ class FakeDataService:
             return {"id": 7, "Acession_ID": "PS00007", "lifestyle": None}
         if path == "v2/structures/resolve/":
             rows = [dict(STRUCTURE_ROWS.get(pid, {"protein_id": pid, "available": False})) for pid in body["protein_ids"]]
+            return {"count": len(rows), "results": rows}
+        if path == "v2/proteins/query/" and body.get("mode") == "by_ids":
+            rows = [{"Protein_id": pid, "Product": "p"} for pid in body["protein_ids"] if pid in KNOWN_PROTEINS]
             return {"count": len(rows), "results": rows}
         return {"results": []}
 
@@ -449,3 +453,38 @@ def test_anonymous_tool_list_includes_analysis_only_under_open_access(mcp_client
     _setenv(monkeypatch, "PHAGESCOPE_MCP_OPEN_ACCESS", "1")
     names = {tool["name"] for tool in _rpc(client, None, "tools/list").json()["result"]["tools"]}
     assert "submit_analysis" in names
+
+
+@pytest.mark.parametrize(
+    ("ids", "found", "missing"),
+    [
+        (["NP_040645.1", "NP_999999999.1", "NP_040587.1"], ["NP_040645.1", "NP_040587.1"], ["NP_999999999.1"]),
+        (["NP_040587.1", "NP_040645.1"], ["NP_040587.1", "NP_040645.1"], []),
+        (["NP_1.1", "NP_2.1"], [], ["NP_1.1", "NP_2.1"]),
+        (["NP_040587.1", " NP_040587.1 ", "NP_X.1", "NP_040645.1", "NP_X.1"], ["NP_040587.1", "NP_040645.1"], ["NP_X.1"]),
+    ],
+    ids=["mixed", "all_found", "all_missing", "duplicates"],
+)
+def test_search_proteins_by_ids_reports_missing_ids(mcp_client, ids, found, missing):
+    client, fake = mcp_client
+    token, _ = store.issue_token("u1", name="t")
+    result, payload = _call(client, token, "search_proteins", {"protein_ids": ids})
+    assert result["isError"] is False
+    data = payload["data"]
+    assert [row["Protein_id"] for row in data["results"]] == found
+    assert data["missing_ids"] == missing
+    assert data["count"] == len(found)
+    assert data["requested_count"] == len(found) + len(missing)
+    sent = [body for method, path, body in fake.calls if path == "v2/proteins/query/"][-1]
+    assert sent["protein_ids"] == list(dict.fromkeys(i.strip() for i in ids))
+    assert any("missing_ids" in note for note in payload["notes"])
+
+
+def test_search_proteins_rejects_blank_ids_and_keeps_by_phage_shape(mcp_client):
+    client, _ = mcp_client
+    token, _ = store.issue_token("u1", name="t")
+    result, payload = _call(client, token, "search_proteins", {"protein_ids": [" ", ""]})
+    assert result["isError"] is True and payload["error"]["code"] == "invalid_arguments"
+    result, payload = _call(client, token, "search_proteins", {"accession": "NC_001416.1"})
+    assert result["isError"] is False
+    assert "missing_ids" not in payload["data"]

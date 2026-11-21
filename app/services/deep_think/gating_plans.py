@@ -192,6 +192,7 @@ def _summarize_structured_plan_outcome(
             (satisfied_ops if optimize_event else missing_ops).append("optimize")
 
         satisfied = not missing_ops
+        hard = bool(flags["contract_enforced"] and events)
         last_op = events[-1].get("operation") if events else None
         outcome_plan_id = None
         for event in reversed(events):
@@ -233,11 +234,15 @@ def _summarize_structured_plan_outcome(
             "required_operations": required_ops,
             "satisfied_operations": satisfied_ops,
             "missing_operations": missing_ops,
-            # Only an explicit client-side plan mode may fail the run. A
-            # natural-language hint gets one repair attempt, then a visible
-            # notice instead of a failed goal.
-            "hard": bool(flags["contract_enforced"]),
-            "soft_missing": bool(not satisfied and not flags["contract_enforced"]),
+            # Only an explicit client-side plan mode may fail the run, and only
+            # when plan_operation was attempted and did not succeed. A turn that
+            # never called it (a question asked while Plan mode is on, or a
+            # natural-language hint) gets one repair attempt, then keeps its
+            # answer with a visible notice: Plan mode is read-only, so a
+            # plan-less answer cannot have changed anything.
+            "hard": hard,
+            "soft_missing": bool(not satisfied and not hard),
+            "plan_mode": bool(flags["contract_enforced"]),
         }
 
     is_bound_plan_mutation_request = (
@@ -357,7 +362,13 @@ def _ensure_structured_plan_notice(
     if not outcome.get("required") or outcome.get("satisfied"):
         return text
     language = _dta().detect_reasoning_language(user_query or text)
-    if outcome.get("soft_missing"):
+    if outcome.get("soft_missing") and outcome.get("plan_mode"):
+        notice = _dta()._localized_text(
+            language,
+            "计划模式已开启，但本轮没有创建结构化计划树，下面是对这条消息的直接回答。需要的话，告诉我目标，我会建立 Plan。",
+            "Plan mode is on, but this turn did not create a structured plan tree; below is a direct answer to the message. Tell me the goal if you want a Plan.",
+        )
+    elif outcome.get("soft_missing"):
         # Inferred request: keep the answer, state plainly that no plan tree
         # was created, and offer the next step.
         notice = _dta()._localized_text(

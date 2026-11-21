@@ -70,9 +70,32 @@ def test_language_hint_missing_plan_is_soft_not_blocking() -> None:
     assert _plan_contract_blocks_final(outcome) is False
 
 
-def test_explicit_plan_mode_missing_plan_blocks_final() -> None:
-    outcome = _summarize_structured_plan_outcome(_stub_agent(enforced=True), [], user_query=MESSAGE)
+def test_explicit_plan_mode_question_without_plan_call_keeps_answer() -> None:
+    # A question asked with Plan mode on must not fail the run (four such runs
+    # failed on 2026-11-18 and discarded the answer).
+    outcome = _summarize_structured_plan_outcome(
+        _stub_agent(enforced=True), [], user_query="这个网络图对应的数据文件名称是什么"
+    )
+    assert outcome["required"] is True and outcome["satisfied"] is False
+    assert outcome["hard"] is False and outcome["soft_missing"] is True
+    assert outcome["plan_mode"] is True
+    assert _plan_contract_blocks_final(outcome) is False
+    noted = _ensure_structured_plan_notice(
+        cast(Any, SimpleNamespace()), "文件是 network_edges.csv。", outcome=outcome, user_query="数据文件名称是什么"
+    )
+    assert "文件是 network_edges.csv。" in noted
+    assert "计划模式已开启" in noted
+    assert "plan_operation was not called" not in noted
+
+
+def test_explicit_plan_mode_failed_plan_call_still_blocks_final() -> None:
+    agent = _stub_agent(enforced=True)
+    agent._collect_plan_operation_events = lambda _steps: [
+        {"success": False, "operation": "create", "plan_id": None, "error": "validation failed"}
+    ]
+    outcome = _summarize_structured_plan_outcome(agent, [], user_query=MESSAGE)
     assert outcome["hard"] is True and outcome["soft_missing"] is False
+    assert outcome["state"] == "called_but_incomplete"
     assert _plan_contract_blocks_final(outcome) is True
 
 

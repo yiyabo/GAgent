@@ -47,8 +47,6 @@ export default function SkillLearningPanel({runId,sessionId,status}:{runId?:stri
       {error&&<Alert type="error" message={error}/>}
       <Space wrap style={{marginBottom:12}}>
         <Button loading={busy} onClick={()=>void perform(()=>skillLearningApi.capture(runId,sessionId))}>{t('skills.capture')}</Button>
-        <Button disabled={busy} onClick={()=>void perform(()=>skillLearningApi.feedback(runId,sessionId,'useful'))}>{t('skills.useful')}</Button>
-        <Button disabled={busy} onClick={()=>void perform(()=>skillLearningApi.feedback(runId,sessionId,'needs_work'))}>{t('skills.needsWork')}</Button>
       </Space>
       {info?.feedback&&<div style={{marginBottom:8}}>{t('skills.feedbackLine',{rating:info.feedback.rating==='useful'?t('skills.ratingUseful'):t('skills.ratingNeedsWork')})}</div>}
       {info?.job&&<Alert style={{marginBottom:12}} type={info.job.status==='failed'?'error':'info'}

@@ -215,7 +215,12 @@ async def _search_proteins(args: dict[str, Any]) -> tuple[Any, list[str]]:
         ids = args["protein_ids"]
         if not isinstance(ids, list) or not 1 <= len(ids) <= 100:
             raise ToolInputError("protein_ids must be a list of 1-100 ids.")
-        body: dict[str, Any] = {"mode": "by_ids", "protein_ids": ids, "include_sequence": include_sequence}
+        unique_ids = list(dict.fromkeys(str(i).strip() for i in ids if str(i).strip()))
+        if not unique_ids:
+            raise ToolInputError("protein_ids must contain at least one non-empty id.")
+        body: dict[str, Any] = {"mode": "by_ids", "protein_ids": unique_ids, "include_sequence": include_sequence}
+        data = await _post("v2/proteins/query/", body)
+        return _by_ids_result(data, unique_ids), [*_seq_notes(include_sequence), BY_IDS_NOTE]
     else:
         body = {
             "mode": "by_phage",
@@ -227,8 +232,33 @@ async def _search_proteins(args: dict[str, Any]) -> tuple[Any, list[str]]:
         for key in ("product_query", "function_class"):
             if args.get(key):
                 body[key] = str(args[key])
-    notes = [] if include_sequence else ["Sequences omitted; set include_sequence=true to include them."]
-    return await _post("v2/proteins/query/", body), notes
+    return await _post("v2/proteins/query/", body), _seq_notes(include_sequence)
+
+
+BY_IDS_NOTE = (
+    "protein_ids are trimmed and de-duplicated (first occurrence kept); results and missing_ids "
+    "follow input order, and missing_ids lists every requested id with no PhageScope protein."
+)
+
+
+def _seq_notes(include_sequence: bool) -> list[str]:
+    return [] if include_sequence else ["Sequences omitted; set include_sequence=true to include them."]
+
+
+def _by_ids_result(data: dict[str, Any], requested: list[str]) -> dict[str, Any]:
+    by_id: dict[str, Any] = {}
+    for row in data.get("results") or []:
+        pid = str(row.get("Protein_id") or "").strip() if isinstance(row, dict) else ""
+        if pid and pid not in by_id:
+            by_id[pid] = row
+    results = [by_id[pid] for pid in requested if pid in by_id]
+    return {
+        **data,
+        "count": len(results),
+        "requested_count": len(requested),
+        "results": results,
+        "missing_ids": [pid for pid in requested if pid not in by_id],
+    }
 
 
 async def _search_families(args: dict[str, Any]) -> tuple[Any, list[str]]:
@@ -470,7 +500,9 @@ TOOLS: tuple[ToolSpec, ...] = (
     ToolSpec(
         "search_proteins",
         "Search proteins",
-        "Proteins of one phage (optionally filtered by product text or function class), or proteins by id.",
+        "Proteins of one phage (optionally filtered by product text or function class), or proteins by id. "
+        "With protein_ids, duplicate ids are collapsed, results keep input order, and missing_ids lists "
+        "the requested ids that were not found.",
         _obj(
             {
                 **_PHAGE_REF,
