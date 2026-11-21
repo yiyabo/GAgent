@@ -215,7 +215,12 @@ async def _search_proteins(args: dict[str, Any]) -> tuple[Any, list[str]]:
         ids = args["protein_ids"]
         if not isinstance(ids, list) or not 1 <= len(ids) <= 100:
             raise ToolInputError("protein_ids must be a list of 1-100 ids.")
-        body: dict[str, Any] = {"mode": "by_ids", "protein_ids": ids, "include_sequence": include_sequence}
+        unique_ids = list(dict.fromkeys(str(i).strip() for i in ids if str(i).strip()))
+        if not unique_ids:
+            raise ToolInputError("protein_ids must contain at least one non-empty id.")
+        body: dict[str, Any] = {"mode": "by_ids", "protein_ids": unique_ids, "include_sequence": include_sequence}
+        data = await _post("v2/proteins/query/", body)
+        return _by_ids_result(data, unique_ids), [*_seq_notes(include_sequence), BY_IDS_NOTE]
     else:
         body = {
             "mode": "by_phage",
@@ -227,8 +232,33 @@ async def _search_proteins(args: dict[str, Any]) -> tuple[Any, list[str]]:
         for key in ("product_query", "function_class"):
             if args.get(key):
                 body[key] = str(args[key])
-    notes = [] if include_sequence else ["Sequences omitted; set include_sequence=true to include them."]
-    return await _post("v2/proteins/query/", body), notes
+    return await _post("v2/proteins/query/", body), _seq_notes(include_sequence)
+
+
+BY_IDS_NOTE = (
+    "protein_ids are trimmed and de-duplicated (first occurrence kept); results and missing_ids "
+    "follow input order, and missing_ids lists every requested id with no PhageScope protein."
+)
+
+
+def _seq_notes(include_sequence: bool) -> list[str]:
+    return [] if include_sequence else ["Sequences omitted; set include_sequence=true to include them."]
+
+
+def _by_ids_result(data: dict[str, Any], requested: list[str]) -> dict[str, Any]:
+    by_id: dict[str, Any] = {}
+    for row in data.get("results") or []:
+        pid = str(row.get("Protein_id") or "").strip() if isinstance(row, dict) else ""
+        if pid and pid not in by_id:
+            by_id[pid] = row
+    results = [by_id[pid] for pid in requested if pid in by_id]
+    return {
+        **data,
+        "count": len(results),
+        "requested_count": len(requested),
+        "results": results,
+        "missing_ids": [pid for pid in requested if pid not in by_id],
+    }
 
 
 async def _search_families(args: dict[str, Any]) -> tuple[Any, list[str]]:
@@ -291,9 +321,65 @@ async def _get_structures(args: dict[str, Any]) -> tuple[Any, list[str]]:
     ids = args.get("protein_ids")
     if not isinstance(ids, list) or not 1 <= len(ids) <= 50:
         raise ToolInputError("protein_ids must be a list of 1-50 ids.")
-    return await _post("v2/structures/resolve/", {"protein_ids": ids}), [
-        "Structures are ESMFold predictions, not experimental structures."
-    ]
+    data = await _post("v2/structures/resolve/", {"protein_ids": ids})
+    rows = data.get("results") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        return data, []
+    data = {**data, "results": [_with_evidence(row) for row in rows]}
+    return data, _structure_notes(data["results"])
+
+
+def _with_evidence(row: Any) -> Any:
+    if not isinstance(row, dict) or not row.get("available"):
+        return row
+    method = str(row.get("method") or "").strip().lower()
+    evidence = "experimental" if method == "experimental" else ("predicted" if method else "unknown")
+    out = {**row, "evidence": evidence}
+    asset = str(row.get("asset_id") or "")
+    if str(row.get("source") or "").upper() == "PDB" and asset.upper().startswith("PDB:"):
+        pdb_id = asset[4:].split("_", 1)[0]
+        if pdb_id:
+            out["source_url"] = f"https://www.rcsb.org/structure/{pdb_id.upper()}"
+    return out
+
+
+def _source_methods(rows: list[dict[str, Any]]) -> str:
+    counts: dict[str, int] = {}
+    for row in rows:
+        label = f"{row.get('source') or 'unknown source'} {row.get('method') or 'unknown method'}"
+        counts[label] = counts.get(label, 0) + 1
+    return ", ".join(f"{label} ({n})" for label, n in counts.items())
+
+
+def _structure_notes(rows: list[Any]) -> list[str]:
+    found = [r for r in rows if isinstance(r, dict) and r.get("available")]
+    missing = [str(r.get("protein_id")) for r in rows if isinstance(r, dict) and not r.get("available")]
+    groups = {kind: [r for r in found if r.get("evidence") == kind] for kind in ("experimental", "predicted", "unknown")}
+    notes: list[str] = []
+    if groups["experimental"]:
+        ids = ", ".join(str(r.get("asset_id")) for r in groups["experimental"])
+        notes.append(
+            f"{len(groups['experimental'])} record(s) are experimentally determined structures ({ids}); "
+            "resolution_a null means this catalog does not record the resolution, check the source entry."
+        )
+    if groups["predicted"]:
+        notes.append(
+            f"{len(groups['predicted'])} record(s) are computational models, not experimental structures: "
+            f"{_source_methods(groups['predicted'])}. plddt_mean is model confidence where reported."
+        )
+    if groups["unknown"]:
+        notes.append(f"{len(groups['unknown'])} record(s) have no recorded method; treat their evidence type as unknown.")
+    if found:
+        notes.append(
+            "Each record's evidence follows its source and method. A structure may be assigned from an identical "
+            "sequence (match_type; identity, qcov and tcov in percent) rather than determined for this exact protein."
+        )
+    if missing:
+        notes.append(
+            f"No structure record in PhageScope for {len(missing)} id(s): {', '.join(missing)}. "
+            "This is not evidence that no structure exists elsewhere."
+        )
+    return notes
 
 
 _SIMILARITY_ID = "^sim_[0-9a-f]{32}$"
@@ -424,7 +510,9 @@ TOOLS: tuple[ToolSpec, ...] = (
     ToolSpec(
         "search_proteins",
         "Search proteins",
-        "Proteins of one phage (optionally filtered by product text or function class), or proteins by id.",
+        "Proteins of one phage (optionally filtered by product text or function class), or proteins by id. "
+        "With protein_ids, duplicate ids are collapsed, results keep input order, and missing_ids lists "
+        "the requested ids that were not found.",
         _obj(
             {
                 **_PHAGE_REF,
@@ -490,7 +578,8 @@ TOOLS: tuple[ToolSpec, ...] = (
     ToolSpec(
         "get_structures",
         "Get protein structures",
-        "Resolve predicted (ESMFold) structure availability and links for protein ids.",
+        "Resolve structure records for protein ids: experimental (PDB) or predicted (ESMFold, ColabFold, AlphaFold and "
+        "other models), labelled per record by its source and method, with pLDDT where reported.",
         _obj({"protein_ids": {"description": "Exact PhageScope protein ids.", "type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 50}}, ["protein_ids"]),
         _get_structures,
     ),

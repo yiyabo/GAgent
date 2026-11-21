@@ -73,7 +73,7 @@ describe('attachments travel with the message they were added to', () => {
       .mockResolvedValueOnce(uploadResponse('b2', 'T7.fasta') as any);
     await Promise.all([store.uploadFile(file('lambda.fasta')), store.uploadFile(file('T7.fasta'))]);
     expect(store.uploadedFiles.map((f: any) => f.original_name)).toEqual(['lambda.fasta', 'T7.fasta']);
-    expect(uploadApi.uploadFile).toHaveBeenCalledWith(expect.any(File), 'server-A');
+    expect(uploadApi.uploadFile).toHaveBeenCalledWith(expect.any(File), 'server-A', expect.any(Function));
 
     await store.sendMessage('Compare these two phages');
 

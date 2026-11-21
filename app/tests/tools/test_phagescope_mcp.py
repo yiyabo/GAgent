@@ -16,6 +16,7 @@ from app.services.phagescope_mcp import limits, store, tools
 ACCEPT = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
 PROTOCOL = "2025-06-18"
 
+KNOWN_PROTEINS = {"NP_040645.1", "NP_040587.1"}
 FAKE_ROWS = [{"id": i, "Acession_ID": f"PS{i:05d}", "host": "Salmonella", "lifestyle": None} for i in range(1, 41)]
 
 
@@ -36,7 +37,64 @@ class FakeDataService:
             if body.get("accession") == "missing":
                 raise tools.PhageScopeDataError("not_found", "No such phage.", 404)
             return {"id": 7, "Acession_ID": "PS00007", "lifestyle": None}
+        if path == "v2/structures/resolve/":
+            rows = [dict(STRUCTURE_ROWS.get(pid, {"protein_id": pid, "available": False})) for pid in body["protein_ids"]]
+            return {"count": len(rows), "results": rows}
+        if path == "v2/proteins/query/" and body.get("mode") == "by_ids":
+            rows = [{"Protein_id": pid, "Product": "p"} for pid in body["protein_ids"] if pid in KNOWN_PROTEINS]
+            return {"count": len(rows), "results": rows}
         return {"results": []}
+
+
+STRUCTURE_ROWS = {
+    "NP_040587.1": {
+        "protein_id": "NP_040587.1", "available": True, "asset_id": "PDB:7vi9_A", "confidence_label": "experimental",
+        "match_type": "exact_external", "identity": 100.0, "qcov": 100.0, "tcov": 100.0, "source": "PDB",
+        "method": "experimental", "plddt_mean": None, "resolution_a": None, "file_format": "cif", "pdb_rel_path": "",
+    },
+    "MetaVR_jumbo_01_1": {
+        "protein_id": "MetaVR_jumbo_01_1", "available": True, "asset_id": "ESMFOLD:MetaVR_jumbo_01_1",
+        "confidence_label": "predicted", "match_type": "exact_internal", "identity": 100.0, "qcov": 100.0,
+        "tcov": 100.0, "source": "ESMFold", "method": "ESMFold", "plddt_mean": 88.4, "resolution_a": None,
+        "file_format": "pdb", "pdb_rel_path": "5/split_1/MetaVR_jumbo_01_1.pdb",
+    },
+}
+
+
+def _structure_notes(client, token, ids):
+    result, payload = _call(client, token, "get_structures", {"protein_ids": ids})
+    assert result["isError"] is False
+    return payload["data"]["results"], " ".join(payload["notes"])
+
+
+def test_get_structures_notes_follow_each_record_source_and_method(mcp_client):
+    client, _ = mcp_client
+    token, _ = store.issue_token("u1", name="t")
+
+    rows, notes = _structure_notes(client, token, ["NP_040587.1"])
+    assert rows[0]["evidence"] == "experimental"
+    assert rows[0]["source_url"] == "https://www.rcsb.org/structure/7VI9"
+    assert "experimentally determined" in notes and "PDB:7vi9_A" in notes
+    assert "ESMFold" not in notes and "computational" not in notes
+
+    rows, notes = _structure_notes(client, token, ["MetaVR_jumbo_01_1"])
+    assert rows[0]["evidence"] == "predicted" and "source_url" not in rows[0]
+    assert "computational models" in notes and "ESMFold ESMFold (1)" in notes
+    assert "experimentally determined" not in notes
+
+    rows, notes = _structure_notes(client, token, ["NP_999999999.1"])
+    assert rows == [{"protein_id": "NP_999999999.1", "available": False}]
+    assert "No structure record in PhageScope for 1 id(s): NP_999999999.1" in notes
+    assert "experimentally" not in notes and "computational" not in notes
+
+    rows, notes = _structure_notes(client, token, ["NP_040587.1", "NP_999999999.1", "MetaVR_jumbo_01_1"])
+    assert [r.get("evidence") for r in rows] == ["experimental", None, "predicted"]
+    assert "1 record(s) are experimentally determined" in notes
+    assert "1 record(s) are computational models" in notes
+    assert "NP_999999999.1" in notes
+
+    description = tools.TOOLS_BY_NAME["get_structures"].description
+    assert "experimental (PDB)" in description and "predicted" in description
 
 
 @pytest.fixture
@@ -395,3 +453,38 @@ def test_anonymous_tool_list_includes_analysis_only_under_open_access(mcp_client
     _setenv(monkeypatch, "PHAGESCOPE_MCP_OPEN_ACCESS", "1")
     names = {tool["name"] for tool in _rpc(client, None, "tools/list").json()["result"]["tools"]}
     assert "submit_analysis" in names
+
+
+@pytest.mark.parametrize(
+    ("ids", "found", "missing"),
+    [
+        (["NP_040645.1", "NP_999999999.1", "NP_040587.1"], ["NP_040645.1", "NP_040587.1"], ["NP_999999999.1"]),
+        (["NP_040587.1", "NP_040645.1"], ["NP_040587.1", "NP_040645.1"], []),
+        (["NP_1.1", "NP_2.1"], [], ["NP_1.1", "NP_2.1"]),
+        (["NP_040587.1", " NP_040587.1 ", "NP_X.1", "NP_040645.1", "NP_X.1"], ["NP_040587.1", "NP_040645.1"], ["NP_X.1"]),
+    ],
+    ids=["mixed", "all_found", "all_missing", "duplicates"],
+)
+def test_search_proteins_by_ids_reports_missing_ids(mcp_client, ids, found, missing):
+    client, fake = mcp_client
+    token, _ = store.issue_token("u1", name="t")
+    result, payload = _call(client, token, "search_proteins", {"protein_ids": ids})
+    assert result["isError"] is False
+    data = payload["data"]
+    assert [row["Protein_id"] for row in data["results"]] == found
+    assert data["missing_ids"] == missing
+    assert data["count"] == len(found)
+    assert data["requested_count"] == len(found) + len(missing)
+    sent = [body for method, path, body in fake.calls if path == "v2/proteins/query/"][-1]
+    assert sent["protein_ids"] == list(dict.fromkeys(i.strip() for i in ids))
+    assert any("missing_ids" in note for note in payload["notes"])
+
+
+def test_search_proteins_rejects_blank_ids_and_keeps_by_phage_shape(mcp_client):
+    client, _ = mcp_client
+    token, _ = store.issue_token("u1", name="t")
+    result, payload = _call(client, token, "search_proteins", {"protein_ids": [" ", ""]})
+    assert result["isError"] is True and payload["error"]["code"] == "invalid_arguments"
+    result, payload = _call(client, token, "search_proteins", {"accession": "NC_001416.1"})
+    assert result["isError"] is False
+    assert "missing_ids" not in payload["data"]
