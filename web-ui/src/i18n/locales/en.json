@@ -1233,6 +1233,7 @@
     "header": "Will be sent with your next message · {{count}} file(s)",
     "uploadingCount": "uploading {{count}}",
     "uploadingOne": "Uploading {{name}}...",
+    "uploadingPercent": "{{percent}}% sent",
     "removeLabel": "Remove {{name}}"
   },
   "messageAttachments": {

@@ -1233,6 +1233,7 @@
     "header": "将随下一条消息发送 · {{count}} 个文件",
     "uploadingCount": "正在上传 {{count}} 个",
     "uploadingOne": "正在上传 {{name}}...",
+    "uploadingPercent": "已上传 {{percent}}%",
     "removeLabel": "移除 {{name}}"
   },
   "messageAttachments": {
