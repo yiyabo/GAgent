@@ -321,9 +321,65 @@ async def _get_structures(args: dict[str, Any]) -> tuple[Any, list[str]]:
     ids = args.get("protein_ids")
     if not isinstance(ids, list) or not 1 <= len(ids) <= 50:
         raise ToolInputError("protein_ids must be a list of 1-50 ids.")
-    return await _post("v2/structures/resolve/", {"protein_ids": ids}), [
-        "Structures are ESMFold predictions, not experimental structures."
-    ]
+    data = await _post("v2/structures/resolve/", {"protein_ids": ids})
+    rows = data.get("results") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        return data, []
+    data = {**data, "results": [_with_evidence(row) for row in rows]}
+    return data, _structure_notes(data["results"])
+
+
+def _with_evidence(row: Any) -> Any:
+    if not isinstance(row, dict) or not row.get("available"):
+        return row
+    method = str(row.get("method") or "").strip().lower()
+    evidence = "experimental" if method == "experimental" else ("predicted" if method else "unknown")
+    out = {**row, "evidence": evidence}
+    asset = str(row.get("asset_id") or "")
+    if str(row.get("source") or "").upper() == "PDB" and asset.upper().startswith("PDB:"):
+        pdb_id = asset[4:].split("_", 1)[0]
+        if pdb_id:
+            out["source_url"] = f"https://www.rcsb.org/structure/{pdb_id.upper()}"
+    return out
+
+
+def _source_methods(rows: list[dict[str, Any]]) -> str:
+    counts: dict[str, int] = {}
+    for row in rows:
+        label = f"{row.get('source') or 'unknown source'} {row.get('method') or 'unknown method'}"
+        counts[label] = counts.get(label, 0) + 1
+    return ", ".join(f"{label} ({n})" for label, n in counts.items())
+
+
+def _structure_notes(rows: list[Any]) -> list[str]:
+    found = [r for r in rows if isinstance(r, dict) and r.get("available")]
+    missing = [str(r.get("protein_id")) for r in rows if isinstance(r, dict) and not r.get("available")]
+    groups = {kind: [r for r in found if r.get("evidence") == kind] for kind in ("experimental", "predicted", "unknown")}
+    notes: list[str] = []
+    if groups["experimental"]:
+        ids = ", ".join(str(r.get("asset_id")) for r in groups["experimental"])
+        notes.append(
+            f"{len(groups['experimental'])} record(s) are experimentally determined structures ({ids}); "
+            "resolution_a null means this catalog does not record the resolution, check the source entry."
+        )
+    if groups["predicted"]:
+        notes.append(
+            f"{len(groups['predicted'])} record(s) are computational models, not experimental structures: "
+            f"{_source_methods(groups['predicted'])}. plddt_mean is model confidence where reported."
+        )
+    if groups["unknown"]:
+        notes.append(f"{len(groups['unknown'])} record(s) have no recorded method; treat their evidence type as unknown.")
+    if found:
+        notes.append(
+            "Each record's evidence follows its source and method. A structure may be assigned from an identical "
+            "sequence (match_type; identity, qcov and tcov in percent) rather than determined for this exact protein."
+        )
+    if missing:
+        notes.append(
+            f"No structure record in PhageScope for {len(missing)} id(s): {', '.join(missing)}. "
+            "This is not evidence that no structure exists elsewhere."
+        )
+    return notes
 
 
 _SIMILARITY_ID = "^sim_[0-9a-f]{32}$"
@@ -359,8 +415,18 @@ async def _get_similarity_result(args: dict[str, Any]) -> tuple[Any, list[str]]:
 def _similarity_notes(data: Any) -> list[str]:
     notes = [SIMILARITY_NOTE]
     if isinstance(data, dict):
-        if data.get("status") in ("queued", "running"):
-            notes.insert(0, "Search still running: call get_similarity_result with this search_id after poll_after_seconds.")
+        status = data.get("status")
+        if status in ("queued", "running"):
+            notes.insert(
+                0,
+                f"Search not finished (status={status}): count and per-query hits are null, not zero. "
+                "Call get_similarity_result with this search_id after poll_after_seconds.",
+            )
+        elif status == "failed":
+            code = (data.get("error") or {}).get("code") or "search_failed"
+            notes.insert(0, f"Search failed ({code}): there is no result, which is not the same as zero hits.")
+        elif status == "done" and data.get("count") == 0:
+            notes.insert(0, "Search finished with zero hits under the given thresholds.")
         notes.extend(str(n) for n in data.pop("notes", []) or [])
     return notes
 
@@ -512,7 +578,8 @@ TOOLS: tuple[ToolSpec, ...] = (
     ToolSpec(
         "get_structures",
         "Get protein structures",
-        "Resolve predicted (ESMFold) structure availability and links for protein ids.",
+        "Resolve structure records for protein ids: experimental (PDB) or predicted (ESMFold, ColabFold, AlphaFold and "
+        "other models), labelled per record by its source and method, with pLDDT where reported.",
         _obj({"protein_ids": {"description": "Exact PhageScope protein ids.", "type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 50}}, ["protein_ids"]),
         _get_structures,
     ),
@@ -520,7 +587,9 @@ TOOLS: tuple[ToolSpec, ...] = (
         "similarity_search",
         "Protein similarity search",
         "Find PhageScope proteins similar to 1-50 protein sequences (MMseqs2 over ~45 M unique proteins). "
-        "Returns hits within wait_seconds, otherwise a search_id for get_similarity_result.",
+        "Returns hits within wait_seconds, otherwise a search_id for get_similarity_result. "
+        "status is queued, running, done or failed; outcome is pending, hits, no_hits or failed. "
+        "count is null until status=done. timings gives queued_seconds and run_seconds.",
         _obj(
             {
                 "sequences": {
@@ -555,7 +624,8 @@ TOOLS: tuple[ToolSpec, ...] = (
     ToolSpec(
         "get_similarity_result",
         "Similarity search result",
-        "Status and paged hits of a similarity_search by its search_id (kept 7 days).",
+        "Status, outcome (pending, hits, no_hits or failed), timings and paged hits of a similarity_search "
+        "by its search_id (kept 7 days). count is null until status=done.",
         _obj({"search_id": {"description": "The search_id returned by similarity_search.", "type": "string", "pattern": _SIMILARITY_ID}, **_page_props(200, 50)}, ["search_id"]),
         _get_similarity_result,
     ),

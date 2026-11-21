@@ -324,6 +324,13 @@ def _get_structured_plan_retry_prompt(agent: DeepThinkAgent) -> str:
         required_ops.append("review")
     if flags["optimize_required"]:
         required_ops.append("optimize")
+    if required_ops == ["create"] and flags.get("contract_enforced") and agent._current_plan_id() is None:
+        return (
+            "Plan mode is on and no Plan is bound yet. If this message asks for work to be planned, "
+            "call `plan_operation` with operation create now. If it only asks a question (an explanation, "
+            "a file or tool name, a recommendation), finish with the answer instead; it is kept with a note "
+            "that no Plan was created. Do not create a Plan just to satisfy this reminder."
+        )
     if required_ops:
         return (
             "The user explicitly requested a structured plan lifecycle operation. "
@@ -473,7 +480,7 @@ def _build_bio_tools_quick_map_block(agent: DeepThinkAgent) -> str:
             "When working with bacteriophage catalog data, sequences, proteins, host ranges, functional elements, or 3D structures:\n"
             "- Prefer `phagescope_data` over legacy website calls: it queries the local PhageScope V2 catalog "
             "(2,576,926 genomes across 27 datasets, 131.5M proteins, 12.61M protein families, 4,723 host species, "
-            "tRNA/CRISPR/anti-CRISPR/terminator/VFDB/CARD/TMHMM features, and ESMFold/AFDB structures) in milliseconds.\n"
+            "tRNA/CRISPR/anti-CRISPR/terminator/VFDB/CARD/TMHMM features, and PDB/predicted structures) in milliseconds.\n"
             "- For statistical distributions or cross-tabulations across cohorts, call `phagescope_data(operation='aggregate', group_by=..., ...)` "
             "or `search_phages(..., save_tsv=True)` and analyze the exported TSV in `execute_code`.\n"
             "- In `execute_code`, you can both call `from gagent_tools import phagescope_data` AND directly read full V2 bulk TSVs "
