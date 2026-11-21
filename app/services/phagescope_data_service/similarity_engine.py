@@ -47,6 +47,9 @@ MAX_PENDING = 20
 MAX_WAIT_SECONDS = 20.0
 RESULT_TTL_SECONDS = 7 * 24 * 3600
 JOB_TIMEOUT_SECONDS = 20 * 60
+SLURM_TIME_LIMIT = "00:15:00"
+STARTED_MARKER = "started"
+PENDING = ("queued", "running")
 SAMPLE_MEMBERS = 5
 DATABASES = ("base", "long")
 FORMAT = "query,target,fident,alnlen,qcov,tcov,evalue,bits,tlen"
@@ -75,6 +78,26 @@ def similarity_root_from_env() -> Path | None:
 def _now_iso(ts: float | None = None) -> str:
     moment = datetime.fromtimestamp(ts if ts is not None else time.time(), tz=timezone.utc)
     return moment.replace(microsecond=0).isoformat()
+
+
+def _read_marker(path: Path) -> float | None:
+    try:
+        return float(path.read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _timings(job: "_Job") -> dict[str, Any]:
+    """Queue wait (data-service slot plus Slurm pending) and execution time, in seconds."""
+    end = job.finished_at or time.time()
+    started = job.started_at
+    queued = (started if started else end) - job.submitted_at
+    return {
+        "queued_seconds": round(max(0.0, queued), 2),
+        "run_seconds": round(max(0.0, end - started), 2) if started else None,
+        "total_seconds": round(max(0.0, end - job.submitted_at), 2),
+        "final": job.status not in PENDING,
+    }
 
 
 def _bad(message: str, code: str = "invalid_parameter") -> dq.ServiceQueryError:
@@ -200,6 +223,7 @@ class _Job:
         self.started_at: float | None = None
         self.finished_at: float | None = None
         self.error: dict[str, str] | None = None
+        self.dispatched = False
         self.results: list[dict[str, Any]] = []
         self.query_summary: list[dict[str, Any]] = [
             {"query_id": qid, "length": len(seq), "hits": None} for qid, seq in queries
@@ -270,6 +294,8 @@ class SimilarityEngine:
 
     def status(self) -> dict[str, Any]:
         with self._lock:
+            for job in self._jobs.values():
+                self._refresh(job)
             running = sum(1 for job in self._jobs.values() if job.status == "running")
             queued = sum(1 for job in self._jobs.values() if job.status == "queued")
         dbs = self.manifest.get("databases") or {}
@@ -301,7 +327,7 @@ class SimilarityEngine:
             job = self._jobs.get(search_id) or self._load_locked(search_id)
             if job is not None and job.status != "failed":
                 return job
-            pending = sum(1 for j in self._jobs.values() if j.status in ("queued", "running"))
+            pending = sum(1 for j in self._jobs.values() if j.status in PENDING)
             if pending >= MAX_PENDING:
                 raise dq.ServiceQueryError(
                     "too_busy", "The similarity search queue is full; retry in about a minute.", 429
@@ -322,36 +348,48 @@ class SimilarityEngine:
         return job
 
     def view(self, job: _Job, *, page: int = 1, pagesize: int = 50) -> dict[str, Any]:
+        self._refresh(job)
         page = max(1, page)
         pagesize = max(1, min(pagesize, 200))
         start = (page - 1) * pagesize
-        rows = job.results[start : start + pagesize] if job.status == "done" else []
+        done = job.status == "done"
+        rows = job.results[start : start + pagesize] if done else []
+        timings = _timings(job)
         body: dict[str, Any] = {
             "search_id": job.search_id,
             "status": job.status,
+            "outcome": ("hits" if job.results else "no_hits") if done else "failed" if job.status == "failed" else "pending",
             "submitted_at": _now_iso(job.submitted_at),
+            "started_at": _now_iso(job.started_at) if job.started_at else None,
             "finished_at": _now_iso(job.finished_at) if job.finished_at else None,
-            "elapsed_seconds": round((job.finished_at or time.time()) - (job.started_at or job.submitted_at), 2)
-            if job.started_at
-            else None,
+            "elapsed_seconds": timings["run_seconds"],
+            "timings": timings,
             "index_version": self.index_version,
             "mmseqs_version": self.mmseqs_version,
             "params": {**job.params, "max_seqs": MAX_SEQS, "sensitivity_value": SENSITIVITY[job.params["sensitivity"]]},
             "queries": job.query_summary,
-            "count": len(job.results),
+            "count": len(job.results) if done else None,
             "page": page,
             "pagesize": pagesize,
-            "has_more": job.status == "done" and start + pagesize < len(job.results),
+            "has_more": done and start + pagesize < len(job.results),
             "results": rows,
             "notes": list(NOTES),
         }
-        if job.status in ("queued", "running"):
+        if job.status in PENDING:
             body["poll_after_seconds"] = 5
         if job.error:
             body["error"] = job.error
         return body
 
     # ------------------------------------------------------------ internals
+
+    def _refresh(self, job: _Job) -> None:
+        """Move a dispatched job to running once its script has actually started (Slurm may hold it pending)."""
+        if job.status != "queued" or not job.dispatched:
+            return
+        started = _read_marker(job.job_dir / STARTED_MARKER)
+        if started is not None:
+            job.started_at, job.status = started, "running"
 
     def _members(self) -> sqlite3.Connection:
         return sqlite3.connect(f"file:{self.members_path}?mode=ro&immutable=1", uri=True, check_same_thread=False)
@@ -394,7 +432,7 @@ class SimilarityEngine:
     def _script(self, job: _Job) -> str:
         q = shlex.quote
         sens = SENSITIVITY[job.params["sensitivity"]]
-        lines = ["#!/bin/bash", "set -euo pipefail", f"cd {q(str(job.job_dir))}"]
+        lines = ["#!/bin/bash", "set -euo pipefail", f"cd {q(str(job.job_dir))}", f"date +%s.%N > {STARTED_MARKER}"]
         for name in DATABASES:
             lines.append(
                 " ".join(
@@ -415,13 +453,12 @@ class SimilarityEngine:
             return ["bash", script]
         return [
             "sbatch", "--wait", "--parsable", "--job-name=gagent-simsearch", f"--partition={self.partition}",
-            f"--cpus-per-task={THREADS}", f"--mem={self.slurm_mem}", "--time=00:15:00",
+            f"--cpus-per-task={THREADS}", f"--mem={self.slurm_mem}", f"--time={SLURM_TIME_LIMIT}",
             f"--output={job.job_dir / 'slurm.log'}", script,
         ]
 
     def _run(self, job: _Job) -> None:
         with self._slots:
-            job.status, job.started_at = "running", time.time()
             try:
                 if job.job_dir.exists():
                     shutil.rmtree(job.job_dir)
@@ -430,10 +467,17 @@ class SimilarityEngine:
                     for index, (_, seq) in enumerate(job.queries):
                         fasta.write(f">q{index}\n{seq}\n")
                 (job.job_dir / "search.sh").write_text(self._script(job), encoding="utf-8")
-                proc = self._run_command(self._argv(job), JOB_TIMEOUT_SECONDS)
+                launched = time.time()
+                if self.runner == "local":
+                    job.started_at, job.status = launched, "running"
+                job.dispatched = True
+                try:
+                    proc = self._run_command(self._argv(job), JOB_TIMEOUT_SECONDS)
+                finally:
+                    self._refresh(job)
                 if proc.returncode != 0:
                     logger.error("Similarity search %s failed (rc=%s): %s", job.search_id, proc.returncode, (proc.stderr or "")[-500:])
-                    raise RuntimeError("mmseqs run failed")
+                    raise RuntimeError("timeout" if self._hit_time_limit(job) else "mmseqs run failed")
                 hits = []
                 for name in DATABASES:
                     hits += self._read_m8(job, job.job_dir / f"{name}.m8", name)
@@ -441,13 +485,30 @@ class SimilarityEngine:
                 job.finished_at, job.status = time.time(), "done"
                 self._save(job)
             except Exception as exc:  # report a failed search, never crash the server thread
-                if not isinstance(exc, RuntimeError):
+                timed_out = isinstance(exc, subprocess.TimeoutExpired) or str(exc) == "timeout"
+                if not isinstance(exc, (RuntimeError, subprocess.TimeoutExpired)):
                     logger.exception("Similarity search %s failed", job.search_id)
                 job.finished_at, job.status = time.time(), "failed"
-                job.error = {"code": "search_failed", "message": "The similarity search did not complete; retry later."}
+                job.error = (
+                    {"code": "search_timeout", "message": "The similarity search hit its run time limit; retry later or with fewer sequences."}
+                    if timed_out
+                    else {"code": "search_failed", "message": "The similarity search did not complete; retry later."}
+                )
             finally:
                 job.queries = []
                 job.done.set()
+                t = _timings(job)
+                logger.info(
+                    "Similarity search %s %s queued=%ss run=%ss total=%ss",
+                    job.search_id, job.status, t["queued_seconds"], t["run_seconds"], t["total_seconds"],
+                )
+
+    @staticmethod
+    def _hit_time_limit(job: _Job) -> bool:
+        try:
+            return "DUE TO TIME LIMIT" in (job.job_dir / "slurm.log").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return False
 
     def _read_m8(self, job: _Job, path: Path, target_db: str) -> list[dict[str, Any]]:
         ids = [qid for qid, _ in job.queries]
