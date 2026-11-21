@@ -30,5 +30,5 @@ suggest:
     - phageagent.deepomics.org
 
 post_install: |
-  Sign in at https://phageagent.deepomics.org, issue a token with
-  POST /phagescope-mcp/tokens, then restart the session so tools load.
+  Sign in at https://phageagent.deepomics.org, open Extensions > External
+  access, create a token, then restart the session so tools load.
