@@ -18,6 +18,7 @@ implementation (they surface in user-visible submit summaries).
 
 from __future__ import annotations
 
+import csv
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -32,6 +33,56 @@ from .policy import DELIVERABLE_SUBMIT_KEY
 _QA_RASTER_FIGURE_SUFFIXES = frozenset(
     {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp", ".gif"}
 )
+
+
+_DELIMITED_TABLE_SUFFIXES = {".csv": ",", ".tsv": "\t"}
+
+
+def _delimited_table_problem(path: Path) -> Optional[str]:
+    """Why a CSV/TSV would not parse as plain rows with default readers, or ``None``.
+
+    ``pandas.read_csv``/``read.delim`` count every non-blank line after the header
+    as a data row, so ``#`` note lines and rows with a different field count make
+    the parsed row count differ from the table the agent meant to publish.
+    """
+    delimiter = _DELIMITED_TABLE_SUFFIXES.get(path.suffix.lower())
+    if delimiter is None:
+        return None
+    comment_lines: List[int] = []
+    ragged_lines: List[int] = []
+    header_width: Optional[int] = None
+    try:
+        with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+            reader = csv.reader(handle, delimiter=delimiter)
+            for fields in reader:
+                if not any(field.strip() for field in fields):
+                    continue
+                line_no = reader.line_num
+                if fields[0].lstrip().startswith("#") and header_width is not None:
+                    comment_lines.append(line_no)
+                elif header_width is None:
+                    header_width = len(fields)
+                elif len(fields) != header_width:
+                    ragged_lines.append(line_no)
+                if len(comment_lines) + len(ragged_lines) >= 5:
+                    break
+    except (OSError, csv.Error):
+        return None
+    if not comment_lines and not ragged_lines:
+        return None
+    if comment_lines:
+        problem = "'#' note line(s) at line " + ", ".join(str(n) for n in comment_lines)
+    else:
+        problem = (
+            f"row(s) whose field count differs from the {header_width}-column header at line "
+            + ", ".join(str(n) for n in ragged_lines)
+        )
+    return (
+        f"{path.name} does not parse as plain rows ({problem}); default readers such as "
+        "pandas.read_csv count them as data rows. Keep one header row plus data rows, put "
+        "provenance such as data snapshot or method in columns or a separate metadata file "
+        f"(e.g. {path.stem}.metadata.json), then submit again"
+    )
 
 
 def _normalized_path_text(value: Any) -> Optional[str]:
@@ -277,6 +328,10 @@ class _SubmitPayloadMethods:
                 warnings.append(
                     f"artifact[{idx}] skipped: path '{raw_path_text}' is not a file"
                 )
+                continue
+            table_problem = None if trusted else _delimited_table_problem(resolved)
+            if table_problem:
+                warnings.append(f"artifact[{idx}] skipped: {table_problem}")
                 continue
             item, reason = self._copy_resolved_file_to_deliverables_with_reason(
                 file_path=resolved,

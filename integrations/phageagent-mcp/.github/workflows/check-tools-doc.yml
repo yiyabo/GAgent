@@ -1,0 +1,24 @@
+name: Docs match live tools/list
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-tools-doc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compare README tools with https://phageagent.deepomics.org/mcp
+        run: python scripts/check_tools_doc.py --url https://phageagent.deepomics.org/mcp README.md

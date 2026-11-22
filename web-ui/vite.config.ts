@@ -207,6 +207,10 @@ export default defineConfig(({ mode }) => {
           target: apiBaseUrl,
           changeOrigin: true,
         },
+        '/skill-learning': {
+          target: apiBaseUrl,
+          changeOrigin: true,
+        },
         '/jobs': {
           target: apiBaseUrl,
           changeOrigin: true,
@@ -248,6 +252,7 @@ export default defineConfig(({ mode }) => {
         '/chat/stream': { target: apiBaseUrl, changeOrigin: true },
         '/chat/actions': { target: apiBaseUrl, changeOrigin: true },
         '/chat/history': { target: apiBaseUrl, changeOrigin: true },
+        '/skill-learning': { target: apiBaseUrl, changeOrigin: true },
         '/jobs': { target: apiBaseUrl, changeOrigin: true },
         '/artifacts': { target: apiBaseUrl, changeOrigin: true },
         '/plans/': { target: apiBaseUrl, changeOrigin: true },

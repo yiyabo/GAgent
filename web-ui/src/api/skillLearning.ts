@@ -13,10 +13,12 @@ export interface LearningRunInfo {
   run_id:string;session_id:string;run_status:string;
   job?: {status:string;error_code?:string};skills:LearnedSkill[];feedback?:{rating:string;comment:string};
 }
+export type FeedbackRating='useful'|'needs_work';
 class SkillLearningApi extends BaseApi {
   getRun = (runId:string,sessionId:string):Promise<LearningRunInfo> => this.get(`/skill-learning/runs/${encodeURIComponent(runId)}`,{session_id:sessionId});
   capture = (runId:string,sessionId:string) => this.post(`/skill-learning/runs/${encodeURIComponent(runId)}/capture`,{session_id:sessionId});
-  feedback = (runId:string,sessionId:string,rating:'useful'|'needs_work',comment='') => this.post(`/skill-learning/runs/${encodeURIComponent(runId)}/feedback`,{session_id:sessionId,rating,comment});
+  getFeedback = (runId:string,sessionId:string):Promise<{run_id:string;feedback:{rating:string;comment:string}|null}> => this.get(`/skill-learning/runs/${encodeURIComponent(runId)}/feedback`,{session_id:sessionId});
+  feedback = (runId:string,sessionId:string,rating:FeedbackRating,comment='') => this.post(`/skill-learning/runs/${encodeURIComponent(runId)}/feedback`,{session_id:sessionId,rating,comment});
   list = (sessionId:string,query=""):Promise<{skills:LearnedSkill[];recommended_skills?:LearnedSkill[];recommendations?:Array<{id:string;reason:string}>}> => this.get(`/skill-learning/sessions/${encodeURIComponent(sessionId)}`,{query});
   detail = (id:string,sessionId:string):Promise<LearnedSkill> => this.get(`/skill-learning/skills/${encodeURIComponent(id)}`,{session_id:sessionId});
   review = (skill:LearnedSkill,sessionId:string,decision:'accept'|'reject'|'disable'):Promise<LearnedSkill> => this.post(`/skill-learning/skills/${skill.id}/review`,{session_id:sessionId,version:skill.current_version,decision});

@@ -28,12 +28,14 @@ try:
     from . import db_queries as dq
     from . import family_freshness as ff
     from . import family_fts_engine as fe
+    from . import similarity_engine as se
 except ImportError:  # pragma: no cover - direct script execution on host
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     dq = importlib.import_module("db_queries")
     ae = importlib.import_module("accel_engine")
     ff = importlib.import_module("family_freshness")
     fe = importlib.import_module("family_fts_engine")
+    se = importlib.import_module("similarity_engine")
 
 logger = logging.getLogger("phagescope_data_service")
 
@@ -45,6 +47,7 @@ _RE_PHAGE_SUB = re.compile(r"^/agent-api/v1/data/phages/(\d+)/(proteins|features
 _RE_PROTEIN_ID = re.compile(r"^/agent-api/v1/data/proteins/([^/]+)/?$")
 _RE_FAMILY_ID = re.compile(r"^/agent-api/v1/data/families/([^/]+)/?$")
 _RE_FAMILY_MEMBERS = re.compile(r"^/agent-api/v1/data/families/([^/]+)/members/?$")
+_RE_SIMILARITY_SEARCH = re.compile(r"^/agent-api/v1/data/v2/similarity/search/([^/]+)/?$")
 
 
 class DataServiceState:
@@ -60,6 +63,7 @@ class DataServiceState:
         pdb_host_prefix: str = "/data4/back_up_platform/esmfold_pdb/",
         accel_root: Path | None = None,
         family_index_root: Path | None = None,
+        similarity_root: Path | None = None,
     ) -> None:
         self.api_key = api_key
         self.conn_provider = conn_provider
@@ -79,6 +83,23 @@ class DataServiceState:
         self.family_index = family_engine if family_engine is not None and family_engine.available else None
         if family_engine is not None and self.family_index is None:
             logger.warning("Family FTS5 build unavailable: %s", family_engine.last_error)
+        self.similarity_configured = similarity_root is not None
+        similarity = (
+            se.SimilarityEngine(similarity_root, family_lookup=self._family_ids)
+            if similarity_root is not None
+            else None
+        )
+        self.similarity = similarity if similarity is not None and similarity.available else None
+        if similarity is not None and self.similarity is None:
+            logger.warning("Similarity index unavailable: %s", similarity.last_error)
+
+    def _family_ids(self, protein_ids: list[str]) -> dict[str, str]:
+        with self.conn_provider() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT protein_id, family_id FROM phage_protein_family_member WHERE protein_id = ANY(%s)",
+                (protein_ids,),
+            )
+            return {str(pid): str(fid) for pid, fid in cur.fetchall()}
 
 
 def _require_accel(state: DataServiceState):
@@ -87,6 +108,17 @@ def _require_accel(state: DataServiceState):
             "accel_unavailable", "Requested filter or grouping needs a validated Parquet build.", 503
         )
     return state.accel
+
+
+def _require_similarity(state: DataServiceState):
+    if state.similarity is None:
+        message = (
+            "The similarity index failed validation."
+            if state.similarity_configured
+            else "Similarity search is not configured on this data service."
+        )
+        raise dq.ServiceQueryError("similarity_unavailable", message, 503)
+    return state.similarity
 
 
 def _accel_sample_rows(
@@ -200,6 +232,15 @@ def _handle_get(
         if state.family_index is None or state.family_index_root is None:
             raise dq.ServiceQueryError("family_index_unavailable", "A validated family FTS5 index is required.", 503)
         return 200, ff.read_status(state.family_index_root, state.family_index)
+
+    if norm == "/agent-api/v1/data/v2/similarity/status/":
+        return 200, _require_similarity(state).status()
+
+    m_sim = _RE_SIMILARITY_SEARCH.match(path)
+    if m_sim:
+        engine = _require_similarity(state)
+        job = engine.get(m_sim.group(1))
+        return 200, engine.view(job, page=_int_param(qs, "page", 1), pagesize=_int_param(qs, "pagesize", 50))
 
     if norm == "/agent-api/v1/data/stats/overview/":
         if not state.overview:
@@ -587,6 +628,16 @@ def _handle_post(
                 )
             raise dq.ServiceQueryError("invalid_parameter", f"Unknown protein query mode: {mode!r}.")
 
+    if norm == "/agent-api/v1/data/v2/similarity/search/":
+        engine = _require_similarity(state)
+        try:
+            wait = float(payload.get("wait_seconds", se.MAX_WAIT_SECONDS))
+        except (TypeError, ValueError) as exc:
+            raise dq.ServiceQueryError("invalid_parameter", "wait_seconds must be a number.") from exc
+        job = engine.submit(payload)
+        job.done.wait(max(0.0, min(wait, se.MAX_WAIT_SECONDS)))
+        return 200, engine.view(job, page=_int_param(payload, "page", 1), pagesize=_int_param(payload, "pagesize", 50))
+
     if norm == "/agent-api/v1/data/v2/features/query/":
         pid = payload.get("phage_id")
         page = _int_param(payload, "page", 1)
@@ -709,7 +760,11 @@ def main() -> None:  # pragma: no cover - host entrypoint
         pdb_host_prefix=os.environ.get("PHAGE_PDB_HOST_PREFIX", "/data4/back_up_platform/esmfold_pdb/"),
         accel_root=ae.accel_root_from_env(),
         family_index_root=fe.family_index_root_from_env(),
+        similarity_root=se.similarity_root_from_env(),
     )
+
+    if state.similarity is not None and os.environ.get("PHAGE_SIMILARITY_KEEP_WARM", "1").strip() != "0":
+        state.similarity.start_keep_warm()
 
     bind_host = os.environ.get("BIND_HOST", "127.0.0.1")
     server = ThreadingHTTPServer((bind_host, bind_port), make_handler(state))

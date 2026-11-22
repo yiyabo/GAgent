@@ -1,0 +1,41 @@
+{
+  "name": "phageagent",
+  "displayName": "PhageAgent",
+  "version": "0.1.1",
+  "description": "PhageAgent MCP: PhageScope phage database (2.58M phages, 131M proteins, 12.6M protein families) plus agent-run analysis tasks. Sign up at https://phageagent.deepomics.org and create your own token.",
+  "author": {
+    "name": "PhageAgent team",
+    "url": "https://phageagent.deepomics.org"
+  },
+  "homepage": "https://github.com/yiyabo/phageagent-mcp",
+  "repository": "https://github.com/yiyabo/phageagent-mcp",
+  "license": "MIT",
+  "keywords": [
+    "phage",
+    "bacteriophage",
+    "bioinformatics",
+    "genomics",
+    "proteins",
+    "phagescope"
+  ],
+  "documentationUrl": "https://github.com/yiyabo/phageagent-mcp",
+  "supportUrl": "https://github.com/yiyabo/phageagent-mcp/issues",
+  "privacyPolicyUrl": "https://github.com/yiyabo/phageagent-mcp/blob/main/PRIVACY.md",
+  "userConfig": {
+    "phageagent_token": {
+      "type": "string",
+      "title": "PhageAgent MCP token",
+      "description": "Personal access token (gpsk_...) created at https://phageagent.deepomics.org/extensions (External access tab > Create token).",
+      "sensitive": true
+    }
+  },
+  "mcpServers": {
+    "phageagent": {
+      "type": "http",
+      "url": "https://phageagent.deepomics.org/mcp",
+      "headers": {
+        "Authorization": "Bearer ${user_config.phageagent_token}"
+      }
+    }
+  }
+}

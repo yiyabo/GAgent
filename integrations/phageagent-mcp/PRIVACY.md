@@ -1,6 +1,6 @@
-# PhageScope MCP privacy policy
+# PhageAgent MCP privacy policy
 
-Operator: PhageScope / GAgent team, https://phageagent.deepomics.org.
+Operator: PhageAgent team, https://phageagent.deepomics.org.
 Contact: xxwang5587@gmail.com.
 
 What the server receives: your MCP token and the tool arguments you send
@@ -14,7 +14,7 @@ and never logged. A per-token daily byte counter enforces the usage limit.
 
 Analysis tasks: the request text you submit, the agent run and its output
 files are stored on the server under your account, and the request is sent to
-the language model provider the PhageScope agent uses. A task stops being
+the language model provider PhageAgent uses. A task stops being
 reachable through MCP 30 days after submission; the stored data is not deleted
 automatically yet.
 

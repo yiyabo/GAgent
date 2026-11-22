@@ -7,7 +7,7 @@ import { useT } from '@/i18n/useT';
 import { describeUploadError } from '@/utils/uploadError';
 import { attachmentVisual } from './attachmentVisual';
 
-const EMPTY_UPLOADS: Array<{ id: string; name: string; sessionKey: string }> = [];
+const EMPTY_UPLOADS: Array<{ id: string; name: string; sessionKey: string; progress?: number }> = [];
 
 const chipLabelStyle: React.CSSProperties = {
   maxWidth: 180,
@@ -80,6 +80,9 @@ const UploadedFilesList: React.FC = () => {
             <Tooltip title={t('uploadedFiles.uploadingOne', { name: u.name })}>
               <span style={chipLabelStyle}>{u.name}</span>
             </Tooltip>
+            {typeof u.progress === 'number' ? (
+              <span style={{ marginLeft: 4 }}>{t('uploadedFiles.uploadingPercent', { percent: u.progress })}</span>
+            ) : null}
           </Tag>
         ))}
       </Space>

@@ -100,6 +100,8 @@ deliverable_submit_tool = {
         "- Manuscripts and reports (LaTeX, Markdown)\n"
         "- Finished code scripts that produced the above\n"
         "Do NOT submit: raw input data, intermediate CSVs, downloaded references, logs.\n"
+        "CSV/TSV tables must parse as plain rows: one header row, then data rows only, with no "
+        "'#' note lines; put provenance (data snapshot, method) in columns or a separate metadata file.\n"
         "Each artifact requires a path and target module (code, image_tabular, paper, refs, docs)."
     ),
     "category": "deliverables",

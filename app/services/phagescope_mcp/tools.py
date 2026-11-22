@@ -22,10 +22,10 @@ OVERVIEW_TTL_SECONDS = 600
 
 _FILTER_PROPERTIES: dict[str, Any] = {
     "accession": {"type": "string", "description": "Exact phage accession."},
-    "accessions": {"type": "array", "items": {"type": "string"}, "maxItems": 200},
-    "phage_ids": {"type": "array", "items": {"type": "integer"}, "maxItems": 200},
+    "accessions": {"description": "Exact phage accessions.", "type": "array", "items": {"type": "string"}, "maxItems": 200},
+    "phage_ids": {"description": "PhageScope numeric phage ids.", "type": "array", "items": {"type": "integer"}, "maxItems": 200},
     "dataset": {"type": "string", "description": "Source dataset name, e.g. RefSeq, GenBank, MGV (see catalog_overview)."},
-    "datasets": {"type": "array", "items": {"type": "string"}, "maxItems": 30},
+    "datasets": {"description": "Only these source datasets.", "type": "array", "items": {"type": "string"}, "maxItems": 30},
     "completeness": {"type": "string", "description": "Genome completeness label, e.g. Complete, High-quality."},
     "lifestyle": {"type": "string", "description": "Predicted lifestyle, e.g. virulent or temperate."},
     "taxonomy": {"type": "string", "description": "Phage taxonomy name."},
@@ -33,20 +33,20 @@ _FILTER_PROPERTIES: dict[str, Any] = {
     "host": {"type": "string", "description": "Host name, e.g. Salmonella or Escherichia coli."},
     "host_match": {"type": "string", "description": "How to match host (service default when omitted)."},
     "host_rank": {"type": "string", "description": "Host rank used with host_name, e.g. genus or species."},
-    "host_name": {"type": "string"},
-    "cluster": {"type": "string"},
-    "subcluster": {"type": "string"},
-    "length_min": {"type": "integer", "minimum": 0},
-    "length_max": {"type": "integer", "minimum": 0},
-    "gc_min": {"type": "number", "minimum": 0, "maximum": 100},
-    "gc_max": {"type": "number", "minimum": 0, "maximum": 100},
-    "is_mapped": {"type": "boolean"},
+    "host_name": {"description": "Host name at the given host_rank.", "type": "string"},
+    "cluster": {"description": "Phage cluster id.", "type": "string"},
+    "subcluster": {"description": "Phage subcluster id.", "type": "string"},
+    "length_min": {"description": "Minimum genome length in bp.", "type": "integer", "minimum": 0},
+    "length_max": {"description": "Maximum genome length in bp.", "type": "integer", "minimum": 0},
+    "gc_min": {"description": "Minimum GC content in percent.", "type": "number", "minimum": 0, "maximum": 100},
+    "gc_max": {"description": "Maximum GC content in percent.", "type": "number", "minimum": 0, "maximum": 100},
+    "is_mapped": {"description": "Filter on the data service's is_mapped flag.", "type": "boolean"},
     "is_rep": {"type": "boolean", "description": "Only cluster representatives."},
     "amr_free": {"type": "boolean", "description": "No annotated antimicrobial-resistance genes (columnar layer)."},
     "virulence_free": {"type": "boolean", "description": "No annotated virulence factors (columnar layer)."},
-    "min_trna": {"type": "integer", "minimum": 0},
-    "has_crispr": {"type": "boolean"},
-    "has_anticrispr": {"type": "boolean"},
+    "min_trna": {"description": "Minimum number of annotated tRNAs.", "type": "integer", "minimum": 0},
+    "has_crispr": {"description": "Has annotated CRISPR arrays.", "type": "boolean"},
+    "has_anticrispr": {"description": "Has annotated anti-CRISPR proteins.", "type": "boolean"},
 }
 
 FILTERS_SCHEMA: dict[str, Any] = {
@@ -100,8 +100,8 @@ def _obj(properties: dict[str, Any], required: Optional[list[str]] = None) -> di
 
 def _page_props(max_pagesize: int, default: int = 20) -> dict[str, Any]:
     return {
-        "page": {"type": "integer", "minimum": 1, "default": 1},
-        "pagesize": {"type": "integer", "minimum": 1, "maximum": max_pagesize, "default": default},
+        "page": {"description": "Page number, starting at 1.", "type": "integer", "minimum": 1, "default": 1},
+        "pagesize": {"description": "Rows per page.", "type": "integer", "minimum": 1, "maximum": max_pagesize, "default": default},
     }
 
 
@@ -113,9 +113,21 @@ def _clamp(value: Any, low: int, high: int, default: int) -> int:
     return max(low, min(high, number))
 
 
+def _phage_id(value: Any) -> int:
+    if isinstance(value, int) and not isinstance(value, bool):
+        number = value
+    elif isinstance(value, str) and value.strip().isascii() and value.strip().isdigit():
+        number = int(value.strip())
+    else:
+        raise ToolInputError(f"phage_id must be a positive integer PhageScope id, got {value!r}; use accession for accessions.")
+    if number < 1:
+        raise ToolInputError(f"phage_id must be a positive integer PhageScope id, got {value!r}.")
+    return number
+
+
 def _phage_ref(args: dict[str, Any]) -> dict[str, Any]:
     if args.get("phage_id") is not None:
-        return {"phage_id": int(args["phage_id"])}
+        return {"phage_id": _phage_id(args["phage_id"])}
     if args.get("accession"):
         return {"accession": str(args["accession"]).strip()}
     raise ToolInputError("Provide phage_id or accession.")
@@ -215,7 +227,12 @@ async def _search_proteins(args: dict[str, Any]) -> tuple[Any, list[str]]:
         ids = args["protein_ids"]
         if not isinstance(ids, list) or not 1 <= len(ids) <= 100:
             raise ToolInputError("protein_ids must be a list of 1-100 ids.")
-        body: dict[str, Any] = {"mode": "by_ids", "protein_ids": ids, "include_sequence": include_sequence}
+        unique_ids = list(dict.fromkeys(str(i).strip() for i in ids if str(i).strip()))
+        if not unique_ids:
+            raise ToolInputError("protein_ids must contain at least one non-empty id.")
+        body: dict[str, Any] = {"mode": "by_ids", "protein_ids": unique_ids, "include_sequence": include_sequence}
+        data = await _post("v2/proteins/query/", body)
+        return _by_ids_result(data, unique_ids), [*_seq_notes(include_sequence), BY_IDS_NOTE]
     else:
         body = {
             "mode": "by_phage",
@@ -227,8 +244,33 @@ async def _search_proteins(args: dict[str, Any]) -> tuple[Any, list[str]]:
         for key in ("product_query", "function_class"):
             if args.get(key):
                 body[key] = str(args[key])
-    notes = [] if include_sequence else ["Sequences omitted; set include_sequence=true to include them."]
-    return await _post("v2/proteins/query/", body), notes
+    return await _post("v2/proteins/query/", body), _seq_notes(include_sequence)
+
+
+BY_IDS_NOTE = (
+    "protein_ids are trimmed and de-duplicated (first occurrence kept); results and missing_ids "
+    "follow input order, and missing_ids lists every requested id with no PhageScope protein."
+)
+
+
+def _seq_notes(include_sequence: bool) -> list[str]:
+    return [] if include_sequence else ["Sequences omitted; set include_sequence=true to include them."]
+
+
+def _by_ids_result(data: dict[str, Any], requested: list[str]) -> dict[str, Any]:
+    by_id: dict[str, Any] = {}
+    for row in data.get("results") or []:
+        pid = str(row.get("Protein_id") or "").strip() if isinstance(row, dict) else ""
+        if pid and pid not in by_id:
+            by_id[pid] = row
+    results = [by_id[pid] for pid in requested if pid in by_id]
+    return {
+        **data,
+        "count": len(results),
+        "requested_count": len(requested),
+        "results": results,
+        "missing_ids": [pid for pid in requested if pid not in by_id],
+    }
 
 
 async def _search_families(args: dict[str, Any]) -> tuple[Any, list[str]]:
@@ -291,9 +333,114 @@ async def _get_structures(args: dict[str, Any]) -> tuple[Any, list[str]]:
     ids = args.get("protein_ids")
     if not isinstance(ids, list) or not 1 <= len(ids) <= 50:
         raise ToolInputError("protein_ids must be a list of 1-50 ids.")
-    return await _post("v2/structures/resolve/", {"protein_ids": ids}), [
-        "Structures are ESMFold predictions, not experimental structures."
-    ]
+    data = await _post("v2/structures/resolve/", {"protein_ids": ids})
+    rows = data.get("results") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        return data, []
+    data = {**data, "results": [_with_evidence(row) for row in rows]}
+    return data, _structure_notes(data["results"])
+
+
+def _with_evidence(row: Any) -> Any:
+    if not isinstance(row, dict) or not row.get("available"):
+        return row
+    method = str(row.get("method") or "").strip().lower()
+    evidence = "experimental" if method == "experimental" else ("predicted" if method else "unknown")
+    out = {**row, "evidence": evidence}
+    asset = str(row.get("asset_id") or "")
+    if str(row.get("source") or "").upper() == "PDB" and asset.upper().startswith("PDB:"):
+        pdb_id = asset[4:].split("_", 1)[0]
+        if pdb_id:
+            out["source_url"] = f"https://www.rcsb.org/structure/{pdb_id.upper()}"
+    return out
+
+
+def _source_methods(rows: list[dict[str, Any]]) -> str:
+    counts: dict[str, int] = {}
+    for row in rows:
+        label = f"{row.get('source') or 'unknown source'} {row.get('method') or 'unknown method'}"
+        counts[label] = counts.get(label, 0) + 1
+    return ", ".join(f"{label} ({n})" for label, n in counts.items())
+
+
+def _structure_notes(rows: list[Any]) -> list[str]:
+    found = [r for r in rows if isinstance(r, dict) and r.get("available")]
+    missing = [str(r.get("protein_id")) for r in rows if isinstance(r, dict) and not r.get("available")]
+    groups = {kind: [r for r in found if r.get("evidence") == kind] for kind in ("experimental", "predicted", "unknown")}
+    notes: list[str] = []
+    if groups["experimental"]:
+        ids = ", ".join(str(r.get("asset_id")) for r in groups["experimental"])
+        notes.append(
+            f"{len(groups['experimental'])} record(s) are experimentally determined structures ({ids}); "
+            "resolution_a null means this catalog does not record the resolution, check the source entry."
+        )
+    if groups["predicted"]:
+        notes.append(
+            f"{len(groups['predicted'])} record(s) are computational models, not experimental structures: "
+            f"{_source_methods(groups['predicted'])}. plddt_mean is model confidence where reported."
+        )
+    if groups["unknown"]:
+        notes.append(f"{len(groups['unknown'])} record(s) have no recorded method; treat their evidence type as unknown.")
+    if found:
+        notes.append(
+            "Each record's evidence follows its source and method. A structure may be assigned from an identical "
+            "sequence (match_type; identity, qcov and tcov in percent) rather than determined for this exact protein."
+        )
+    if missing:
+        notes.append(
+            f"No structure record in PhageScope for {len(missing)} id(s): {', '.join(missing)}. "
+            "This is not evidence that no structure exists elsewhere."
+        )
+    return notes
+
+
+_SIMILARITY_ID = "^sim_[0-9a-f]{32}$"
+SIMILARITY_NOTE = (
+    "Hits are PhageScope proteins with the same sequence; use search_proteins with protein_ids for details."
+)
+
+
+async def _similarity_search(args: dict[str, Any]) -> tuple[Any, list[str]]:
+    seqs = args.get("sequences")
+    if not seqs:
+        raise ToolInputError("sequences is required: FASTA text or a list of {id, sequence}.")
+    body: dict[str, Any] = {"sequences": seqs}
+    for key in ("sensitivity", "max_hits", "evalue", "min_identity", "min_coverage", "exclude_low_quality", "datasets"):
+        if args.get(key) is not None:
+            body[key] = args[key]
+    body["wait_seconds"] = _clamp(args.get("wait_seconds"), 0, 20, 20)
+    body["page"] = _clamp(args.get("page"), 1, 10_000, 1)
+    body["pagesize"] = _clamp(args.get("pagesize"), 1, 200, 50)
+    data = await client.call_service("v2/similarity/search/", method="POST", body=body, timeout=60.0)
+    return data, _similarity_notes(data)
+
+
+async def _get_similarity_result(args: dict[str, Any]) -> tuple[Any, list[str]]:
+    search_id = str(args.get("search_id") or "").strip()
+    if not search_id.startswith("sim_") or len(search_id) != 36:
+        raise ToolInputError("search_id must be the sim_... id returned by similarity_search.")
+    query = {"page": _clamp(args.get("page"), 1, 10_000, 1), "pagesize": _clamp(args.get("pagesize"), 1, 200, 50)}
+    data = await _get(f"v2/similarity/search/{search_id}/", query)
+    return data, _similarity_notes(data)
+
+
+def _similarity_notes(data: Any) -> list[str]:
+    notes = [SIMILARITY_NOTE]
+    if isinstance(data, dict):
+        status = data.get("status")
+        if status in ("queued", "running"):
+            notes.insert(
+                0,
+                f"Search not finished (status={status}): count and per-query hits are null, not zero. "
+                "Call get_similarity_result with this search_id after poll_after_seconds.",
+            )
+        elif status == "failed":
+            code = (data.get("error") or {}).get("code") or "search_failed"
+            notes.insert(0, f"Search failed ({code}): there is no result, which is not the same as zero hits.")
+        elif status == "done" and data.get("count") == 0:
+            notes.insert(0, "Search finished with zero hits under the given thresholds.")
+        notes.extend(str(n) for n in data.pop("notes", []) or [])
+    return notes
 
 
 TOOLS: tuple[ToolSpec, ...] = (
@@ -312,8 +459,8 @@ TOOLS: tuple[ToolSpec, ...] = (
             {
                 "filters": FILTERS_SCHEMA,
                 **_page_props(100),
-                "include_total": {"type": "boolean", "default": False},
-                "sort_by": {"type": "string", "enum": ["id", "length_desc", "length_asc"], "default": "id"},
+                "include_total": {"description": "Also return the total number of matches (slower).", "type": "boolean", "default": False},
+                "sort_by": {"description": "Row order: id, length_desc or length_asc.", "type": "string", "enum": ["id", "length_desc", "length_asc"], "default": "id"},
             },
             ["filters"],
         ),
@@ -326,8 +473,8 @@ TOOLS: tuple[ToolSpec, ...] = (
         _obj(
             {
                 "filters": FILTERS_SCHEMA,
-                "sample_limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
-                "sort_by": {"type": "string", "enum": ["id", "length_desc", "length_asc"], "default": "id"},
+                "sample_limit": {"description": "How many example phages to include in the report.", "type": "integer", "minimum": 1, "maximum": 20, "default": 5},
+                "sort_by": {"description": "Row order: id, length_desc or length_asc.", "type": "string", "enum": ["id", "length_desc", "length_asc"], "default": "id"},
             },
             ["filters"],
         ),
@@ -340,6 +487,7 @@ TOOLS: tuple[ToolSpec, ...] = (
         _obj(
             {
                 "group_by": {
+                    "description": "Dimension, or list of dimensions, to group counts by (see the query-guide resource).",
                     "oneOf": [
                         {"type": "string", "enum": list(GROUP_BY_DIMENSIONS)},
                         {
@@ -351,7 +499,7 @@ TOOLS: tuple[ToolSpec, ...] = (
                     ]
                 },
                 "filters": FILTERS_SCHEMA,
-                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+                "limit": {"description": "Maximum number of groups to return.", "type": "integer", "minimum": 1, "maximum": 200, "default": 50},
             },
             ["group_by"],
         ),
@@ -368,20 +516,22 @@ TOOLS: tuple[ToolSpec, ...] = (
         "get_sequence",
         "Get genome sequence",
         "Genome nucleotide sequence of one phage, capped at max_bases.",
-        _obj({**_PHAGE_REF, "max_bases": {"type": "integer", "minimum": 100, "maximum": 200000, "default": 20000}}),
+        _obj({**_PHAGE_REF, "max_bases": {"description": "Maximum number of sequence bases to return.", "type": "integer", "minimum": 100, "maximum": 200000, "default": 20000}}),
         _get_sequence,
     ),
     ToolSpec(
         "search_proteins",
         "Search proteins",
-        "Proteins of one phage (optionally filtered by product text or function class), or proteins by id.",
+        "Proteins of one phage (optionally filtered by product text or function class), or proteins by id. "
+        "With protein_ids, duplicate ids are collapsed, results keep input order, and missing_ids lists "
+        "the requested ids that were not found.",
         _obj(
             {
                 **_PHAGE_REF,
-                "protein_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 100},
-                "product_query": {"type": "string"},
-                "function_class": {"type": "string"},
-                "include_sequence": {"type": "boolean", "default": False},
+                "protein_ids": {"description": "Exact PhageScope protein ids.", "type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 100},
+                "product_query": {"description": "Text to match in the protein product annotation.", "type": "string"},
+                "function_class": {"description": "Protein function class to filter by.", "type": "string"},
+                "include_sequence": {"description": "Include amino-acid sequences in each row.", "type": "boolean", "default": False},
                 **_page_props(100, 50),
             }
         ),
@@ -393,13 +543,13 @@ TOOLS: tuple[ToolSpec, ...] = (
         "Find protein families by keyword (e.g. endolysin, holin), by member protein_id, or by family_id.",
         _obj(
             {
-                "keyword": {"type": "string"},
-                "protein_id": {"type": "string"},
-                "family_id": {"type": "string"},
-                "dominant_class": {"type": "string"},
-                "min_members": {"type": "integer", "minimum": 1},
-                "min_datasets": {"type": "integer", "minimum": 1},
-                "non_singleton_only": {"type": "boolean"},
+                "keyword": {"description": "Case-insensitive text to match in the annotations.", "type": "string"},
+                "protein_id": {"description": "Return the family that contains this protein id.", "type": "string"},
+                "family_id": {"description": "Protein family id.", "type": "string"},
+                "dominant_class": {"description": "Dominant function class of the family.", "type": "string"},
+                "min_members": {"description": "Minimum number of member proteins.", "type": "integer", "minimum": 1},
+                "min_datasets": {"description": "Minimum number of source datasets among the members.", "type": "integer", "minimum": 1},
+                "non_singleton_only": {"description": "Skip families with a single member.", "type": "boolean"},
                 **_page_props(100),
             }
         ),
@@ -411,10 +561,10 @@ TOOLS: tuple[ToolSpec, ...] = (
         "Member proteins of one family (optionally one subfamily or dataset). Paged.",
         _obj(
             {
-                "family_id": {"type": "string"},
-                "subfamily_id": {"type": "string"},
-                "dataset": {"type": "string"},
-                "include_sequence": {"type": "boolean", "default": False},
+                "family_id": {"description": "Protein family id.", "type": "string"},
+                "subfamily_id": {"description": "Subfamily id within the family.", "type": "string"},
+                "dataset": {"description": "Source dataset name, e.g. RefSeq or GenBank (see catalog_overview).", "type": "string"},
+                "include_sequence": {"description": "Include amino-acid sequences in each row.", "type": "boolean", "default": False},
                 **_page_props(100, 50),
             },
             ["family_id"],
@@ -427,10 +577,10 @@ TOOLS: tuple[ToolSpec, ...] = (
         "Annotated features of one type (tRNA, CRISPR, anti-CRISPR, terminator, virulence, AMR, transmembrane).",
         _obj(
             {
-                "feature_type": {"type": "string", "enum": list(FEATURE_TYPES)},
+                "feature_type": {"description": "Feature layer to query.", "type": "string", "enum": list(FEATURE_TYPES)},
                 **_PHAGE_REF,
-                "dataset": {"type": "string"},
-                "keyword": {"type": "string"},
+                "dataset": {"description": "Source dataset name, e.g. RefSeq or GenBank (see catalog_overview).", "type": "string"},
+                "keyword": {"description": "Case-insensitive text to match in the annotations.", "type": "string"},
                 **_page_props(100, 50),
             },
             ["feature_type"],
@@ -440,9 +590,56 @@ TOOLS: tuple[ToolSpec, ...] = (
     ToolSpec(
         "get_structures",
         "Get protein structures",
-        "Resolve predicted (ESMFold) structure availability and links for protein ids.",
-        _obj({"protein_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 50}}, ["protein_ids"]),
+        "Resolve structure records for protein ids: experimental (PDB) or predicted (ESMFold, ColabFold, AlphaFold and "
+        "other models), labelled per record by its source and method, with pLDDT where reported.",
+        _obj({"protein_ids": {"description": "Exact PhageScope protein ids.", "type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 50}}, ["protein_ids"]),
         _get_structures,
+    ),
+    ToolSpec(
+        "similarity_search",
+        "Protein similarity search",
+        "Find PhageScope proteins similar to 1-50 protein sequences (MMseqs2 over ~45 M unique proteins). "
+        "Returns hits within wait_seconds, otherwise a search_id for get_similarity_result. "
+        "status is queued, running, done or failed; outcome is pending, hits, no_hits or failed. "
+        "count is null until status=done. timings gives queued_seconds and run_seconds.",
+        _obj(
+            {
+                "sequences": {
+                    "description": "Protein FASTA text, or a list of {id, sequence}. 30-10000 aa each, 50000 aa in total.",
+                    "oneOf": [
+                        {"type": "string", "maxLength": 120000},
+                        {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 50,
+                            "items": _obj(
+                                {"id": {"type": "string", "maxLength": 64}, "sequence": {"type": "string", "maxLength": 10000}},
+                                ["sequence"],
+                            ),
+                        },
+                    ],
+                },
+                "sensitivity": {"description": "MMseqs2 search sensitivity: fast, default or sensitive.", "type": "string", "enum": ["fast", "default", "sensitive"], "default": "default"},
+                "max_hits": {"type": "integer", "minimum": 1, "maximum": 500, "default": 50, "description": "Hits kept per query."},
+                "evalue": {"description": "Maximum E-value of reported hits.", "type": "number", "exclusiveMinimum": 0, "maximum": 10, "default": 0.001},
+                "min_identity": {"description": "Minimum sequence identity of hits, from 0 to 1.", "type": "number", "minimum": 0, "maximum": 1},
+                "min_coverage": {"type": "number", "minimum": 0, "maximum": 1, "description": "Minimum of query and target coverage."},
+                "exclude_low_quality": {"type": "boolean", "default": False, "description": "Drop proteins only found in LQ_* datasets."},
+                "datasets": {"description": "Only these source datasets.", "type": "array", "items": {"type": "string"}, "maxItems": 40},
+                "wait_seconds": {"description": "Seconds to wait for the result before returning a search_id to poll.", "type": "integer", "minimum": 0, "maximum": 20, "default": 20},
+                **_page_props(200, 50),
+            },
+            ["sequences"],
+        ),
+        _similarity_search,
+    ),
+    ToolSpec(
+        "get_similarity_result",
+        "Similarity search result",
+        "Status, outcome (pending, hits, no_hits or failed), timings and paged hits of a similarity_search "
+        "by its search_id (kept 7 days after it finishes). count is null until status=done.",
+        _obj({"search_id": {"description": "The search_id returned by similarity_search.", "type": "string", "pattern": _SIMILARITY_ID}, **_page_props(200, 50)}, ["search_id"]),
+        _get_similarity_result,
     ),
 )
 

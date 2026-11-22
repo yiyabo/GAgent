@@ -66,6 +66,10 @@ async def test_terminal_write_resize_interrupt_and_cleanup(monkeypatch, tmp_path
         await backend.spawn(cwd=str(cwd), exec_args=['/bin/bash'])
         assert not any('passwd' in arg for arg in captured['argv'])
         assert f'{root}/session_demo:{root}/session_demo:ro' in captured['argv']
+        # A known prompt lets the test wait for bash to be back at the prompt after ^C;
+        # a line typed earlier can be read by the interrupted `read` instead.
+        await backend.write(b"PS1='PTY''READY> '\n")
+        await until(b'PTYREADY> ')
         await backend.write(b"printf 'real_%s\\n' pty_ok\n")
         assert b'real_pty_ok' in await until(b'real_pty_ok')
         await backend.resize(101, 37)
@@ -74,6 +78,7 @@ async def test_terminal_write_resize_interrupt_and_cleanup(monkeypatch, tmp_path
         await backend.write(b"printf 'read_%s\\n' ready; read -r ignored\n")
         assert b'read_ready' in await until(b'read_ready')
         await backend.write(b'\x03')
+        await until(b'PTYREADY> ')
         await backend.write(b"printf 'after_%s\\n' interrupt\n")
         assert b'after_interrupt' in await until(b'after_interrupt')
     finally:
