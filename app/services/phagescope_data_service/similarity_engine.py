@@ -10,9 +10,11 @@ line, and are not logged. Runs as a loose module on the host (Python 3.9).
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import logging
+import mmap
 import os
 import re
 import shlex
@@ -53,6 +55,16 @@ PENDING = ("queued", "running")
 SAMPLE_MEMBERS = 5
 DATABASES = ("base", "long")
 FORMAT = "query,target,fident,alnlen,qcov,tcov,evalue,bits,tlen"
+# A search mmaps the whole precomputed index (``--db-load-mode 2``). A Slurm job's memory cgroup is charged for
+# every index page it faults in, so a cold index thrashes against the job's memory cap on rotating disk; pages
+# already cached by the data service are not charged to the job. Keep them resident and hold searches until
+# they are.
+WARM_FILES = tuple(f"db/{name}.idx" for name in DATABASES)
+WARM_CHECK_SECONDS = 300
+WARM_REFRESH_BELOW = 0.99
+WARM_READY_AT = 0.9
+WARM_WAIT_SECONDS = 40 * 60
+WARM_CHUNK = 16 << 20
 
 _AA = re.compile(r"^[ACDEFGHIKLMNPQRSTVWYBJOUXZ]+$")
 _NUCLEOTIDE = frozenset("ACGTUN")
@@ -73,6 +85,44 @@ NOTES = (
 def similarity_root_from_env() -> Path | None:
     raw = os.environ.get("PHAGE_SIMILARITY_ROOT", "").strip()
     return Path(raw) if raw else None
+
+
+_MINCORE_WINDOW = 1 << 30
+
+
+def _libc() -> Any:
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.mmap.restype = ctypes.c_void_p
+    libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_long]
+    libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    libc.mincore.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_ubyte)]
+    return libc
+
+
+def resident_bytes(path: Path) -> tuple[int, int] | None:
+    """``(cached, total)`` bytes of ``path`` in the page cache via mincore(2); None where unsupported."""
+    try:
+        libc = _libc()
+        page = mmap.PAGESIZE
+        with path.open("rb") as fh:
+            total = os.fstat(fh.fileno()).st_size
+            cached = 0
+            for offset in range(0, total, _MINCORE_WINDOW):
+                length = min(_MINCORE_WINDOW, total - offset)
+                addr = libc.mmap(None, length, mmap.PROT_READ, mmap.MAP_SHARED, fh.fileno(), offset)
+                if addr in (None, ctypes.c_void_p(-1).value):
+                    return None
+                try:
+                    vec = (ctypes.c_ubyte * ((length + page - 1) // page))()
+                    if libc.mincore(addr, length, vec) != 0:
+                        return None
+                    flags = bytes(vec)
+                    cached += (len(flags) - flags.count(0)) * page
+                finally:
+                    libc.munmap(addr, length)
+        return min(cached, total), total
+    except (OSError, AttributeError, ValueError):
+        return None
 
 
 def _now_iso(ts: float | None = None) -> str:
@@ -254,6 +304,9 @@ class SimilarityEngine:
         self._lock = threading.Lock()
         self._slots = threading.Semaphore(MAX_RUNNING)
         self._jobs: dict[str, _Job] = {}
+        self._warm_ready = threading.Event()
+        self._warm_ready.set()
+        self.cache: dict[str, Any] = {"keep_warm": False, "warming": False, "resident_fraction": None, "last_warm_seconds": None}
         try:
             supplied = Path(root)
             resolved = supplied.resolve(strict=True)
@@ -307,6 +360,7 @@ class SimilarityEngine:
             "databases": dbs,
             "excluded": self.manifest.get("excluded"),
             "member_proteins": (self.manifest.get("members") or {}).get("proteins"),
+            "index_cache": {**self.cache, "ready": self._warm_ready.is_set()},
             "queue": {"running": running, "queued": queued, "max_running": MAX_RUNNING, "max_pending": MAX_PENDING},
             "limits": {
                 "max_queries": MAX_QUERIES,
@@ -316,6 +370,64 @@ class SimilarityEngine:
                 "max_hits": MAX_HITS,
             },
         }
+
+    def start_keep_warm(self, interval: float = WARM_CHECK_SECONDS) -> None:
+        """Keep the index files in the page cache from this (uncapped) process; searches wait until they are."""
+        if not self.available or self.cache["keep_warm"]:
+            return
+        self.cache["keep_warm"] = True
+        self._warm_ready.clear()
+
+        def loop() -> None:
+            while True:
+                try:
+                    self.warm_once()
+                except Exception:  # never let the keeper die; searches fall back to dispatching cold
+                    logger.exception("Similarity index warm-up failed")
+                    self._warm_ready.set()
+                time.sleep(interval)
+
+        threading.Thread(target=loop, name="simsearch-keep-warm", daemon=True).start()
+
+    def warm_once(self) -> None:
+        fraction = self._resident_fraction()
+        self.cache["resident_fraction"] = fraction
+        if fraction is not None and fraction >= WARM_REFRESH_BELOW:
+            self._warm_ready.set()
+            return
+        if fraction is None or fraction < WARM_READY_AT:
+            self._warm_ready.clear()
+        self.cache["warming"] = True
+        began = time.time()
+        try:
+            for rel in WARM_FILES:
+                self._read_through(self.root / rel)
+        finally:
+            self.cache["warming"] = False
+        self.cache["last_warm_seconds"] = round(time.time() - began, 1)
+        self.cache["resident_fraction"] = after = self._resident_fraction()
+        logger.info(
+            "Similarity index warmed in %ss (resident %s -> %s)", self.cache["last_warm_seconds"], fraction, after
+        )
+        self._warm_ready.set()
+
+    def _resident_fraction(self) -> float | None:
+        cached = total = 0
+        for rel in WARM_FILES:
+            counts = resident_bytes(self.root / rel)
+            if counts is None:
+                return None
+            cached, total = cached + counts[0], total + counts[1]
+        return round(cached / total, 4) if total else 1.0
+
+    @staticmethod
+    def _read_through(path: Path) -> None:
+        buf = bytearray(WARM_CHUNK)
+        with path.open("rb", buffering=0) as fh:
+            if hasattr(os, "posix_fadvise"):
+                os.posix_fadvise(fh.fileno(), 0, 0, os.POSIX_FADV_SEQUENTIAL)
+            while fh.readinto(buf):
+                pass
 
     def submit(self, payload: dict[str, Any]) -> _Job:
         queries = parse_sequences(payload.get("sequences"))
@@ -377,6 +489,8 @@ class SimilarityEngine:
         }
         if job.status in PENDING:
             body["poll_after_seconds"] = 5
+            if not job.dispatched and not self._warm_ready.is_set():
+                body["waiting_for"] = "index_loading"
         if job.error:
             body["error"] = job.error
         return body
@@ -467,6 +581,8 @@ class SimilarityEngine:
                     for index, (_, seq) in enumerate(job.queries):
                         fasta.write(f">q{index}\n{seq}\n")
                 (job.job_dir / "search.sh").write_text(self._script(job), encoding="utf-8")
+                if not self._warm_ready.wait(WARM_WAIT_SECONDS):
+                    raise RuntimeError("index_loading")
                 launched = time.time()
                 if self.runner == "local":
                     job.started_at, job.status = launched, "running"
@@ -489,11 +605,12 @@ class SimilarityEngine:
                 if not isinstance(exc, (RuntimeError, subprocess.TimeoutExpired)):
                     logger.exception("Similarity search %s failed", job.search_id)
                 job.finished_at, job.status = time.time(), "failed"
-                job.error = (
-                    {"code": "search_timeout", "message": "The similarity search hit its run time limit; retry later or with fewer sequences."}
-                    if timed_out
-                    else {"code": "search_failed", "message": "The similarity search did not complete; retry later."}
-                )
+                if str(exc) == "index_loading":
+                    job.error = {"code": "index_loading", "message": "The similarity index is still loading into memory; retry in about 15 minutes."}
+                elif timed_out:
+                    job.error = {"code": "search_timeout", "message": "The similarity search hit its run time limit; retry later or with fewer sequences."}
+                else:
+                    job.error = {"code": "search_failed", "message": "The similarity search did not complete; retry later."}
             finally:
                 job.queries = []
                 job.done.set()

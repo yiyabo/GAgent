@@ -763,6 +763,9 @@ def main() -> None:  # pragma: no cover - host entrypoint
         similarity_root=se.similarity_root_from_env(),
     )
 
+    if state.similarity is not None and os.environ.get("PHAGE_SIMILARITY_KEEP_WARM", "1").strip() != "0":
+        state.similarity.start_keep_warm()
+
     bind_host = os.environ.get("BIND_HOST", "127.0.0.1")
     server = ThreadingHTTPServer((bind_host, bind_port), make_handler(state))
     logger.info("PhageScope read-only data service listening on %s:%d", bind_host, bind_port)
