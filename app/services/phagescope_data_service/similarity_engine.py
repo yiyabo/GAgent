@@ -51,6 +51,8 @@ RESULT_TTL_SECONDS = 7 * 24 * 3600
 JOB_TIMEOUT_SECONDS = 20 * 60
 SLURM_TIME_LIMIT = "00:15:00"
 STARTED_MARKER = "started"
+JOB_RECORD = "job.json"
+INTERRUPTED_MESSAGE = "The data service restarted while this search was queued or running; submit it again."
 PENDING = ("queued", "running")
 SAMPLE_MEMBERS = 5
 DATABASES = ("base", "long")
@@ -263,13 +265,15 @@ def parse_params(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class _Job:
-    def __init__(self, search_id: str, queries: list[tuple[str, str]], params: dict[str, Any], job_dir: Path) -> None:
+    def __init__(
+        self, search_id: str, queries: list[tuple[str, str]], params: dict[str, Any], job_dir: Path, submitted_at: float
+    ) -> None:
         self.search_id = search_id
         self.queries = queries
         self.params = params
         self.job_dir = job_dir
         self.status = "queued"
-        self.submitted_at = time.time()
+        self.submitted_at = submitted_at
         self.started_at: float | None = None
         self.finished_at: float | None = None
         self.error: dict[str, str] | None = None
@@ -291,8 +295,10 @@ class SimilarityEngine:
         runner: str | None = None,
         run_command: Callable[[list[str], float], subprocess.CompletedProcess] | None = None,
         family_lookup: Callable[[list[str]], dict[str, str]] | None = None,
+        clock: Callable[[], float] = time.time,
     ) -> None:
         self.available = False
+        self._clock = clock
         self.last_error = "index_unavailable"
         self.manifest: dict[str, Any] = {}
         self.mmseqs_version = ""
@@ -444,7 +450,7 @@ class SimilarityEngine:
                 raise dq.ServiceQueryError(
                     "too_busy", "The similarity search queue is full; retry in about a minute.", 429
                 )
-            job = _Job(search_id, queries, params, self.work_dir / search_id)
+            job = _Job(search_id, queries, params, self.work_dir / search_id, self._clock())
             self._jobs[search_id] = job
         threading.Thread(target=self._run, args=(job,), name=f"simsearch-{search_id[:12]}", daemon=True).start()
         return job
@@ -508,36 +514,63 @@ class SimilarityEngine:
     def _members(self) -> sqlite3.Connection:
         return sqlite3.connect(f"file:{self.members_path}?mode=ro&immutable=1", uri=True, check_same_thread=False)
 
+    def _expired(self, record: dict[str, Any]) -> bool:
+        """Records are kept RESULT_TTL_SECONDS from when the search finished (or was submitted, if it never did)."""
+        anchor = record.get("finished") or record.get("submitted")
+        return not isinstance(anchor, (int, float)) or self._clock() - anchor > RESULT_TTL_SECONDS
+
+    @staticmethod
+    def _read_record(job_dir: Path) -> dict[str, Any] | None:
+        for name in (JOB_RECORD, "result.json"):  # result.json alone: written before job.json existed
+            try:
+                saved = json.loads((job_dir / name).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(saved, dict):
+                return saved
+        return None
+
     def _purge_locked(self) -> None:
-        cutoff = time.time() - RESULT_TTL_SECONDS
-        for sid in [sid for sid, job in self._jobs.items() if job.finished_at and job.finished_at < cutoff]:
+        for sid in [sid for sid, job in self._jobs.items() if job.finished_at and self._expired({"finished": job.finished_at})]:
             self._jobs.pop(sid, None)
         try:
             for child in self.work_dir.iterdir():
-                if SEARCH_ID.match(child.name) and child.is_dir() and child.stat().st_mtime < cutoff:
-                    if child.name not in self._jobs:
-                        shutil.rmtree(child, ignore_errors=True)
+                if not SEARCH_ID.match(child.name) or not child.is_dir() or child.name in self._jobs:
+                    continue
+                record = self._read_record(child) if (child / JOB_RECORD).is_file() else {"finished": child.stat().st_mtime}
+                if record is None or self._expired(record):
+                    shutil.rmtree(child, ignore_errors=True)
         except OSError:
             logger.warning("Could not scan similarity job directory %s", self.work_dir)
 
     def _load_locked(self, search_id: str) -> _Job | None:
-        path = self.work_dir / search_id / "result.json"
-        try:
-            if time.time() - path.stat().st_mtime > RESULT_TTL_SECONDS:
-                return None
-            saved = json.loads(path.read_text(encoding="utf-8"))
-            if saved.get("index_version") != self.index_version:
-                return None
-        except (OSError, ValueError):
+        job_dir = self.work_dir / search_id
+        saved = self._read_record(job_dir)
+        if saved is None or saved.get("index_version") != self.index_version or self._expired(saved):
             return None
-        job = _Job(search_id, [], saved["params"], path.parent)
-        job.status = "done"
-        job.submitted_at, job.started_at, job.finished_at = saved["submitted"], saved["started"], saved["finished"]
-        job.query_summary = saved["queries"]
-        job.results = saved["results"]
+        try:
+            job = _Job(search_id, [], saved["params"], job_dir, saved["submitted"])
+            job.started_at, job.finished_at = saved.get("started"), saved.get("finished")
+            job.query_summary = saved["queries"]
+            job.status = saved.get("status", "done")
+            job.error = saved.get("error")
+            if job.status == "done":
+                job.results = saved["results"] if "results" in saved else self._read_record_results(job_dir)
+        except (KeyError, TypeError, ValueError, OSError):
+            return None
+        if job.status in PENDING:  # its worker belonged to a process that is gone
+            job.status = "failed"
+            job.error = {"code": "interrupted", "message": INTERRUPTED_MESSAGE}
         job.done.set()
         self._jobs[search_id] = job
         return job
+
+    @staticmethod
+    def _read_record_results(job_dir: Path) -> list[dict[str, Any]]:
+        results = json.loads((job_dir / "result.json").read_text(encoding="utf-8"))["results"]
+        if not isinstance(results, list):
+            raise ValueError("result.json has no results list")
+        return results
 
     @staticmethod
     def _subprocess(argv: list[str], timeout: float) -> subprocess.CompletedProcess:
@@ -581,6 +614,7 @@ class SimilarityEngine:
                     for index, (_, seq) in enumerate(job.queries):
                         fasta.write(f">q{index}\n{seq}\n")
                 (job.job_dir / "search.sh").write_text(self._script(job), encoding="utf-8")
+                self._save(job)
                 if not self._warm_ready.wait(WARM_WAIT_SECONDS):
                     raise RuntimeError("index_loading")
                 launched = time.time()
@@ -598,13 +632,12 @@ class SimilarityEngine:
                 for name in DATABASES:
                     hits += self._read_m8(job, job.job_dir / f"{name}.m8", name)
                 job.results = self._expand(job, hits)
-                job.finished_at, job.status = time.time(), "done"
-                self._save(job)
+                job.finished_at, job.status = self._clock(), "done"
             except Exception as exc:  # report a failed search, never crash the server thread
                 timed_out = isinstance(exc, subprocess.TimeoutExpired) or str(exc) == "timeout"
                 if not isinstance(exc, (RuntimeError, subprocess.TimeoutExpired)):
                     logger.exception("Similarity search %s failed", job.search_id)
-                job.finished_at, job.status = time.time(), "failed"
+                job.finished_at, job.status = self._clock(), "failed"
                 if str(exc) == "index_loading":
                     job.error = {"code": "index_loading", "message": "The similarity index is still loading into memory; retry in about 15 minutes."}
                 elif timed_out:
@@ -612,6 +645,11 @@ class SimilarityEngine:
                 else:
                     job.error = {"code": "search_failed", "message": "The similarity search did not complete; retry later."}
             finally:
+                if job.job_dir.is_dir():
+                    try:
+                        self._save(job)
+                    except OSError:
+                        logger.exception("Could not record similarity search %s", job.search_id)
                 job.queries = []
                 job.done.set()
                 t = _timings(job)
@@ -705,16 +743,24 @@ class SimilarityEngine:
         return flat
 
     def _save(self, job: _Job) -> None:
-        saved = {
+        """job.json holds status and timestamps from submission on; result.json adds the hits once done."""
+        record = {
             "index_version": self.index_version,
+            "status": job.status,
             "params": job.params,
             "submitted": job.submitted_at,
             "started": job.started_at,
             "finished": job.finished_at,
             "queries": job.query_summary,
-            "results": job.results,
+            "error": job.error,
         }
-        tmp = job.job_dir / "result.json.tmp"
-        tmp.write_text(json.dumps(saved, separators=(",", ":")), encoding="utf-8")
-        os.replace(tmp, job.job_dir / "result.json")
-        (job.job_dir / "query.faa").unlink(missing_ok=True)
+        if job.status == "done":
+            self._write_json(job.job_dir / "result.json", {**record, "results": job.results})
+            (job.job_dir / "query.faa").unlink(missing_ok=True)
+        self._write_json(job.job_dir / JOB_RECORD, record)
+
+    @staticmethod
+    def _write_json(path: Path, payload: dict[str, Any]) -> None:
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+        os.replace(tmp, path)

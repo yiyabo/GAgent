@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -351,3 +353,123 @@ def test_mcp_similarity_notes_separate_failed_and_zero_hits():
     assert failed[0].startswith("Search failed (search_timeout)")
     assert tools._similarity_notes({"status": "done", "count": 0})[0].startswith("Search finished with zero hits")
     assert tools._similarity_notes({"status": "done", "count": 2})[0] == tools.SIMILARITY_NOTE
+
+
+# Cross-process retention: process A submits and exits, process B reads the same job directory.
+T0 = 1_800_000_000.0
+RUN_SECONDS = 600.0
+_PROCESS_A = r"""
+import json, os, subprocess, sys, threading
+from pathlib import Path
+from app.services.phagescope_data_service import similarity_engine as se
+
+root, mmseqs, mode, m8 = sys.argv[1], sys.argv[2], sys.argv[3], json.loads(sys.argv[4])
+now = [float(sys.argv[5])]
+dispatched = threading.Event()
+
+def runner(argv, timeout):
+    dispatched.set()
+    if mode == "interrupt":
+        threading.Event().wait()
+    now[0] += float(sys.argv[6])
+    job_dir = Path(argv[-1]).parent
+    for name in se.DATABASES:
+        (job_dir / f"{name}.m8").write_text("".join(l + "\n" for l in m8.get(name, [])), encoding="utf-8")
+    return subprocess.CompletedProcess(argv, 0, "", "")
+
+engine = se.SimilarityEngine(Path(root), mmseqs=mmseqs, run_command=runner, clock=lambda: now[0])
+job = engine.submit({"sequences": sys.argv[7]})
+if mode == "interrupt":
+    assert dispatched.wait(10)
+    print(json.dumps(engine.view(job)), flush=True)
+    os._exit(0)
+assert job.done.wait(10)
+print(json.dumps(engine.view(job)), flush=True)
+"""
+
+
+def _process_a(tmp_path: Path, mmseqs: Path, mode: str, m8: dict[str, list[str]]) -> dict[str, Any]:
+    root = _index(tmp_path)
+    repo = Path(__file__).resolve().parents[3]
+    proc = subprocess.run(
+        [sys.executable, "-c", _PROCESS_A, str(root), str(mmseqs), mode, json.dumps(m8), str(T0), str(RUN_SECONDS), PROTEIN],
+        capture_output=True, text=True, timeout=60, cwd=repo, env={**os.environ, "PYTHONPATH": str(repo)},
+    )
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+def _process_b(tmp_path: Path, mmseqs: Path, now: float, runner=None) -> se.SimilarityEngine:
+    return se.SimilarityEngine(
+        tmp_path / "similarity" / "v1", mmseqs=str(mmseqs), run_command=runner or FakeRunner(), clock=lambda: now
+    )
+
+
+def _stable(view: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in view.items() if k not in ("elapsed_seconds",)}
+
+
+def test_done_search_with_hits_survives_process_exit(tmp_path, mmseqs):
+    first = _process_a(tmp_path, mmseqs, "done", M8)
+    assert first["status"] == "done" and first["count"] == 3
+    again = _process_b(tmp_path, mmseqs, T0 + RUN_SECONDS + 3600)
+    view = again.view(again.get(first["search_id"]))
+    assert _stable(view) == _stable(first)
+    assert view["submitted_at"] == se._now_iso(T0) and view["timings"]["final"]
+
+
+def test_done_search_with_zero_hits_survives_process_exit(tmp_path, mmseqs):
+    first = _process_a(tmp_path, mmseqs, "done", {})
+    assert first["outcome"] == "no_hits"
+    again = _process_b(tmp_path, mmseqs, T0 + RUN_SECONDS + 3600)
+    view = again.view(again.get(first["search_id"]))
+    assert view["status"] == "done" and view["outcome"] == "no_hits" and view["count"] == 0
+    assert view["submitted_at"] == first["submitted_at"]
+
+
+def test_running_search_cut_off_by_exit_reports_interrupted_then_reruns(tmp_path, mmseqs):
+    first = _process_a(tmp_path, mmseqs, "interrupt", M8)
+    assert first["status"] in ("queued", "running")
+    runner = FakeRunner()
+    again = _process_b(tmp_path, mmseqs, T0 + 60, runner)
+    view = again.view(again.get(first["search_id"]))
+    assert view["status"] == "failed" and view["outcome"] == "failed" and view["count"] is None
+    assert view["error"]["code"] == "interrupted" and view["submitted_at"] == first["submitted_at"]
+    rerun = again.submit({"sequences": PROTEIN})
+    assert rerun.search_id == first["search_id"] and rerun.done.wait(10)
+    assert again.view(rerun)["status"] == "done" and len(runner.calls) == 1
+
+
+def test_retention_counts_seven_days_from_completion(tmp_path, mmseqs):
+    first = _process_a(tmp_path, mmseqs, "done", M8)
+    sid, finished = first["search_id"], T0 + RUN_SECONDS
+    past_submit = _process_b(tmp_path, mmseqs, T0 + se.RESULT_TTL_SECONDS + 1)
+    assert past_submit.view(past_submit.get(sid))["count"] == 3
+    at_boundary = _process_b(tmp_path, mmseqs, finished + se.RESULT_TTL_SECONDS)
+    assert at_boundary.view(at_boundary.get(sid))["count"] == 3
+    expired = _process_b(tmp_path, mmseqs, finished + se.RESULT_TTL_SECONDS + 1)
+    with pytest.raises(se.dq.ServiceQueryError) as err:
+        expired.get(sid)
+    assert err.value.code == "not_found" and not (expired.work_dir / sid).exists()
+
+
+def test_resubmitting_a_kept_result_returns_it_untouched(tmp_path, mmseqs):
+    first = _process_a(tmp_path, mmseqs, "done", M8)
+    runner = FakeRunner(m8={})
+    again = _process_b(tmp_path, mmseqs, T0 + 86400, runner)
+    job = again.submit({"sequences": PROTEIN})
+    assert job.search_id == first["search_id"] and runner.calls == []
+    assert _stable(again.view(job)) == _stable(first)
+
+
+def test_result_saved_before_job_records_still_loads(tmp_path, mmseqs):
+    first = _process_a(tmp_path, mmseqs, "done", M8)
+    job_dir = tmp_path / "similarity" / "jobs" / first["search_id"]
+    (job_dir / se.JOB_RECORD).unlink()
+    legacy = json.loads((job_dir / "result.json").read_text())
+    for key in ("status", "error"):
+        legacy.pop(key)
+    (job_dir / "result.json").write_text(json.dumps(legacy))
+    os.utime(job_dir, (T0 + RUN_SECONDS, T0 + RUN_SECONDS))
+    again = _process_b(tmp_path, mmseqs, T0 + 86400)
+    assert _stable(again.view(again.get(first["search_id"]))) == _stable(first)
