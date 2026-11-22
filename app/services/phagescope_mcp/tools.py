@@ -113,9 +113,21 @@ def _clamp(value: Any, low: int, high: int, default: int) -> int:
     return max(low, min(high, number))
 
 
+def _phage_id(value: Any) -> int:
+    if isinstance(value, int) and not isinstance(value, bool):
+        number = value
+    elif isinstance(value, str) and value.strip().isascii() and value.strip().isdigit():
+        number = int(value.strip())
+    else:
+        raise ToolInputError(f"phage_id must be a positive integer PhageScope id, got {value!r}; use accession for accessions.")
+    if number < 1:
+        raise ToolInputError(f"phage_id must be a positive integer PhageScope id, got {value!r}.")
+    return number
+
+
 def _phage_ref(args: dict[str, Any]) -> dict[str, Any]:
     if args.get("phage_id") is not None:
-        return {"phage_id": int(args["phage_id"])}
+        return {"phage_id": _phage_id(args["phage_id"])}
     if args.get("accession"):
         return {"accession": str(args["accession"]).strip()}
     raise ToolInputError("Provide phage_id or accession.")
