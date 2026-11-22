@@ -338,3 +338,45 @@ def test_cancelled_chat_history_exposes_continuation_and_original_run_stays_term
         source_run = chat_runs.get_chat_run('source-history')
         assert source_run is not None and source_run['status'] == 'cancelled'
         assert child.json()['resume_from_run_id'] == 'source-history'
+
+
+@pytest.mark.integration
+def test_session_delete_works_without_main_db_tasks_table(app_client_factory) -> None:
+    """Tasks live in per-plan shards; only /chat/sessions/{id} deletes sessions."""
+    session_id = "integration-session-delete-plan-bound"
+    headers = {"X-Forwarded-User": "alice"}
+
+    with app_client_factory() as client:
+        legacy_paths = {
+            route.path
+            for route in client.app.routes
+            if getattr(route, "path", "").startswith("/sessions")
+        }
+        assert legacy_paths == set()
+
+        assert client.patch(
+            f"/chat/sessions/{session_id}", json={"name": "Plan bound"}, headers=headers
+        ).status_code == 200
+        with get_db() as conn:
+            assert conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'"
+            ).fetchone() is None
+            _seed_plans(conn, 41)
+            conn.commit()
+        _set_session_plan_id(session_id, 41, owner_id="alice")
+        with get_db() as conn:
+            conn.execute(
+                "INSERT INTO chat_messages (session_id, role, content) VALUES (?, ?, ?)",
+                (session_id, "user", "to be deleted"),
+            )
+            conn.commit()
+
+        assert client.delete(f"/chat/sessions/{session_id}", headers=headers).status_code == 204
+
+        with get_db() as conn:
+            assert conn.execute(
+                "SELECT 1 FROM chat_sessions WHERE id=?", (session_id,)
+            ).fetchone() is None
+            assert conn.execute(
+                "SELECT 1 FROM chat_messages WHERE session_id=?", (session_id,)
+            ).fetchone() is None
