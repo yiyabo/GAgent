@@ -16,6 +16,7 @@ from app.services.phagescope_mcp import limits, store, tools
 ACCEPT = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
 PROTOCOL = "2025-06-18"
 
+KNOWN_PROTEINS = {"NP_040645.1", "NP_040587.1"}
 FAKE_ROWS = [{"id": i, "Acession_ID": f"PS{i:05d}", "host": "Salmonella", "lifestyle": None} for i in range(1, 41)]
 
 
@@ -36,7 +37,64 @@ class FakeDataService:
             if body.get("accession") == "missing":
                 raise tools.PhageScopeDataError("not_found", "No such phage.", 404)
             return {"id": 7, "Acession_ID": "PS00007", "lifestyle": None}
+        if path == "v2/structures/resolve/":
+            rows = [dict(STRUCTURE_ROWS.get(pid, {"protein_id": pid, "available": False})) for pid in body["protein_ids"]]
+            return {"count": len(rows), "results": rows}
+        if path == "v2/proteins/query/" and body.get("mode") == "by_ids":
+            rows = [{"Protein_id": pid, "Product": "p"} for pid in body["protein_ids"] if pid in KNOWN_PROTEINS]
+            return {"count": len(rows), "results": rows}
         return {"results": []}
+
+
+STRUCTURE_ROWS = {
+    "NP_040587.1": {
+        "protein_id": "NP_040587.1", "available": True, "asset_id": "PDB:7vi9_A", "confidence_label": "experimental",
+        "match_type": "exact_external", "identity": 100.0, "qcov": 100.0, "tcov": 100.0, "source": "PDB",
+        "method": "experimental", "plddt_mean": None, "resolution_a": None, "file_format": "cif", "pdb_rel_path": "",
+    },
+    "MetaVR_jumbo_01_1": {
+        "protein_id": "MetaVR_jumbo_01_1", "available": True, "asset_id": "ESMFOLD:MetaVR_jumbo_01_1",
+        "confidence_label": "predicted", "match_type": "exact_internal", "identity": 100.0, "qcov": 100.0,
+        "tcov": 100.0, "source": "ESMFold", "method": "ESMFold", "plddt_mean": 88.4, "resolution_a": None,
+        "file_format": "pdb", "pdb_rel_path": "5/split_1/MetaVR_jumbo_01_1.pdb",
+    },
+}
+
+
+def _structure_notes(client, token, ids):
+    result, payload = _call(client, token, "get_structures", {"protein_ids": ids})
+    assert result["isError"] is False
+    return payload["data"]["results"], " ".join(payload["notes"])
+
+
+def test_get_structures_notes_follow_each_record_source_and_method(mcp_client):
+    client, _ = mcp_client
+    token, _ = store.issue_token("u1", name="t")
+
+    rows, notes = _structure_notes(client, token, ["NP_040587.1"])
+    assert rows[0]["evidence"] == "experimental"
+    assert rows[0]["source_url"] == "https://www.rcsb.org/structure/7VI9"
+    assert "experimentally determined" in notes and "PDB:7vi9_A" in notes
+    assert "ESMFold" not in notes and "computational" not in notes
+
+    rows, notes = _structure_notes(client, token, ["MetaVR_jumbo_01_1"])
+    assert rows[0]["evidence"] == "predicted" and "source_url" not in rows[0]
+    assert "computational models" in notes and "ESMFold ESMFold (1)" in notes
+    assert "experimentally determined" not in notes
+
+    rows, notes = _structure_notes(client, token, ["NP_999999999.1"])
+    assert rows == [{"protein_id": "NP_999999999.1", "available": False}]
+    assert "No structure record in PhageScope for 1 id(s): NP_999999999.1" in notes
+    assert "experimentally" not in notes and "computational" not in notes
+
+    rows, notes = _structure_notes(client, token, ["NP_040587.1", "NP_999999999.1", "MetaVR_jumbo_01_1"])
+    assert [r.get("evidence") for r in rows] == ["experimental", None, "predicted"]
+    assert "1 record(s) are experimentally determined" in notes
+    assert "1 record(s) are computational models" in notes
+    assert "NP_999999999.1" in notes
+
+    description = tools.TOOLS_BY_NAME["get_structures"].description
+    assert "experimental (PDB)" in description and "predicted" in description
 
 
 @pytest.fixture
@@ -119,12 +177,12 @@ def test_mcp_initialize_and_lists_read_only_tools(mcp_client):
         {"protocolVersion": PROTOCOL, "capabilities": {}, "clientInfo": {"name": "pytest", "version": "1"}},
     )
     assert init.status_code == 200, init.text
-    assert init.json()["result"]["serverInfo"]["name"] == "phagescope"
+    assert init.json()["result"]["serverInfo"]["name"] == "phageagent"
     listed = _rpc(client, token, "tools/list").json()["result"]["tools"]
     assert {t["name"] for t in listed} == set(tools.TOOLS_BY_NAME)
     assert all(t["annotations"]["readOnlyHint"] and not t["annotations"]["destructiveHint"] for t in listed)
     resources = _rpc(client, token, "resources/list").json()["result"]["resources"]
-    assert resources[0]["uri"] == "phagescope://reference/query-guide"
+    assert resources[0]["uri"] == "phageagent://reference/query-guide"
 
 
 def test_mcp_search_phages_envelope_audit_and_usage(mcp_client):
@@ -299,3 +357,166 @@ def test_email_allowlist_requires_user_id_during_open_signup(mcp_client, monkeyp
     assert client.post("/phagescope-mcp/tokens", json={"name": "id-allowed"}).status_code == 200
     _setenv(monkeypatch, "PHAGESCOPE_MCP_ALLOWED_USERS", "")
     assert _rpc(client, token, "tools/list").status_code == 200
+
+
+def test_open_access_issues_read_only_tokens_to_any_signed_in_user(mcp_client, monkeypatch):
+    from app.services.phagescope_mcp import analysis
+
+    client, _ = mcp_client
+    import app.routers.phagescope_mcp_routes as routes
+    from app.services.request_principal import RequestPrincipal
+
+    principal = RequestPrincipal(user_id="carol", email="carol@example.org", role="user", auth_source="test",
+                                 is_authenticated=True)
+    monkeypatch.setattr(routes, "require_authenticated_principal", lambda request: principal)
+    _setenv(monkeypatch, "AUTH_OPEN_SIGNUP", "1")
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ALLOWED_USERS", "")
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ALLOWED_USER_IDS", "")
+    assert client.post("/phagescope-mcp/tokens", json={"name": "closed"}).status_code == 403
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_OPEN_ACCESS", "1")
+    created = client.post("/phagescope-mcp/tokens", json={"name": "open"})
+    assert created.status_code == 200, created.text
+    body = created.json()
+    assert body["record"]["scopes"] == ["data:read"]
+    listed = _rpc(client, body["token"], "tools/list")
+    assert listed.status_code == 200
+    names = {tool["name"] for tool in listed.json()["result"]["tools"]}
+    assert "catalog_overview" in names and not names & set(analysis.ANALYSIS_TOOLS_BY_NAME)
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ANALYSIS_ENABLED", "1")
+    with_analysis = client.post("/phagescope-mcp/tokens", json={"name": "open-analysis"}).json()
+    assert with_analysis["record"]["scopes"] == ["data:read", "analysis:submit"]
+    names = {tool["name"] for tool in _rpc(client, with_analysis["token"], "tools/list").json()["result"]["tools"]}
+    assert set(analysis.ANALYSIS_TOOLS_BY_NAME) <= names
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_OPEN_ACCESS", "0")
+    assert _rpc(client, body["token"], "tools/list").status_code == 401
+
+
+@pytest.mark.parametrize(("count", "limit", "blocked"), [(9, 10, False), (10, 10, True), (10_000, 0, False), (5, -1, False)])
+def test_analysis_limits_of_zero_mean_unlimited(count, limit, blocked):
+    from app.services.phagescope_mcp import analysis
+
+    assert analysis._at_limit(count, limit) is blocked
+
+
+def test_anonymous_discovery_lists_tools_but_never_calls_them(mcp_client, monkeypatch):
+    client, fake = mcp_client
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ANON_DISCOVERY", "1")
+    init = _rpc(
+        client,
+        None,
+        "initialize",
+        {"protocolVersion": PROTOCOL, "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}},
+    )
+    assert init.status_code == 200 and init.json()["result"]["serverInfo"]["name"] == "phageagent"
+    assert _rpc(client, None, "ping").status_code == 200
+    listed = _rpc(client, None, "tools/list").json()["result"]["tools"]
+    assert {"search_phages", "get_phage"} <= {tool["name"] for tool in listed}
+    for tool in listed:
+        assert tool["description"] and tool["annotations"]["readOnlyHint"] is not None
+        for name, prop in tool["inputSchema"].get("properties", {}).items():
+            assert prop.get("description"), (tool["name"], name)
+    call = _rpc(client, None, "tools/call", {"name": "catalog_overview", "arguments": {}})
+    assert call.status_code == 401 and call.headers["www-authenticate"].startswith("Bearer")
+    assert _rpc(client, None, "resources/list").status_code == 401
+    assert _rpc(client, "gpsk_not-a-real-token", "tools/list").status_code == 401
+    assert client.get("/mcp", headers=ACCEPT).status_code == 401
+    batch = [
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "catalog_overview", "arguments": {}}},
+    ]
+    headers = dict(ACCEPT, **{"MCP-Protocol-Version": PROTOCOL})
+    assert client.post("/mcp", headers=headers, content=json.dumps(batch)).status_code == 401
+    assert fake.calls == []
+
+
+def test_anonymous_discovery_is_off_by_default_and_rate_limited_per_ip(mcp_client, monkeypatch):
+    client, _ = mcp_client
+    assert _rpc(client, None, "tools/list").status_code == 401
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ANON_DISCOVERY", "1")
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ANON_REQUESTS_PER_MINUTE", "2")
+    ip_a = {"X-Real-IP": "203.0.113.5"}
+    assert _rpc(client, None, "tools/list", extra_headers=ip_a).status_code == 200
+    assert _rpc(client, None, "tools/list", extra_headers=ip_a).status_code == 200
+    resp = _rpc(client, None, "tools/list", extra_headers=ip_a)
+    assert resp.status_code == 429 and resp.headers["retry-after"]
+    assert _rpc(client, None, "tools/list", extra_headers={"X-Real-IP": "203.0.113.6"}).status_code == 200
+    token, _ = store.issue_token("u1", name="t")
+    assert _rpc(client, token, "tools/list", extra_headers=ip_a).status_code == 200
+
+
+def test_anonymous_tool_list_includes_analysis_only_under_open_access(mcp_client, monkeypatch):
+    client, _ = mcp_client
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ANON_DISCOVERY", "1")
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ANALYSIS_ENABLED", "1")
+    names = {tool["name"] for tool in _rpc(client, None, "tools/list").json()["result"]["tools"]}
+    assert "submit_analysis" not in names
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_OPEN_ACCESS", "1")
+    names = {tool["name"] for tool in _rpc(client, None, "tools/list").json()["result"]["tools"]}
+    assert "submit_analysis" in names
+
+
+@pytest.mark.parametrize(
+    ("ids", "found", "missing"),
+    [
+        (["NP_040645.1", "NP_999999999.1", "NP_040587.1"], ["NP_040645.1", "NP_040587.1"], ["NP_999999999.1"]),
+        (["NP_040587.1", "NP_040645.1"], ["NP_040587.1", "NP_040645.1"], []),
+        (["NP_1.1", "NP_2.1"], [], ["NP_1.1", "NP_2.1"]),
+        (["NP_040587.1", " NP_040587.1 ", "NP_X.1", "NP_040645.1", "NP_X.1"], ["NP_040587.1", "NP_040645.1"], ["NP_X.1"]),
+    ],
+    ids=["mixed", "all_found", "all_missing", "duplicates"],
+)
+def test_search_proteins_by_ids_reports_missing_ids(mcp_client, ids, found, missing):
+    client, fake = mcp_client
+    token, _ = store.issue_token("u1", name="t")
+    result, payload = _call(client, token, "search_proteins", {"protein_ids": ids})
+    assert result["isError"] is False
+    data = payload["data"]
+    assert [row["Protein_id"] for row in data["results"]] == found
+    assert data["missing_ids"] == missing
+    assert data["count"] == len(found)
+    assert data["requested_count"] == len(found) + len(missing)
+    sent = [body for method, path, body in fake.calls if path == "v2/proteins/query/"][-1]
+    assert sent["protein_ids"] == list(dict.fromkeys(i.strip() for i in ids))
+    assert any("missing_ids" in note for note in payload["notes"])
+
+
+def test_search_proteins_rejects_blank_ids_and_keeps_by_phage_shape(mcp_client):
+    client, _ = mcp_client
+    token, _ = store.issue_token("u1", name="t")
+    result, payload = _call(client, token, "search_proteins", {"protein_ids": [" ", ""]})
+    assert result["isError"] is True and payload["error"]["code"] == "invalid_arguments"
+    result, payload = _call(client, token, "search_proteins", {"accession": "NC_001416.1"})
+    assert result["isError"] is False
+    assert "missing_ids" not in payload["data"]
+
+
+PHAGE_REF_TOOLS = [
+    ("get_phage", {}),
+    ("get_sequence", {}),
+    ("search_proteins", {}),
+    ("query_features", {"feature_type": "trna"}),
+]
+
+
+@pytest.mark.parametrize("tool,extra", PHAGE_REF_TOOLS, ids=[t for t, _ in PHAGE_REF_TOOLS])
+@pytest.mark.parametrize("bad_id", ["abc", "PS00007", "12x", "", 0, -3, 1.5, True, [7]])
+def test_non_numeric_phage_id_is_invalid_arguments(mcp_client, tool, extra, bad_id):
+    client, fake = mcp_client
+    token, record = store.issue_token("u1", name="t")
+    result, payload = _call(client, token, tool, {"phage_id": bad_id, **extra})
+    assert result["isError"] is True
+    assert payload["error"]["code"] == "invalid_arguments"
+    assert "phage_id must be a positive integer" in payload["error"]["message"]
+    assert fake.calls == []
+    assert store.recent_audit(record.id)[0]["error_code"] == "invalid_arguments"
+
+
+@pytest.mark.parametrize("tool,extra", PHAGE_REF_TOOLS, ids=[t for t, _ in PHAGE_REF_TOOLS])
+@pytest.mark.parametrize("good_id", [7, "7", " 7 "])
+def test_numeric_phage_id_still_accepted(mcp_client, tool, extra, good_id):
+    client, fake = mcp_client
+    token, _ = store.issue_token("u1", name="t")
+    result, _ = _call(client, token, tool, {"phage_id": good_id, **extra})
+    assert result["isError"] is False
+    method, path, sent = fake.calls[0]
+    assert (sent or {}).get("phage_id") == 7 or path == "phages/7/sequence/"

@@ -5,7 +5,7 @@
 
 Runs initialize, tools/list, resources/list+read and a set of read-only tool
 calls, then checks that a missing token and a bad token are refused. Exits 1
-on any failure. The token may also come from PHAGESCOPE_MCP_TOKEN.
+on any failure. The token may also come from PHAGEAGENT_MCP_TOKEN.
 """
 
 from __future__ import annotations
@@ -104,10 +104,10 @@ async def _refusals(url: str) -> list[str]:
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", required=True)
-    parser.add_argument("--token", default=os.environ.get("PHAGESCOPE_MCP_TOKEN", ""))
+    parser.add_argument("--token", default=os.environ.get("PHAGEAGENT_MCP_TOKEN", ""))
     args = parser.parse_args()
     if not args.token:
-        parser.error("--token or PHAGESCOPE_MCP_TOKEN is required")
+        parser.error("--token or PHAGEAGENT_MCP_TOKEN is required")
     failures = await _session_calls(args.url, args.token) + await _refusals(args.url)
     for failure in failures:
         print(f"FAIL: {failure}", file=sys.stderr)

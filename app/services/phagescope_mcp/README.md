@@ -6,14 +6,44 @@ responses). Design: `design/2026-11-19-phagescope-mcp.md` (phase 1).
 
 ## Tools
 
-`catalog_overview`, `search_phages`, `cohort_report`, `aggregate_phages`,
-`get_phage`, `get_sequence`, `search_proteins`, `search_families`,
-`family_members`, `query_features`, `get_structures`, plus the resource
-`phagescope://reference/query-guide`. Every tool is annotated read-only.
+Every token with `data:read` gets the 13 data tools (annotated read-only);
+`analysis:submit` adds the 6 analysis-task tools (`analysis.py`), 19 tools in
+all. Plus the resource `phageagent://reference/query-guide`.
+
+<!-- tools:begin -->
+- `catalog_overview`
+- `search_phages`
+- `cohort_report`
+- `aggregate_phages`
+- `get_phage`
+- `get_sequence`
+- `search_proteins`
+- `search_families`
+- `family_members`
+- `query_features`
+- `get_structures`
+- `similarity_search`
+- `get_similarity_result`
+- `submit_analysis`
+- `get_analysis_status`
+- `get_analysis_result`
+- `reply_analysis`
+- `cancel_analysis`
+- `list_analyses`
+<!-- tools:end -->
+
+Adding or removing a tool means updating this list and the Tools table in
+`integrations/phageagent-mcp/README.md`; `app/tests/tools/test_phagescope_mcp_docs.py`
+compares both with the server's `tools/list`.
 
 Each result is one JSON text block: `data` (service payload), `provenance`
 (source, snapshot, retrieval time), `limits` (`returned_rows`, `truncated`,
 paging) and `notes`. A null field means unknown, never zero.
+
+`search_proteins` with `protein_ids` trims and de-duplicates the ids (first
+occurrence kept), returns `results` in input order, and adds `missing_ids`
+(requested ids with no PhageScope protein, in input order) and
+`requested_count`; `count` is the number of ids found.
 
 ## Access and limits
 
@@ -22,13 +52,16 @@ paging) and `notes`. A null field means unknown, never zero.
 | `PHAGESCOPE_MCP_ENABLED` | `0` | `/mcp` answers 404 until set to `1` |
 | `PHAGESCOPE_MCP_ALLOWED_USERS` | empty | user ids / emails that may self-issue tokens (admins always may) |
 | `PHAGESCOPE_MCP_ALLOWED_USER_IDS` | empty | immutable user ids that may self-issue/use tokens; required alongside email entries when open signup is enabled |
+| `PHAGESCOPE_MCP_OPEN_ACCESS` | `0` | `1` lets every signed-in, active user self-issue tokens without an allowlist entry; they get `data:read`, plus `analysis:submit` when analysis is enabled |
+| `PHAGESCOPE_MCP_ANON_DISCOVERY` | `0` | `1` lets requests without a token `initialize`, `ping` and `tools/list` (no tool calls, no resources), so directories such as mcptry can list the tools |
+| `PHAGESCOPE_MCP_ANON_REQUESTS_PER_MINUTE` | `30` | rate limit for those token-less requests, per client IP (`X-Real-IP` from the gateway) |
 | `PHAGESCOPE_MCP_ALLOWED_HOSTS` | `phageagent.deepomics.org,localhost,127.0.0.1` | exact Host values accepted by the `/mcp` transport |
 | `PHAGESCOPE_MCP_ALLOWED_ORIGINS` | `https://phageagent.deepomics.org,http://localhost,http://127.0.0.1` | exact Origin values accepted by the `/mcp` transport |
 | `PHAGESCOPE_MCP_DAILY_BYTES` | 2 GiB | returned bytes per token per UTC day |
 | `PHAGESCOPE_MCP_REQUESTS_PER_MINUTE` | 60 | per token, per app process |
 | `PHAGESCOPE_MCP_MAX_CONCURRENCY` | 4 | in-flight requests per token, per app process |
 | `PHAGESCOPE_MCP_MAX_RESULT_BYTES` | 512 KiB | per call; larger results are trimmed by rows and flagged `truncated` |
-| `PHAGESCOPE_MCP_ANALYSIS_DAILY_SUBMISSIONS` | 10 | daily per-user cap for initial submissions plus reply runs |
+| `PHAGESCOPE_MCP_ANALYSIS_DAILY_SUBMISSIONS` | 10 | daily per-user cap for initial submissions plus reply runs; `0` = unlimited (also for the two concurrency caps) |
 
 When `AUTH_OPEN_SIGNUP=1`, an email entry in `PHAGESCOPE_MCP_ALLOWED_USERS` is
 not sufficient to issue or use a token: the user's immutable id must also be in
@@ -62,47 +95,61 @@ rows, bytes); plaintext tokens are never logged.
 
 Issue tokens:
 
-- Allowlisted user, signed in: `POST /phagescope-mcp/tokens {"name": "codex"}`
+- Signed-in user (any user under open access): Extensions -> External access ->
+  Create token in the web UI, or `POST /phagescope-mcp/tokens {"name": "codex"}`
   (list: `GET`, revoke: `DELETE /phagescope-mcp/tokens/{id}`).
 - Operator: `python scripts/phagescope_mcp_tokens.py issue --user-id <id> --name codex`
   (`list`, `revoke <id>`, `audit <id>`).
 
 ## Client setup
 
-Replace `$PHAGESCOPE_MCP_TOKEN` with the token.
+Replace `$PHAGEAGENT_MCP_TOKEN` with the token.
 
 Codex (`~/.codex/config.toml`):
 
 ```toml
-[mcp_servers.phagescope]
+[mcp_servers.phageagent]
 url = "https://phageagent.deepomics.org/mcp"
-bearer_token_env_var = "PHAGESCOPE_MCP_TOKEN"
+bearer_token_env_var = "PHAGEAGENT_MCP_TOKEN"
 ```
 
 Claude Code:
 
 ```bash
-claude mcp add --transport http phagescope https://phageagent.deepomics.org/mcp \
-  --header "Authorization: Bearer $PHAGESCOPE_MCP_TOKEN"
+claude mcp add --transport http phageagent https://phageagent.deepomics.org/mcp \
+  --header "Authorization: Bearer $PHAGEAGENT_MCP_TOKEN"
 ```
 
 Clients with a JSON `mcpServers` file and HTTP support (WorkBuddy, Cursor, Hermes, Devin):
 
 ```json
-{"mcpServers": {"phagescope": {
+{"mcpServers": {"phageagent": {
   "url": "https://phageagent.deepomics.org/mcp",
-  "headers": {"Authorization": "Bearer ${PHAGESCOPE_MCP_TOKEN}"}}}}
+  "headers": {"Authorization": "Bearer ${PHAGEAGENT_MCP_TOKEN}"}}}}
 ```
 
 stdio-only clients can bridge with `mcp-remote`:
 
 ```json
-{"mcpServers": {"phagescope": {"command": "npx", "args": [
+{"mcpServers": {"phageagent": {"command": "npx", "args": [
   "-y", "mcp-remote", "https://phageagent.deepomics.org/mcp",
-  "--header", "Authorization: Bearer ${PHAGESCOPE_MCP_TOKEN}"]}}}
+  "--header", "Authorization: Bearer ${PHAGEAGENT_MCP_TOKEN}"]}}}
 ```
 
 ## Verify
+
+After every release that changes tools, and before publishing the public repo
+or the Registry entry, compare the public docs with the live `tools/list`
+(anonymous discovery is on, so no token is needed):
+
+```bash
+python integrations/phageagent-mcp/scripts/check_tools_doc.py \
+  --url https://phageagent.deepomics.org/mcp \
+  integrations/phageagent-mcp/README.md \
+  https://raw.githubusercontent.com/yiyabo/phageagent-mcp/main/README.md
+```
+
+The public repo runs the same check daily and on every push.
 
 `python scripts/verify_phagescope_mcp.py --url <base>/mcp --token <token>` runs
 initialize, tools/list, resources/read and a few read-only tool calls with the

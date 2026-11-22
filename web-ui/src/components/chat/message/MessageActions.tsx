@@ -22,9 +22,10 @@ const { Text } = Typography;
 
 interface MessageActionsProps {
   message: ChatMessageType;
+  feedback?: React.ReactNode;
 }
 
-const MessageActions: React.FC<MessageActionsProps> = ({ message }) => {
+const MessageActions: React.FC<MessageActionsProps> = ({ message, feedback }) => {
   const t = useT();
   const { type, content, timestamp, metadata } = message;
   const saveMessageAsMemory = useChatStore((s) => s.saveMessageAsMemory);
@@ -79,6 +80,8 @@ const MessageActions: React.FC<MessageActionsProps> = ({ message }) => {
                 style={{ fontSize: 12, padding: '0 4px' }}
               />
             </Tooltip>
+
+            {type === 'assistant' && feedback}
 
             <Tooltip title={t('chat.saveAsMemory')}>
               <Button

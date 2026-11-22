@@ -4,8 +4,11 @@ File Upload Routes
 fileupload, sessionmedium
 """
 
+import json
 import logging
 import os
+import re
+import time
 import shutil
 import stat
 import tarfile
@@ -528,6 +531,30 @@ async def _save_upload_file(
         file_path.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=f"Could not save the file on the server: {e}")
 
+    return _finalize_saved_upload(
+        file_path,
+        file_id=file_id,
+        original_name=original_name,
+        safe_name=safe_name,
+        file_size=file_size,
+        file_type=file.content_type or "application/octet-stream",
+        session_id=session_id,
+        category=category,
+    )
+
+
+def _finalize_saved_upload(
+    file_path: Path,
+    *,
+    file_id: str,
+    original_name: str,
+    safe_name: str,
+    file_size: int,
+    file_type: str,
+    session_id: str,
+    category: str,
+) -> Dict[str, Any]:
+    """Extract an uploaded archive and describe the stored file."""
     extracted_path = None
     extracted_files = None
 
@@ -551,8 +578,6 @@ async def _save_upload_file(
         size_str = f"{file_size / 1024:.2f} KB"
     else:
         size_str = f"{file_size / 1024 / 1024:.2f} MB"
-
-    file_type = file.content_type or "application/octet-stream"
 
     return {
         "file_id": file_id,
@@ -626,6 +651,230 @@ async def upload_file(
     except Exception as e:
         logger.error(f"uploadfilefailed: {e}")
         raise HTTPException(status_code=500, detail=f"upload failed: {str(e)}")
+
+
+# ---- Chunked uploads ----
+# One multi-hundred-MB request fails as a whole when the client's connection
+# stalls or resets (the public Apache proxy drops the body read), so the web UI
+# sends large files as numbered chunks and retries only the chunk that failed.
+CHUNK_SUBDIR = ".upload_chunks"
+CHUNK_MAX_BYTES = 32 * 1024 * 1024
+CHUNK_MAX_COUNT = 20000
+CHUNK_STALE_SECONDS = 24 * 3600
+_UPLOAD_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+
+
+def _chunk_dir(session_id: str, upload_id: str) -> Path:
+    if not _UPLOAD_ID_RE.match(upload_id or ""):
+        raise HTTPException(status_code=400, detail="upload_id must be 8-64 letters, digits, '-' or '_'")
+    return ensure_session_dir(session_id) / CHUNK_SUBDIR / upload_id
+
+
+def _purge_stale_chunk_dirs(session_id: str) -> None:
+    root = ensure_session_dir(session_id) / CHUNK_SUBDIR
+    if not root.is_dir():
+        return
+    cutoff = time.time() - CHUNK_STALE_SECONDS
+    for child in root.iterdir():
+        try:
+            if child.is_dir() and child.stat().st_mtime < cutoff:
+                shutil.rmtree(child, ignore_errors=True)
+        except OSError:
+            continue
+
+
+def _chunked_upload_meta(file_name: str, total: int, total_size: int) -> Dict[str, Any]:
+    if not file_name or not file_name.strip():
+        raise HTTPException(status_code=400, detail="file_name is required")
+    if total < 1 or total > CHUNK_MAX_COUNT:
+        raise HTTPException(status_code=400, detail=f"total must be between 1 and {CHUNK_MAX_COUNT}")
+    if total_size < 0:
+        raise HTTPException(status_code=400, detail="total_size must not be negative")
+    category = _get_file_category("", file_name)
+    if not category:
+        raise HTTPException(status_code=400, detail=f"unsupported file type: {file_name}")
+    max_size = _get_max_size(category)
+    if max_size is not None and total_size > max_size:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File is larger than the {max_size / 1024 / 1024:.0f} MB upload limit",
+        )
+    return {"file_name": file_name, "total": total, "total_size": total_size, "category": category}
+
+
+def _load_chunk_meta(chunk_dir: Path) -> Optional[Dict[str, Any]]:
+    try:
+        return json.loads((chunk_dir / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _received_chunks(chunk_dir: Path) -> list:
+    if not chunk_dir.is_dir():
+        return []
+    indexes = []
+    for part in chunk_dir.glob("*.part"):
+        try:
+            indexes.append(int(part.stem))
+        except ValueError:
+            continue
+    return sorted(indexes)
+
+
+def _upload_response(file_info: Dict[str, Any], session_id: str) -> UploadResponse:
+    return UploadResponse(
+        success=True,
+        file_id=file_info["file_id"],
+        file_path=file_info["file_path"],
+        file_name=file_info["file_name"],
+        original_name=file_info["original_name"],
+        file_size=file_info["file_size"],
+        file_type=file_info["file_type"],
+        uploaded_at=file_info["uploaded_at"],
+        category=file_info.get("category"),
+        is_archive=file_info.get("is_archive"),
+        extracted_path=file_info.get("extracted_path"),
+        extracted_files=file_info.get("extracted_files"),
+        session_id=session_id,
+    )
+
+
+@router.post("/chunk")
+async def upload_chunk(
+    request: Request,
+    chunk: UploadFile = File(...),
+    session_id: str = Form(...),
+    upload_id: str = Form(...),
+    index: int = Form(...),
+    total: int = Form(...),
+    file_name: str = Form(...),
+    total_size: int = Form(...),
+) -> Dict[str, Any]:
+    """Store one numbered piece of a large file. Re-sending a piece replaces it."""
+    if not session_id or not session_id.strip():
+        raise HTTPException(status_code=400, detail="session_id is required")
+    _ensure_session_access(session_id, request)
+    meta = _chunked_upload_meta(file_name, total, total_size)
+    if index < 0 or index >= total:
+        raise HTTPException(status_code=400, detail=f"index must be between 0 and {total - 1}")
+
+    chunk_dir = _chunk_dir(session_id, upload_id)
+    if (chunk_dir / "result.json").exists():
+        raise HTTPException(status_code=409, detail="this upload is already complete")
+    if not chunk_dir.exists():
+        _purge_stale_chunk_dirs(session_id)
+        chunk_dir.mkdir(parents=True, exist_ok=True)
+        (chunk_dir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    elif _load_chunk_meta(chunk_dir) != meta:
+        raise HTTPException(status_code=409, detail="chunk does not match the upload it names")
+
+    tmp_path = chunk_dir / f"{index}.tmp-{uuid.uuid4().hex[:8]}"
+    size = 0
+    try:
+        with open(tmp_path, "wb") as f:
+            while data := await chunk.read(1024 * 1024):
+                size += len(data)
+                if size > CHUNK_MAX_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"chunk is larger than {CHUNK_MAX_BYTES // (1024 * 1024)} MB",
+                    )
+                f.write(data)
+        os.replace(tmp_path, chunk_dir / f"{index}.part")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    os.utime(chunk_dir)
+    return {"success": True, "upload_id": upload_id, "index": index, "size": size}
+
+
+@router.get("/chunk/status")
+async def upload_chunk_status(session_id: str, upload_id: str, request: Request) -> Dict[str, Any]:
+    """Which pieces of a chunked upload the server already holds."""
+    _ensure_session_access(session_id, request)
+    chunk_dir = _chunk_dir(session_id, upload_id)
+    return {
+        "upload_id": upload_id,
+        "received": _received_chunks(chunk_dir),
+        "complete": (chunk_dir / "result.json").exists(),
+    }
+
+
+@router.post("/chunk/complete", response_model=UploadResponse)
+async def upload_chunk_complete(
+    request: Request,
+    session_id: str = Form(...),
+    upload_id: str = Form(...),
+    total: int = Form(...),
+    file_name: str = Form(...),
+    total_size: int = Form(...),
+) -> UploadResponse:
+    """Join the pieces into one upload. Repeating the call returns the same file."""
+    if not session_id or not session_id.strip():
+        raise HTTPException(status_code=400, detail="session_id is required")
+    _ensure_session_access(session_id, request)
+    meta = _chunked_upload_meta(file_name, total, total_size)
+    chunk_dir = _chunk_dir(session_id, upload_id)
+
+    result_path = chunk_dir / "result.json"
+    if result_path.exists():
+        return _upload_response(json.loads(result_path.read_text(encoding="utf-8")), session_id)
+    if not chunk_dir.is_dir():
+        raise HTTPException(status_code=404, detail="no chunks were received for this upload")
+    if _load_chunk_meta(chunk_dir) != meta:
+        raise HTTPException(status_code=409, detail="the upload does not match its chunks")
+    missing = sorted(set(range(total)) - set(_received_chunks(chunk_dir)))
+    if missing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{len(missing)} chunk(s) missing, first missing index {missing[0]}",
+        )
+
+    file_id = uuid.uuid4().hex[:12]
+    safe_name = _sanitize_filename(file_name)
+    assembled = chunk_dir / "assembled.tmp"
+    file_size = 0
+    try:
+        with open(assembled, "wb") as out:
+            for i in range(total):
+                with open(chunk_dir / f"{i}.part", "rb") as part:
+                    while data := part.read(1024 * 1024):
+                        file_size += len(data)
+                        out.write(data)
+        if file_size != total_size:
+            raise HTTPException(
+                status_code=409,
+                detail=f"joined file is {file_size} bytes, expected {total_size}",
+            )
+        file_path = _get_session_upload_dir(session_id) / f"{file_id}_{safe_name}"
+        os.replace(assembled, file_path)
+    finally:
+        assembled.unlink(missing_ok=True)
+
+    try:
+        file_info = _finalize_saved_upload(
+            file_path,
+            file_id=file_id,
+            original_name=file_name,
+            safe_name=safe_name,
+            file_size=file_size,
+            file_type="application/octet-stream",
+            session_id=session_id,
+            category=meta["category"],
+        )
+    except HTTPException:
+        file_path.unlink(missing_ok=True)
+        raise
+    result_path.write_text(json.dumps(file_info), encoding="utf-8")
+    for part in chunk_dir.glob("*.part"):
+        part.unlink(missing_ok=True)
+    logger.info(
+        "[UPLOAD] chunked upload complete filename=%s size=%s chunks=%s session=%s",
+        file_name,
+        file_size,
+        total,
+        session_id,
+    )
+    return _upload_response(file_info, session_id)
 
 
 @router.post("/image", response_model=UploadResponse)

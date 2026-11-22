@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "phageagent": {
+      "url": "https://phageagent.deepomics.org/mcp",
+      "bearer_token_env_var": "PHAGEAGENT_MCP_TOKEN"
+    }
+  }
+}

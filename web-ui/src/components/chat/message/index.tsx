@@ -29,6 +29,7 @@ import ToolProgressCard, { BackgroundDispatchCard } from './ToolProgressCard';
 import MessageActions from './MessageActions';
 import ResumeRunAction from './ResumeRunAction';
 import SkillLearningPanel from './SkillLearningPanel';
+import MessageFeedback from './MessageFeedback';
 import RecallReferences from './RecallReferences';
 import PlanModeOfferCard from './PlanModeOfferCard';
 import PlanClarificationCard from './PlanClarificationCard';
@@ -604,7 +605,12 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
         </div>
       </div>
 
-      <MessageActions message={message} />
+      <MessageActions
+        message={message}
+        feedback={type === 'assistant' && !isPendingAction ? (
+          <MessageFeedback runId={runIdForDeepThink} sessionId={effectiveSessionId} status={status} />
+        ) : null}
+      />
       <SkillLearningPanel runId={chatRunIdFromMeta || (metadata as any)?.resume_run_id} sessionId={effectiveSessionId} status={status || (metadata as any)?.resume_run_status} />
       {!isPendingAction && (
         <ToolResultDrawer

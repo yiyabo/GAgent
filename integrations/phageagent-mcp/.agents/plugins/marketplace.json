@@ -1,0 +1,20 @@
+{
+  "name": "phageagent",
+  "interface": {
+    "displayName": "PhageAgent"
+  },
+  "plugins": [
+    {
+      "name": "phageagent",
+      "source": {
+        "source": "local",
+        "path": "./codex/phageagent"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Research"
+    }
+  ]
+}

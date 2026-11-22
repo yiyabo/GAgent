@@ -142,6 +142,31 @@ function extractDetail(data: unknown): string | null {
   return null;
 }
 
+// ---- PhageScope MCP personal tokens: /phagescope-mcp/tokens ------------------------
+
+export interface McpTokenRecord {
+  id: string;
+  name: string;
+  token_hint?: string | null;
+  scopes: string[];
+  created_at: string;
+  expires_at: string | null;
+  revoked_at: string | null;
+  last_used_at: string | null;
+  bytes_used_today?: number;
+}
+
+export interface McpTokenListResponse {
+  eligible: boolean;
+  daily_bytes_limit: number;
+  tokens: McpTokenRecord[];
+}
+
+export interface McpTokenCreated {
+  token: string;
+  record: McpTokenRecord;
+}
+
 export class ExtensionsApi extends BaseApi {
   // The shared BaseApi error path drops FastAPI's `{detail}` body, which this
   // page must show verbatim (403/404/409 reasons), so requests go through here.
@@ -186,6 +211,18 @@ export class ExtensionsApi extends BaseApi {
 
   disableSkill(name: string): Promise<SkillEntry> {
     return this.post<SkillEntry>(`/extensions/skills/${encodeURIComponent(name)}/disable`);
+  }
+
+  listMcpTokens(): Promise<McpTokenListResponse> {
+    return this.get<McpTokenListResponse>('/phagescope-mcp/tokens');
+  }
+
+  createMcpToken(name: string): Promise<McpTokenCreated> {
+    return this.post<McpTokenCreated>('/phagescope-mcp/tokens', { name });
+  }
+
+  revokeMcpToken(id: string): Promise<{ revoked: string }> {
+    return this.delete<{ revoked: string }>(`/phagescope-mcp/tokens/${encodeURIComponent(id)}`);
   }
 }
 
