@@ -256,6 +256,64 @@ def test_service_timeout_reports_search_timeout(tmp_path, mmseqs):
     assert body["outcome"] == "failed" and body["error"]["code"] == "search_timeout"
 
 
+def test_resident_bytes_reports_page_cache_of_a_file(tmp_path):
+    path = tmp_path / "blob"
+    path.write_bytes(b"x" * (3 << 20))
+    counts = se.resident_bytes(path)
+    assert counts is not None
+    cached, total = counts
+    assert total == 3 << 20 and 0 <= cached <= total
+
+
+def test_cold_index_holds_dispatch_until_warm(tmp_path, mmseqs, monkeypatch):
+    runner = GatedSlurm()
+    runner.release.set()
+    state = _state(tmp_path, runner, mmseqs, runner_kind="slurm")
+    engine = state.similarity
+    fractions = iter([0.2, 1.0])
+    monkeypatch.setattr(engine, "_resident_fraction", lambda: next(fractions))
+    read = []
+    monkeypatch.setattr(engine, "_read_through", read.append)
+    engine._warm_ready.clear()
+    body = _call(state, "POST", "search/", {"sequences": PROTEIN, "wait_seconds": 0})[1]
+    assert not runner.dispatched.wait(0.3)
+    pending = _call(state, "GET", f"search/{body['search_id']}/")[1]
+    assert pending["status"] == "queued" and pending["waiting_for"] == "index_loading"
+    assert _call(state, "GET", "status/")[1]["index_cache"]["ready"] is False
+    engine.warm_once()
+    assert [p.name for p in read] == ["base.idx", "long.idx"]
+    assert runner.dispatched.wait(10)
+    job = engine.get(body["search_id"])
+    assert job.done.wait(10) and engine.view(job)["count"] == 3
+    status = _call(state, "GET", "status/")[1]["index_cache"]
+    assert status["ready"] and status["resident_fraction"] == 1.0 and status["last_warm_seconds"] is not None
+
+
+def test_warm_index_is_not_reread(tmp_path, mmseqs, monkeypatch):
+    engine = _state(tmp_path, FakeRunner(), mmseqs).similarity
+    monkeypatch.setattr(engine, "_resident_fraction", lambda: 0.995)
+    monkeypatch.setattr(engine, "_read_through", lambda path: pytest.fail("warm index re-read"))
+    engine._warm_ready.clear()
+    engine.warm_once()
+    assert engine._warm_ready.is_set()
+
+
+def test_index_still_loading_fails_with_its_own_code(tmp_path, mmseqs, monkeypatch):
+    runner = FakeRunner()
+    state = _state(tmp_path, runner, mmseqs, runner_kind="slurm")
+    monkeypatch.setattr(se, "WARM_WAIT_SECONDS", 0.1)
+    state.similarity._warm_ready.clear()
+    body = _call(state, "POST", "search/", {"sequences": PROTEIN})[1]
+    assert body["status"] == "failed" and body["error"]["code"] == "index_loading" and not runner.calls
+
+
+def test_keep_warm_reads_the_real_index_files(tmp_path, mmseqs):
+    engine = _state(tmp_path, FakeRunner(), mmseqs).similarity
+    engine.start_keep_warm(interval=3600)
+    assert engine._warm_ready.wait(10)
+    assert engine.cache["keep_warm"] and engine.status()["index_cache"]["ready"]
+
+
 def test_saved_results_survive_a_restart(tmp_path, mmseqs):
     state = _state(tmp_path, FakeRunner(), mmseqs)
     body = _call(state, "POST", "search/", {"sequences": PROTEIN})[1]
