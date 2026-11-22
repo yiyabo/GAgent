@@ -58,7 +58,7 @@ async def test_terminal_write_resize_interrupt_and_cleanup(monkeypatch, tmp_path
             return bytes(output)
         try:
             return await asyncio.wait_for(collect(), 8)
-        except TimeoutError as exc:
+        except asyncio.TimeoutError as exc:  # not the builtin TimeoutError before Python 3.11
             raise AssertionError(
                 f'PTY did not produce {token!r}; output={bytes(output)!r}; closed={backend.is_closed}'
             ) from exc
