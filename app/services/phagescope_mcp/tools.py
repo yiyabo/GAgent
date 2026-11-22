@@ -625,7 +625,7 @@ TOOLS: tuple[ToolSpec, ...] = (
         "get_similarity_result",
         "Similarity search result",
         "Status, outcome (pending, hits, no_hits or failed), timings and paged hits of a similarity_search "
-        "by its search_id (kept 7 days). count is null until status=done.",
+        "by its search_id (kept 7 days after it finishes). count is null until status=done.",
         _obj({"search_id": {"description": "The search_id returned by similarity_search.", "type": "string", "pattern": _SIMILARITY_ID}, **_page_props(200, 50)}, ["search_id"]),
         _get_similarity_result,
     ),
