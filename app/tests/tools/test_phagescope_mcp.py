@@ -488,3 +488,35 @@ def test_search_proteins_rejects_blank_ids_and_keeps_by_phage_shape(mcp_client):
     result, payload = _call(client, token, "search_proteins", {"accession": "NC_001416.1"})
     assert result["isError"] is False
     assert "missing_ids" not in payload["data"]
+
+
+PHAGE_REF_TOOLS = [
+    ("get_phage", {}),
+    ("get_sequence", {}),
+    ("search_proteins", {}),
+    ("query_features", {"feature_type": "trna"}),
+]
+
+
+@pytest.mark.parametrize("tool,extra", PHAGE_REF_TOOLS, ids=[t for t, _ in PHAGE_REF_TOOLS])
+@pytest.mark.parametrize("bad_id", ["abc", "PS00007", "12x", "", 0, -3, 1.5, True, [7]])
+def test_non_numeric_phage_id_is_invalid_arguments(mcp_client, tool, extra, bad_id):
+    client, fake = mcp_client
+    token, record = store.issue_token("u1", name="t")
+    result, payload = _call(client, token, tool, {"phage_id": bad_id, **extra})
+    assert result["isError"] is True
+    assert payload["error"]["code"] == "invalid_arguments"
+    assert "phage_id must be a positive integer" in payload["error"]["message"]
+    assert fake.calls == []
+    assert store.recent_audit(record.id)[0]["error_code"] == "invalid_arguments"
+
+
+@pytest.mark.parametrize("tool,extra", PHAGE_REF_TOOLS, ids=[t for t, _ in PHAGE_REF_TOOLS])
+@pytest.mark.parametrize("good_id", [7, "7", " 7 "])
+def test_numeric_phage_id_still_accepted(mcp_client, tool, extra, good_id):
+    client, fake = mcp_client
+    token, _ = store.issue_token("u1", name="t")
+    result, _ = _call(client, token, tool, {"phage_id": good_id, **extra})
+    assert result["isError"] is False
+    method, path, sent = fake.calls[0]
+    assert (sent or {}).get("phage_id") == 7 or path == "phages/7/sequence/"
