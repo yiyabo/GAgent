@@ -724,8 +724,10 @@ async def _drain_unified_stream_events(
 
             artifact_files = published_artifact_files(observed_artifacts)
             llm_message = res.final_answer
+            if artifact_files:
+                final_metadata["artifact_files"] = artifact_files
             if artifact_files and final_metadata.get("status") == "failed":
-                final_metadata.update(artifact_files=artifact_files, partial=True)
+                final_metadata["partial"] = True
                 if not full_response:
                     llm_message = full_response = recovery_message
                     final_metadata.update(analysis_text=full_response, final_summary=full_response)

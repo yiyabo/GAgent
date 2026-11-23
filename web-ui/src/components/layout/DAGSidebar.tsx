@@ -19,6 +19,7 @@ import type { PlanSyncEventDetail } from '@/types';
 import { useTasksStore } from '@store/tasks';
 import { useChatStore } from '@store/chat';
 import { useLayoutStore } from '@store/layout';
+import { useArtifactFocusSignal } from '@hooks/useArtifactFocusSignal';
 import { shouldHandlePlanSyncEvent } from '@utils/planSyncEvents';
 import { computePlanDecomposeProgress } from '@utils/jobProgress';
 import { planTreeApi } from '@api/planTree';
@@ -60,6 +61,7 @@ export const LegacyDAGSidebar: React.FC = () => {
   currentPlanTitle ?? undefined
   );
   const [activeTab, setActiveTab] = useState<string>('plan');
+  useArtifactFocusSignal(() => setActiveTab('artifacts'));
 
   const [showFullscreenDAG, setShowFullscreenDAG] = useState(false);
   const [planTodoListOpen, setPlanTodoListOpen] = useState(false);

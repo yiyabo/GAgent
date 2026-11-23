@@ -102,6 +102,9 @@ deliverable_submit_tool = {
         "Do NOT submit: raw input data, intermediate CSVs, downloaded references, logs.\n"
         "CSV/TSV tables must parse as plain rows: one header row, then data rows only, with no "
         "'#' note lines; put provenance (data snapshot, method) in columns or a separate metadata file.\n"
+        "Published files are attached to your reply as clickable file cards and listed in the "
+        "“产物” panel under “交付物” (English UI: Artifacts › Deliverables); tell the user that, "
+        "not an internal path.\n"
         "Each artifact requires a path and target module (code, image_tabular, paper, refs, docs)."
     ),
     "category": "deliverables",
