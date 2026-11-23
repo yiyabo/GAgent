@@ -9,6 +9,15 @@ Remote MCP server for the PhageScope phage database (about 2.6M phage genomes,
 - Auth: `Authorization: Bearer gpsk_...`, a personal token you create yourself
 - Access: anyone can sign up. Questions: xxwang5587@gmail.com
 
+## Introduction website (Chinese)
+
+The responsive introduction site is in [`docs/`](docs/index.html), with a
+[shareable Chinese introduction](docs/intro-zh.md). It is a dependency-free
+static site: preview with `python -m http.server 8080 --directory docs`.
+It never receives tokens or calls the MCP service. After publication approval,
+GitHub Pages can serve the public repository's `main` branch, `/docs` folder;
+adding these files does not enable Pages or deploy anything.
+
 ## 1. Get a token
 
 1. Open https://phageagent.deepomics.org/register and create an account
