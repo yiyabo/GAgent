@@ -308,6 +308,10 @@ if _USE_PYDANTIC:
         phagescope_mcp_open_access: bool = Field(default=False, env="PHAGESCOPE_MCP_OPEN_ACCESS")
         phagescope_mcp_anon_discovery: bool = Field(default=False, env="PHAGESCOPE_MCP_ANON_DISCOVERY")
         phagescope_mcp_anon_requests_per_minute: int = Field(default=30, env="PHAGESCOPE_MCP_ANON_REQUESTS_PER_MINUTE")
+        phagescope_mcp_ip_requests_per_minute: int = Field(default=120, env="PHAGESCOPE_MCP_IP_REQUESTS_PER_MINUTE")
+        phagescope_mcp_token_help_url: str = Field(
+            default="https://github.com/yiyabo/phageagent-mcp#1-get-a-token", env="PHAGESCOPE_MCP_TOKEN_HELP_URL"
+        )
         phagescope_mcp_allowed_hosts: str = Field(
             default="phageagent.deepomics.org,localhost,127.0.0.1", env="PHAGESCOPE_MCP_ALLOWED_HOSTS"
         )
@@ -755,6 +759,10 @@ else:
             self.phagescope_mcp_open_access = os.getenv("PHAGESCOPE_MCP_OPEN_ACCESS", "").strip().lower() in {"1", "true", "yes", "on"}
             self.phagescope_mcp_anon_discovery = os.getenv("PHAGESCOPE_MCP_ANON_DISCOVERY", "").strip().lower() in {"1", "true", "yes", "on"}
             self.phagescope_mcp_anon_requests_per_minute = _int_env("PHAGESCOPE_MCP_ANON_REQUESTS_PER_MINUTE", 30)
+            self.phagescope_mcp_ip_requests_per_minute = _int_env("PHAGESCOPE_MCP_IP_REQUESTS_PER_MINUTE", 120)
+            self.phagescope_mcp_token_help_url = os.getenv(
+                "PHAGESCOPE_MCP_TOKEN_HELP_URL", "https://github.com/yiyabo/phageagent-mcp#1-get-a-token"
+            )
             self.phagescope_mcp_allowed_hosts = os.getenv(
                 "PHAGESCOPE_MCP_ALLOWED_HOSTS", "phageagent.deepomics.org,localhost,127.0.0.1"
             )

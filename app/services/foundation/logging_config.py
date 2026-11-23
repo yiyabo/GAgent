@@ -91,8 +91,8 @@ def setup_logging() -> None:
     except Exception:
         file_enabled = True
     if file_enabled:
+        log_dir = Path(str(getattr(settings, "log_dir", "logs") or "logs"))
         try:
-            log_dir = Path(str(getattr(settings, "log_dir", "logs") or "logs"))
             log_dir.mkdir(parents=True, exist_ok=True)
             file_handler = RotatingFileHandler(
                 log_dir / "app.log",
@@ -105,5 +105,7 @@ def setup_logging() -> None:
             root.addHandler(file_handler)
         except Exception as exc:
             logging.getLogger(__name__).warning(
-                "File logging disabled: cannot open log file (%s)", exc
+                "File logging disabled: cannot open log file in %s (%s)",
+                log_dir.resolve(),
+                exc,
             )

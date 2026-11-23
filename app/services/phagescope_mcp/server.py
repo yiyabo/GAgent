@@ -1,10 +1,12 @@
 """Streamable HTTP MCP endpoint (PhageAgent MCP, PhageScope data), mounted at exactly ``/mcp``.
 
-Tool calls need ``Authorization: Bearer gpsk_...``. With
-``PHAGESCOPE_MCP_ANON_DISCOVERY`` on, requests without a token may only
-initialize, ping and list tools (rate-limited per client IP), so directories can
-see the server; everything else still answers 401. The data-service key stays on
-this server; callers only ever see tool results.
+Tool calls need ``Authorization: Bearer gpsk_...``; a 401 says where to get
+one. With ``PHAGESCOPE_MCP_ANON_DISCOVERY`` on, requests without a token may only
+initialize, ping and list tools, so directories can see the server; everything
+else still answers 401. Requests without a valid token are rate-limited per
+client IP, and every request also counts against a per-IP limit. Argument errors
+always use the code ``invalid_arguments``. The data-service key stays on this
+server; callers only ever see tool results.
 """
 
 from __future__ import annotations
@@ -83,8 +85,23 @@ def _token_for(ctx: ServerRequestContext) -> Optional[store.McpToken]:
     return _current_token.get()
 
 
-def _error(code: str, message: str) -> CallToolResult:
-    payload = {"error": {"code": code, "message": message}}
+INVALID_ARGUMENTS = "invalid_arguments"
+_ARGUMENT_ERROR_ALIASES = frozenset({"invalid_argument", "invalid_parameter"})
+
+
+def _public_code(code: str) -> str:
+    """One code for bad arguments, whichever layer (MCP tools, analysis, data service) raised it."""
+    return INVALID_ARGUMENTS if code in _ARGUMENT_ERROR_ALIASES else code
+
+
+def _token_help() -> tuple[str, str]:
+    url = str(get_settings().phagescope_mcp_token_help_url or "").strip()
+    hint = "Send 'Authorization: Bearer gpsk_...'; create a token under Extensions > External access after signing in"
+    return (f"{hint}: {url}" if url else f"{hint}."), url
+
+
+def _error(code: str, message: str, **extra: Any) -> CallToolResult:
+    payload = {"error": {"code": _public_code(code), "message": message, **extra}}
     return CallToolResult(content=[TextContent(type="text", text=json.dumps(payload, ensure_ascii=False))], is_error=True)
 
 
@@ -133,8 +150,8 @@ async def _call_analysis_tool(token: store.McpToken, name: str, arguments: dict[
         try:
             data = await spec.run(token, arguments)
         except analysis.AnalysisError as exc:
-            code = exc.code
-            return _error(exc.code, str(exc))
+            code = _public_code(exc.code)
+            return _error(code, str(exc))
         except Exception:
             logger.exception("PhageScope MCP analysis tool %s failed", name)
             code = "internal_error"
@@ -161,7 +178,8 @@ async def _call_analysis_tool(token: store.McpToken, name: str, arguments: dict[
 async def _call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) -> CallToolResult:
     token = _token_for(ctx)
     if token is None:
-        return _error("unauthorized", "A valid PhageAgent MCP token is required.")
+        hint, url = _token_help()
+        return _error("unauthorized", f"A valid PhageAgent MCP token is required. {hint}", **({"help_url": url} if url else {}))
     spec = TOOLS_BY_NAME.get(params.name)
     arguments = dict(params.arguments or {})
     if spec is None and params.name in analysis.ANALYSIS_TOOLS_BY_NAME:
@@ -188,11 +206,11 @@ async def _call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) -
             envelope = build_envelope(spec.name, data, notes, await snapshot_info())
             text, nbytes = fit_to_budget(envelope, budget)
         except ToolInputError as exc:
-            code = exc.code
-            return _error(exc.code, str(exc))
+            code = _public_code(exc.code)
+            return _error(code, str(exc))
         except PhageScopeDataError as exc:
-            code = exc.code
-            return _error(exc.code, exc.message)
+            code = _public_code(exc.code)
+            return _error(code, exc.message)
         except Exception:  # the protocol needs an error result, not a crashed server
             logger.exception("PhageScope MCP tool %s failed", spec.name)
             code = "internal_error"
@@ -329,10 +347,19 @@ def _csv_setting(value: str) -> list[str]:
 
 def _refuse(status: int, code: str, message: str, extra_headers: Optional[dict[str, str]] = None) -> JSONResponse:
     headers = {"Cache-Control": "no-store"}
+    error: dict[str, Any] = {"code": code, "message": message}
     if status == 401:
         headers["WWW-Authenticate"] = 'Bearer realm="phagescope-mcp"'
+        hint, url = _token_help()
+        error["message"] = f"{message} {hint}"
+        if url:
+            error["help_url"] = url
     headers.update(extra_headers or {})
-    return JSONResponse(status_code=status, content={"error": {"code": code, "message": message}}, headers=headers)
+    return JSONResponse(status_code=status, content={"error": error}, headers=headers)
+
+
+def _too_many(code: str, message: str) -> JSONResponse:
+    return _refuse(429, code, message, {"Retry-After": "10"})
 
 
 class PhageScopeMcpEndpoint:
@@ -365,13 +392,22 @@ class PhageScopeMcpEndpoint:
         if not settings.phagescope_mcp_enabled or self._manager is None:
             await _refuse(404, "not_enabled", "The PhageAgent MCP endpoint is not enabled.")(scope, receive, send)
             return
+        ip = _client_ip(scope)
+        ip_key = f"ip:{ip}"
+        if limiter.acquire(ip_key, per_minute=int(settings.phagescope_mcp_ip_requests_per_minute), max_concurrency=0):
+            await _too_many("rate_limited", "Too many requests from this address; retry shortly.")(scope, receive, send)
+            return
+        try:
+            await self._dispatch(scope, receive, send, ip)
+        finally:
+            limiter.release(ip_key)
+
+    async def _dispatch(self, scope: Scope, receive: Receive, send: Send, ip: str) -> None:
+        settings = get_settings()
         presented = _bearer(scope)
         token = store.authenticate(presented) if presented else None
         if token is None:
-            if not presented and settings.phagescope_mcp_anon_discovery and scope.get("method") == "POST":
-                await self._anonymous(scope, receive, send)
-                return
-            await _refuse(401, "unauthorized", "A valid PhageAgent MCP bearer token is required.")(scope, receive, send)
+            await self._without_token(scope, receive, send, ip, anonymous_ok=not presented)
             return
         if not set(token.scopes) & set(store.KNOWN_SCOPES):
             await _refuse(403, "insufficient_scope", "Token has no PhageAgent MCP scope.")(scope, receive, send)
@@ -382,9 +418,7 @@ class PhageScopeMcpEndpoint:
             max_concurrency=int(settings.phagescope_mcp_max_concurrency),
         )
         if refusal is not None:
-            await _refuse(429, refusal, "Too many requests for this token; retry shortly.", {"Retry-After": "10"})(
-                scope, receive, send
-            )
+            await _too_many(refusal, "Too many requests for this token; retry shortly.")(scope, receive, send)
             return
         scope.setdefault("state", {})[_STATE_KEY] = token
         ctx_token = _current_token.set(token)
@@ -394,6 +428,25 @@ class PhageScopeMcpEndpoint:
             _current_token.reset(ctx_token)
             limiter.release(token.id)
 
+    async def _without_token(self, scope: Scope, receive: Receive, send: Send, ip: str, *, anonymous_ok: bool) -> None:
+        """Missing or invalid token: per-IP limited, then anonymous discovery or 401."""
+        settings = get_settings()
+        key = f"anon:{ip}"
+        refusal = limiter.acquire(
+            key,
+            per_minute=int(settings.phagescope_mcp_anon_requests_per_minute),
+            max_concurrency=int(settings.phagescope_mcp_max_concurrency),
+        )
+        if refusal is not None:
+            await _too_many(refusal, "Too many requests without a valid token; retry shortly.")(scope, receive, send)
+            return
+        try:
+            if anonymous_ok and settings.phagescope_mcp_anon_discovery and scope.get("method") == "POST":
+                await self._anonymous(scope, receive, send)
+                return
+            await _refuse(401, "unauthorized", "A valid PhageAgent MCP bearer token is required.")(scope, receive, send)
+        finally:
+            limiter.release(key)
 
     async def _anonymous(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Initialize, ping and tools/list without a token; anything else is 401."""
@@ -401,17 +454,6 @@ class PhageScopeMcpEndpoint:
         methods = _rpc_methods(body) if body is not None else None
         if not methods or not methods <= ANONYMOUS_METHODS:
             await _refuse(401, "unauthorized", "A valid PhageAgent MCP bearer token is required.")(scope, receive, send)
-            return
-        key = f"anon:{_client_ip(scope)}"
-        refusal = limiter.acquire(
-            key,
-            per_minute=int(get_settings().phagescope_mcp_anon_requests_per_minute),
-            max_concurrency=int(get_settings().phagescope_mcp_max_concurrency),
-        )
-        if refusal is not None:
-            await _refuse(429, refusal, "Too many requests without a token; retry shortly.", {"Retry-After": "10"})(
-                scope, receive, send
-            )
             return
         replayed = False
 
@@ -422,10 +464,7 @@ class PhageScopeMcpEndpoint:
                 return {"type": "http.request", "body": body, "more_body": False}
             return await receive()
 
-        try:
-            await self._manager.handle_request(scope, replay, send)
-        finally:
-            limiter.release(key)
+        await self._manager.handle_request(scope, replay, send)
 
 
 endpoint = PhageScopeMcpEndpoint()
