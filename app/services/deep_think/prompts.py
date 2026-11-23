@@ -36,7 +36,11 @@ from typing import TYPE_CHECKING, Any
 from app.services import bio_tools_catalog
 from app.services.deep_think.models import TaskExecutionContext
 from app.services.foundation.settings import CHAT_HISTORY_ABS_MAX, get_settings
-from app.services.prompt_policy import PLAN_SCOPE_POLICY, REFERENCE_SCOPE_POLICY
+from app.services.prompt_policy import (
+    PLAN_SCOPE_POLICY,
+    REFERENCE_SCOPE_POLICY,
+    RESULT_CONSISTENCY_POLICY,
+)
 from app.services.response_style import PROFESSIONAL_STYLE_INSTRUCTION
 from app.services.tool_schemas import (
     code_executor_enabled,
@@ -610,6 +614,7 @@ def _build_shared_strategy_block(agent: DeepThinkAgent) -> str:
         "5. One precise tool call is better than several redundant calls.\n"
         "6. Conclude as soon as the user's need is satisfied; do not pad the reply with extra background, market analysis, or references unless they help answer the request.\n"
         "7. If the user asks for depth, latest research, or sources, then increase rigor and evidence gathering.\n\n"
+        + RESULT_CONSISTENCY_POLICY +
         "=== WRITING STYLE ===\n"
         f"- {PROFESSIONAL_STYLE_INSTRUCTION}\n"
         "- Explain genuinely unresolved tool failures using this turn's receipts. A recovered attempt does not make the final outcome a failure; do not copy generic system error footers from earlier replies.\n"
@@ -740,13 +745,42 @@ def _select_recent_history(
         history = filtered_history
     recent = history[-limit:] if len(history) > limit else history
     clip_limit = 240 if brief_execute_followup else 500
+    # The latest replies keep their result tables and IDs, so a follow-up can
+    # restate or revise them instead of re-deriving different numbers.
+    full_assistant_indexes = set()
+    if not brief_execute_followup:
+        assistant_indexes = [
+            i for i, msg in enumerate(recent)
+            if str(msg.get("role") or "").strip().lower() == "assistant"
+        ]
+        full_assistant_indexes = set(assistant_indexes[-RECENT_ASSISTANT_FULL_MESSAGES:])
     selected: list[dict[str, Any]] = []
-    for msg in recent:
-        content = msg.get("content", "")
-        if len(content) > clip_limit:
-            content = content[:clip_limit] + "..."
-        selected.append({"role": msg.get("role", "unknown"), "content": content})
+    for index, msg in enumerate(recent):
+        content = str(msg.get("content") or "")
+        limit_for_message = (
+            RECENT_ASSISTANT_CLIP_CHARS if index in full_assistant_indexes else clip_limit
+        )
+        selected.append({
+            "role": msg.get("role", "unknown"),
+            "content": _clip_history_content(content, limit_for_message),
+        })
     return selected, brief_execute_followup
+
+
+RECENT_ASSISTANT_FULL_MESSAGES = 2
+RECENT_ASSISTANT_CLIP_CHARS = 6000
+_LEDGER_MARKER = "\n\n[Verified Execution Ledger "
+
+
+def _clip_history_content(content: str, limit: int) -> str:
+    """Clip a history message, keeping the appended execution ledger intact."""
+    body, ledger = content, ""
+    cut = content.find(_LEDGER_MARKER)
+    if cut >= 0:
+        body, ledger = content[:cut], content[cut:]
+    if len(body) > limit:
+        body = body[:limit] + "..."
+    return body + ledger
 
 
 def _append_recent_chat_history(prompt: str, context: dict[str, Any] | None) -> str:
@@ -1299,7 +1333,8 @@ IMPORTANT: data must end with \\n to execute the command.""",
             "Promote specific files into the session Deliverables bundle. "
             "Params: {\"publish\": true|false, \"artifacts\": [{\"path\": \"/path/to/file\", "
             "\"module\": \"code|image_tabular|paper|refs|docs\", optional \"reason\": \"note\"}]}. "
-            "Use this after files already exist and the user wants reports, summaries, figures, tables, code, or references included in Deliverables."
+            "Use this after files already exist and the user wants reports, summaries, figures, tables, code, or references included in Deliverables. "
+            "Every file it publishes is attached to your reply as a clickable file card (preview/download) and listed in the “产物” panel under “交付物” (English UI: Artifacts › Deliverables). When telling the user where a file is, say it is attached below your reply and use the UI name in the user's language; never give only an internal path such as deliverables/latest/... or results/...."
         ),
     }
     if code_mode_enabled():

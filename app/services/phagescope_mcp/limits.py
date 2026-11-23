@@ -1,4 +1,4 @@
-"""Per-token request-rate and concurrency guards (process-local).
+"""Per-token and per-client-IP request-rate and concurrency guards (process-local).
 
 The daily byte quota lives in SQLite (``store``) so it holds across workers;
 rate and concurrency are per process, which with one app worker is per token.
@@ -11,6 +11,9 @@ import time
 from collections import deque
 
 
+_PRUNE_ABOVE = 10_000
+
+
 class TokenLimiter:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -21,6 +24,8 @@ class TokenLimiter:
         """Reserve a slot; return a refusal code or ``None`` when admitted."""
         now = time.monotonic()
         with self._lock:
+            if len(self._calls) > _PRUNE_ABOVE:
+                self._prune(now)
             window = self._calls.setdefault(token_id, deque())
             while window and now - window[0] >= 60.0:
                 window.popleft()
@@ -31,6 +36,11 @@ class TokenLimiter:
             window.append(now)
             self._active[token_id] = self._active.get(token_id, 0) + 1
             return None
+
+    def _prune(self, now: float) -> None:
+        idle = [key for key, calls in self._calls.items() if (not calls or now - calls[-1] >= 60.0) and key not in self._active]
+        for key in idle:
+            del self._calls[key]
 
     def release(self, token_id: str) -> None:
         with self._lock:

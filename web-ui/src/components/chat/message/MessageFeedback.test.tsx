@@ -53,6 +53,37 @@ describe('reply thumbs feedback', () => {
     await waitFor(() => expect(screen.getByLabelText('这次结果有用').getAttribute('aria-pressed')).toBe('false'));
   });
 
+  it('asks for a reason after a downvote and saves the chosen reasons with the comment', async () => {
+    render(<MessageFeedback runId="r" sessionId="s" status="completed" />);
+    await waitFor(() => expect(skillLearningApi.getFeedback).toHaveBeenCalled());
+    fireEvent.click(screen.getByLabelText('这次需要改进'));
+    await waitFor(() => expect(skillLearningApi.feedback).toHaveBeenCalledWith('r', 's', 'needs_work'));
+    const submit = await screen.findByRole('button', { name: '提交原因' });
+    expect(submit.hasAttribute('disabled')).toBe(true);
+    fireEvent.click(screen.getByText('结果有误'));
+    fireEvent.click(screen.getByText('太慢'));
+    fireEvent.change(screen.getByLabelText('可以补充一句具体问题（选填）'), { target: { value: '  基因数量不对  ' } });
+    fireEvent.click(submit);
+    await waitFor(() =>
+      expect(skillLearningApi.feedback).toHaveBeenLastCalledWith('r', 's', 'needs_work', '基因数量不对', ['wrong', 'slow']),
+    );
+  });
+
+  it('reopens the reason form with the stored reasons when the downvote is clicked again', async () => {
+    vi.mocked(skillLearningApi.getFeedback).mockResolvedValue({
+      run_id: 'r',
+      feedback: { rating: 'needs_work', comment: '漏了宿主', reasons: ['incomplete'] },
+    });
+    render(<MessageFeedback runId="r" sessionId="s" status="completed" />);
+    await waitFor(() => expect(screen.getByLabelText('这次需要改进').getAttribute('aria-pressed')).toBe('true'));
+    fireEvent.click(screen.getByLabelText('这次需要改进'));
+    expect(((await screen.findByLabelText('可以补充一句具体问题（选填）')) as HTMLTextAreaElement).value).toBe('漏了宿主');
+    fireEvent.click(screen.getByRole('button', { name: '提交原因' }));
+    await waitFor(() =>
+      expect(skillLearningApi.feedback).toHaveBeenCalledWith('r', 's', 'needs_work', '漏了宿主', ['incomplete']),
+    );
+  });
+
   it('hides itself when the run cannot be read', async () => {
     vi.mocked(skillLearningApi.getFeedback).mockRejectedValue(new Error('run not found'));
     render(<MessageFeedback runId="r" sessionId="s" status="completed" />);

@@ -7,6 +7,7 @@ import { usePlanTasks, usePlanTree } from '@hooks/usePlans';
 import { useChatStore } from '@store/chat';
 import { useTasksStore } from '@store/tasks';
 import { useLayoutStore } from '@store/layout';
+import { useArtifactFocusSignal } from '@hooks/useArtifactFocusSignal';
 import { buildDeliverableFileUrl } from '@api/artifacts';
 import { planTreeApi } from '@api/planTree';
 import { shouldHandlePlanSyncEvent } from '@utils/planSyncEvents';
@@ -55,6 +56,10 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
   const [graphOpen, setGraphOpen] = useState(false);
   const [backgroundOpen, setBackgroundOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
+  useArtifactFocusSignal(() => {
+    setActiveTab('artifacts');
+    if (planId != null) setFilesOpen(true);
+  });
   const board = useQuery({
     queryKey: ['workspace', 'jobs', sessionId, planId], enabled: planId != null,
     queryFn: () => planTreeApi.getBackgroundTaskBoard({ plan_id: planId!, include_finished: true, limit: 50 }),

@@ -58,6 +58,9 @@ def ensure_schema(conn) -> None:
         'CREATE INDEX IF NOT EXISTS idx_learning_calls_time ON skill_learning_calls(created_at)',
     ]
     for sql in statements: conn.execute(sql)
+    feedback_columns={row[1] for row in conn.execute('PRAGMA table_info(skill_run_feedback)').fetchall()}
+    if 'reasons_json' not in feedback_columns:
+        conn.execute("ALTER TABLE skill_run_feedback ADD COLUMN reasons_json TEXT NOT NULL DEFAULT '[]'")
     from app.services.skill_learning.recommendations import ensure_schema as ensure_recommendation_schema
     ensure_recommendation_schema(conn)
 
@@ -244,13 +247,15 @@ def edit_skill(skill_id, version, draft, content_hash):
 def feedback(run_id):
     with get_db() as conn:
         row=conn.execute('SELECT * FROM skill_run_feedback WHERE run_id=?',(run_id,)).fetchone()
-        return dict(row) if row else None
+        if not row: return None
+        item=dict(row);item['reasons']=json.loads(item.pop('reasons_json',None) or '[]')
+        return item
 
 
-def save_feedback(run_id, rating, comment):
+def save_feedback(run_id, rating, comment, reasons=()):
     with get_db() as conn:
         with _write_transaction(conn):
-            conn.execute('INSERT INTO skill_run_feedback VALUES(?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET rating=excluded.rating,comment=excluded.comment,updated_at=excluded.updated_at',(run_id,rating,comment,now()))
+            conn.execute('INSERT INTO skill_run_feedback(run_id,rating,comment,updated_at,reasons_json) VALUES(?,?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET rating=excluded.rating,comment=excluded.comment,updated_at=excluded.updated_at,reasons_json=excluded.reasons_json',(run_id,rating,comment,now(),encode(list(reasons))))
             if rating=='needs_work':
                 rows=conn.execute('''SELECT DISTINCT s.id,s.current_version FROM learned_skills s LEFT JOIN learned_skill_usage u ON s.id=u.skill_id
                     WHERE (s.source_run_id=? AND s.current_version=1) OR (u.run_id=? AND u.version=s.current_version)''',(run_id,run_id)).fetchall()

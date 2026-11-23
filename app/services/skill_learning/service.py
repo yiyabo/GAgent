@@ -131,8 +131,8 @@ class SkillLearningService:
             state='stable'
         repository.set_state(skill_id,version,state,'independent_uses_'+str(len(validated)))
 
-    def feedback(self,run_id,rating,comment):
-        repository.save_feedback(run_id,rating,comment)
+    def feedback(self,run_id,rating,comment,reasons=()):
+        repository.save_feedback(run_id,rating,comment,reasons)
         for skill in repository.candidates_for_run(run_id):self.recompute(skill['id'],skill['current_version'])
         for usage in repository.validation_runs_for_run(run_id):self.recompute(usage['skill_id'],usage['version'])
 

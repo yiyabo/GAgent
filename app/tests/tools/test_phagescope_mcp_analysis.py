@@ -117,7 +117,7 @@ def test_submit_quotas(analysis_client, monkeypatch):
     res, err = _call(client, token, "submit_analysis", {"instructions": "second"})
     assert res["isError"] and err["error"]["code"] == "too_many_tasks"
     res, err = _call(client, token, "submit_analysis", {"instructions": ""})
-    assert err["error"]["code"] in {"invalid_argument", "too_many_tasks"}
+    assert err["error"]["code"] in {"invalid_arguments", "too_many_tasks"}
 
 
 def test_replies_count_toward_daily_analysis_quota(analysis_client, monkeypatch):
@@ -131,7 +131,7 @@ def test_replies_count_toward_daily_analysis_quota(analysis_client, monkeypatch)
     task_id = body["task_id"]
     assert store.analysis_counts(record)["user_today"] == 1
     empty_result, empty_error = _call(client, token, "reply_analysis", {"task_id": task_id, "message": ""})
-    assert empty_result["isError"] and empty_error["error"]["code"] == "invalid_argument"
+    assert empty_result["isError"] and empty_error["error"]["code"] == "invalid_arguments"
     assert store.analysis_counts(record)["user_today"] == 1 and len(spawned) == 1
     _finish(store.get_analysis_task(task_id).run_id, "succeeded")
     reply_args = {"task_id": task_id, "message": "follow-up", "idempotency_key": "same-reply"}

@@ -150,6 +150,32 @@ def _parse_max_bytes(max_bytes: Optional[Any]) -> int:
     return parsed
 
 
+def _effective_session_id(session_id: Optional[str], tool_context: Optional[Any]) -> Optional[str]:
+    context_session = str(getattr(tool_context, "session_id", None) or "").strip()
+    if context_session:
+        return context_session
+    if isinstance(session_id, str) and session_id.strip():
+        return session_id.strip()
+    return None
+
+
+def _write_new_file(path: Path, text: str) -> Path:
+    """Write ``text`` to ``path``, or to a uniquely suffixed sibling if it exists."""
+    candidate = path
+    for _ in range(5):
+        try:
+            with candidate.open("x", encoding="utf-8") as handle:
+                handle.write(text)
+            return candidate
+        except FileExistsError:
+            candidate = path.with_name(f"{path.stem}_{uuid4().hex[:8]}{path.suffix}")
+    raise SequenceFetchError(
+        f"Could not find a free output file name next to {path.name}.",
+        code="output_name_conflict",
+        stage="output_preparation",
+    )
+
+
 def _resolve_output_dir(session_id: Optional[str]) -> Path:
     from app.services.tool_output_resolver import get_tool_output_resolver
     
@@ -407,15 +433,22 @@ async def sequence_fetch_handler(
     timeout_sec: Optional[float] = None,
     max_bytes: Optional[Any] = None,
     persist: bool = True,
+    tool_context: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Download FASTA, GenBank or CDS FASTA records for accession(s).
 
-    By default the records are persisted to the runtime output directory. With
-    ``persist=False`` nothing is written: no output directory is resolved or
-    created, and the text is returned inline as ``fasta`` (or ``genbank``).
+    By default the records are persisted to the chat session's
+    ``tool_outputs/sequence_fetch`` directory. The session comes from the
+    orchestrator's ``tool_context`` when it carries one (it wins over a
+    ``session_id`` argument, so a model cannot write into another session).
+    Without any session the shared fallback directory is used and an existing
+    file there is never overwritten. With ``persist=False`` nothing is written:
+    no output directory is resolved or created, and the text is returned inline
+    as ``fasta`` (or ``genbank``).
     """
 
     try:
+        session_id = _effective_session_id(session_id, tool_context)
         normalized_accessions = _normalize_accessions(accession, accessions)
         normalized_database = _normalize_database(database)
         normalized_format = _normalize_format(format, normalized_database)
@@ -524,7 +557,10 @@ async def sequence_fetch_handler(
                     )
 
         if output_path is not None:
-            output_path.write_text(fasta_text, encoding="utf-8")
+            if session_id:
+                output_path.write_text(fasta_text, encoding="utf-8")
+            else:
+                output_path = _write_new_file(output_path, fasta_text)
 
         sha256 = hashlib.sha256(fasta_text.encode("utf-8", errors="replace")).hexdigest()
         if normalized_format == "genbank":
@@ -533,11 +569,11 @@ async def sequence_fetch_handler(
             record_count = _count_fasta_records(fasta_text)
 
         output_file_rel: Optional[str] = None
-        if output_path is not None and isinstance(session_id, str) and session_id.strip():
+        if output_path is not None and session_id:
             try:
                 from app.services.session_paths import get_runtime_session_dir
 
-                session_root = get_runtime_session_dir(session_id.strip(), create=True)
+                session_root = get_runtime_session_dir(session_id, create=True)
                 output_file_rel = str(output_path.relative_to(session_root))
             except Exception:
                 output_file_rel = None

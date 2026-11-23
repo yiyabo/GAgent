@@ -148,6 +148,9 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
   const [showSource, setShowSource] = React.useState(false); // Toggle for renderable files
   const [checkedKeys, setCheckedKeys] = React.useState<string[]>([]);
   const [isBatchDownloading, setIsBatchDownloading] = React.useState(false);
+  const focusRequest = useLayoutStore((state) => state.artifactFocusRequest);
+  const clearArtifactFocus = useLayoutStore((state) => state.clearArtifactFocus);
+  const [pendingFocusPath, setPendingFocusPath] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     setUserPickedMode(false);
@@ -158,6 +161,17 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
     setKeyword('');
     setCheckedKeys([]);
   }, [sessionId]);
+
+  React.useEffect(() => {
+    if (!focusRequest || !sessionId || focusRequest.sessionId !== sessionId) {
+      return;
+    }
+    setUserPickedMode(true);
+    setMode('deliverables');
+    setKeyword('');
+    setPendingFocusPath(focusRequest.path);
+    clearArtifactFocus(focusRequest.nonce);
+  }, [clearArtifactFocus, focusRequest, sessionId]);
 
   React.useEffect(() => {
     if (userPickedMode) {
@@ -292,6 +306,16 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
     setPreviewOpen(true);
     setShowSource(false); // Reset to rendered view when selecting new file
   };
+
+  React.useEffect(() => {
+    if (!pendingFocusPath || mode !== 'deliverables' || deliverableFetching || !deliverableData) {
+      return;
+    }
+    setPendingFocusPath(null);
+    if (displayItems.some((item) => item.sourcePath === pendingFocusPath)) {
+      handleSelectFile(pendingFocusPath);
+    }
+  }, [deliverableData, deliverableFetching, displayItems, mode, pendingFocusPath]);
 
   const handleClosePreview = () => {
     setPreviewOpen(false);

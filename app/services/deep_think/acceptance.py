@@ -45,10 +45,34 @@ _MAX_OUTPUTS = 64
 _MAX_QUERY_CHARS = 4000
 _ALLOWED_TIERS = {"execute", "research"}
 
+_TABLE_WORDS = ("table", "tables", "spreadsheet", "表格", "电子表格")
 _FORMAT_ALIASES = {
-    ".xlsx": ("excel", "spreadsheet", "电子表格"),
-    ".xls": ("excel", "spreadsheet", "电子表格"),
+    ".xlsx": ("excel",) + _TABLE_WORDS,
+    ".xls": ("excel",) + _TABLE_WORDS,
+    ".csv": _TABLE_WORDS,
+    ".tsv": _TABLE_WORDS,
 }
+_MAX_EARLIER_REQUESTS = 3
+_MAX_EARLIER_REQUEST_CHARS = 600
+
+
+def earlier_user_requests(context: Optional[Dict[str, Any]], current_query: str = "") -> List[str]:
+    """The user's last few earlier messages, oldest first, without the current turn."""
+    history = (context or {}).get("chat_history") if isinstance(context, dict) else None
+    if not isinstance(history, list):
+        return []
+    current = user_request_text(current_query).strip()
+    requests: List[str] = []
+    for message in reversed(history):
+        if not isinstance(message, dict) or str(message.get("role") or "").lower() != "user":
+            continue
+        text = user_request_text(str(message.get("content") or "")).strip()
+        if not text or (not requests and text == current):
+            continue
+        requests.append(text[:_MAX_EARLIER_REQUEST_CHARS])
+        if len(requests) >= _MAX_EARLIER_REQUESTS:
+            break
+    return list(reversed(requests))
 
 
 def parse_acceptance_spec(raw: Any) -> Optional[AcceptanceSpec]:
@@ -56,9 +80,17 @@ def parse_acceptance_spec(raw: Any) -> Optional[AcceptanceSpec]:
     return spec if spec is not None and spec.required_outputs else None
 
 
-def build_extraction_prompt(user_query: str) -> str:
+def build_extraction_prompt(user_query: str, earlier_requests: Optional[List[str]] = None) -> str:
     inputs = attachment_names(user_query)
     query = user_request_text(user_query).strip()[:_MAX_QUERY_CHARS]
+    earlier_rule = (
+        "Earlier user messages in this conversation (oldest first; context only, never extra deliverables): "
+        + " | ".join(earlier_requests)
+        + "\nUse them only to resolve what the current request refers to (it, 一份, the file) and, when the current "
+        "request asks to redo, fix or regenerate without naming a format, the most recent format the user named there.\n"
+        if earlier_requests
+        else ""
+    )
     input_rule = (
         f"Input files already provided (never deliverables unless the user asks to modify one in place): "
         f"{', '.join(inputs[:20])}.\n"
@@ -78,11 +110,13 @@ def build_extraction_prompt(user_query: str) -> str:
         "one requested file is exactly one declaration, never add a second declaration for the same file; "
         "list extensions only for a format the user named (a FASTA file, .csv, Excel); "
         "a format that merely appears in an input file's name is not a requested format, leave extensions empty; "
+        'a table file (表格, table, spreadsheet) is data with extensions [".csv", ".tsv", ".xlsx"]; FASTA is not a table; '
         "use in_place=true when the user asks to modify or overwrite an existing file; "
         "preserve the requested count and every exact target path; never compress a large count to fit the schema; "
         "at most 64 output declarations, 4096 characters per target path, and 8000 per constraint; "
         "no prose, no markdown fence, JSON object only.\n"
         f"{input_rule}"
+        f"{earlier_rule}"
         f"User request:\n{query}\n"
     )
 
@@ -135,7 +169,7 @@ def tidy_extracted_spec(
 
 
 async def extract_acceptance_spec(
-    agent: Any, user_query: str
+    agent: Any, user_query: str, context: Optional[Dict[str, Any]] = None
 ) -> Optional[AcceptanceSpec]:
     if not _acceptance_v2_enabled():
         return None
@@ -148,11 +182,12 @@ async def extract_acceptance_spec(
         return None
     if not _has_file_deliverable_intent(user_request_text(user_query)):
         return None
+    earlier = earlier_user_requests(context, user_query)
     try:
         raw = await run_stage(
             stream_chat_collect_async(
                 agent.llm_client,
-                build_extraction_prompt(user_query),
+                build_extraction_prompt(user_query, earlier),
                 max_tokens=_acceptance_v2_max_tokens(),
             ),
             timeout=_acceptance_v2_timeout_seconds(),
@@ -176,7 +211,11 @@ async def extract_acceptance_spec(
                 "[DEEP_THINK][acceptance] v2 spec extraction returned invalid JSON, keeping v1 heuristic"
             )
         return None
-    spec = tidy_extracted_spec(spec, attachment_names(user_query), user_request_text(user_query))
+    spec = tidy_extracted_spec(
+        spec,
+        attachment_names(user_query),
+        "\n".join([*earlier, user_request_text(user_query)]),
+    )
     if spec is None:
         logger.info("[DEEP_THINK][acceptance] v2 spec extraction: only input files or duplicates were declared")
         return None
@@ -288,7 +327,7 @@ async def prepare_acceptance_spec(
     if spec is None:
         spec = output_spec_from_metadata(getattr(agent, "request_profile", {}))
     if spec is None:
-        spec = await extract_acceptance_spec(agent, user_query)
+        spec = await extract_acceptance_spec(agent, user_query, context)
     base_dir = (
         context.get("output_spec_base_dir")
         or context.get("working_directory")
