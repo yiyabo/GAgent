@@ -607,10 +607,10 @@ def _normalize_sequence_fetch_params(
             pass
 
     session_id_value = params.get("session_id")
-    if isinstance(session_id_value, str) and session_id_value.strip():
-        clean_params["session_id"] = session_id_value.strip()
-    elif isinstance(agent.session_id, str) and agent.session_id.strip():
+    if isinstance(agent.session_id, str) and agent.session_id.strip():
         clean_params["session_id"] = agent.session_id.strip()
+    elif isinstance(session_id_value, str) and session_id_value.strip():
+        clean_params["session_id"] = session_id_value.strip()
 
     params = clean_params
     return params
