@@ -10,7 +10,8 @@ function filterTools() {
   const query = search.value.trim().toLocaleLowerCase();
   let count = 0;
   for (const tool of tools) {
-    const visible = (category === "all" || tool.dataset.category === category) &&
+    const visible =
+      (category === "all" || tool.dataset.category === category) &&
       tool.textContent.toLocaleLowerCase().includes(query);
     tool.hidden = !visible;
     if (visible) count++;
@@ -38,7 +39,8 @@ function selectTab(tab) {
     const selected = item === tab;
     item.setAttribute("aria-selected", String(selected));
     item.tabIndex = selected ? 0 : -1;
-    document.getElementById(item.getAttribute("aria-controls")).hidden = !selected;
+    document.getElementById(item.getAttribute("aria-controls")).hidden =
+      !selected;
   }
 }
 for (const tab of tabs) {
@@ -47,7 +49,8 @@ for (const tab of tabs) {
     let next;
     const index = tabs.indexOf(tab);
     if (event.key === "ArrowRight") next = tabs[(index + 1) % tabs.length];
-    if (event.key === "ArrowLeft") next = tabs[(index + tabs.length - 1) % tabs.length];
+    if (event.key === "ArrowLeft")
+      next = tabs[(index + tabs.length - 1) % tabs.length];
     if (event.key === "Home") next = tabs[0];
     if (event.key === "End") next = tabs[tabs.length - 1];
     if (next) {
@@ -64,7 +67,9 @@ function announce(message) {
   clearTimeout(toastTimer);
   toast.textContent = message;
   toast.hidden = false;
-  toastTimer = setTimeout(() => { toast.hidden = true; }, 4000);
+  toastTimer = setTimeout(() => {
+    toast.hidden = true;
+  }, 4000);
 }
 
 async function copyText(value) {
@@ -72,7 +77,9 @@ async function copyText(value) {
     try {
       await navigator.clipboard.writeText(value);
       return true;
-    } catch (_) { /* Fall back for browser/proxy clipboard restrictions. */ }
+    } catch (_) {
+      /* Fall back for browser/proxy clipboard restrictions. */
+    }
   }
   const previous = document.activeElement;
   const field = document.createElement("textarea");
@@ -83,15 +90,25 @@ async function copyText(value) {
   document.body.appendChild(field);
   field.select();
   let copied = false;
-  try { copied = document.execCommand("copy"); } catch (_) { /* Tell user below. */ }
+  try {
+    copied = document.execCommand("copy");
+  } catch (_) {
+    /* Tell user below. */
+  }
   field.remove();
   if (previous instanceof HTMLElement) previous.focus({ preventScroll: true });
   return copied;
 }
-for (const button of document.querySelectorAll("[data-copy], [data-copy-value]")) {
+for (const button of document.querySelectorAll(
+  "[data-copy], [data-copy-value]",
+)) {
   button.addEventListener("click", async () => {
-    const value = button.dataset.copyValue ?? document.getElementById(button.dataset.copy).textContent;
+    const value =
+      button.dataset.copyValue ??
+      document.getElementById(button.dataset.copy).textContent;
     const copied = await copyText(value);
-    announce(copied ? "已复制到剪贴板" : "复制未获浏览器允许，请选中文本手动复制");
+    announce(
+      copied ? "已复制到剪贴板" : "复制未获浏览器允许，请选中文本手动复制",
+    );
   });
 }

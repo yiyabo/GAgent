@@ -1,119 +1,679 @@
 <!doctype html>
 <html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#173e32">
-  <meta name="description" content="PhageAgent MCP 让 Codex、Claude Code 等 AI Agent 接入噬菌体数据与分析服务。检索基因组、蛋白与家族，运行相似性搜索，提交并跟踪分析任务。">
-  <meta property="og:title" content="PhageAgent MCP · 让 AI Agent 接上噬菌体研究">
-  <meta property="og:description" content="19 个工具，从噬菌体数据检索到分析任务，在你熟悉的 Agent 中完成。">
-  <meta property="og:type" content="website">
-  <title>PhageAgent MCP · 让 AI Agent 接上噬菌体研究</title>
-  <link rel="icon" type="image/svg+xml" href="./assets/mark.svg">
-  <link rel="stylesheet" href="./assets/site.css">
-  <script defer src="./assets/site.js"></script>
-</head>
-<body>
-<a class="skip-link" href="#main">跳至正文</a>
-<header class="site-header">
-  <div class="wrap header-inner">
-    <a class="brand" href="#" aria-label="PhageAgent 首页"><img src="./assets/mark.svg" alt="" width="34" height="38"><span>PhageAgent <span class="brand-type">/ MCP</span></span></a>
-    <nav aria-label="主导航"><a href="#capabilities">研究能力</a><a href="#tools">工具目录</a><a href="#connect">接入指南</a><a class="nav-github" href="https://github.com/yiyabo/phageagent-mcp" target="_blank" rel="noopener noreferrer">GitHub ↗</a></nav>
-    <a class="header-cta" href="#connect">开始接入 <span aria-hidden="true">↗</span></a>
-  </div>
-</header>
-<main id="main">
-  <section class="hero wrap" aria-labelledby="hero-title">
-    <div class="hero-copy">
-      <p class="eyebrow"><span class="signal" aria-hidden="true"></span> PHAGE RESEARCH, AGENT READY.</p>
-      <h1 id="hero-title">让你的 AI Agent，<br>接上<span class="serif-accent">噬菌体研究。</span></h1>
-      <p class="hero-description">从一句问题，到数据与分析。通过 MCP，把 PhageAgent 的噬菌体检索、蛋白搜索和分析能力，带进你熟悉的 AI Agent。</p>
-      <div class="hero-actions"><a class="button primary" href="#connect">连接你的 Agent <span aria-hidden="true">↗</span></a><a class="text-link" href="#capabilities">探索研究能力 <span aria-hidden="true">↓</span></a></div>
-      <div class="client-line"><span>适用于</span><span class="client-name">Codex</span><span class="client-name">Claude Code</span><span class="client-other">及支持远程 MCP 的客户端</span></div>
-    </div>
-    <div class="hero-visual" aria-label="AI Agent 通过 MCP 连接 PhageAgent 的示意图">
-      <div class="visual-top"><span class="micro">RESEARCH INTERFACE / 01</span><span class="visual-tag">MCP · Streamable HTTP</span></div>
-      <svg class="phage-illustration" viewBox="0 0 560 390" role="img" aria-labelledby="diagram-title">
-        <title id="diagram-title">噬菌体线框结构，连接数据与分析能力</title>
-        <defs><pattern id="grid" width="28" height="28" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="currentColor" opacity=".16"/></pattern></defs>
-        <rect width="560" height="390" fill="url(#grid)"/>
-        <g class="orbit-lines" fill="none" stroke="currentColor"><ellipse cx="288" cy="210" rx="148" ry="132" stroke-dasharray="3 7"/><ellipse cx="288" cy="210" rx="200" ry="168" opacity=".3"/></g>
-        <g class="phage-wire" fill="none" stroke="currentColor" stroke-linejoin="round" stroke-linecap="round">
-          <path d="M288 40 357 80 357 160 288 200 219 160 219 80Z" stroke-width="2"/>
-          <path d="M288 40 288 120 219 160M288 120 357 160M219 80 288 120 357 80M288 40 253 100 219 160M288 40 322 100 357 160M219 80 288 200 357 80M219 160 357 160M253 100 322 100M288 120 288 200" opacity=".5"/>
-          <path d="M277 194 277 273 299 273 299 194M277 210 299 210M277 220 299 220M277 230 299 230M277 240 299 240M277 250 299 250M277 260 299 260M266 274 310 274 310 282 266 282Z" stroke-width="2"/>
-          <path d="M272 279 228 310 202 354M282 282 260 319 254 366M298 279 344 309 371 354M291 282 314 320 321 366M268 275 210 281 180 318M309 275 364 281 394 318" stroke-width="2"/>
-          <path d="m197 353 5 1 7-1m39 13 6 1 7-1m104-13 6 1 6-2m-61 15 5 1 6-1" stroke-width="2"/>
-        </g>
-        <g class="diagram-nodes" fill="currentColor"><circle cx="219" cy="80" r="4"/><circle cx="357" cy="160" r="4"/><circle cx="288" cy="40" r="4"/><circle cx="288" cy="120" r="4"/></g>
-        <g class="diagram-labels" fill="currentColor" font-size="10" font-family="monospace"><text x="40" y="115">GENOMES</text><text x="422" y="175">PROTEINS</text><text x="412" y="303">ANALYSIS</text></g>
-        <g fill="none" stroke="currentColor" opacity=".35"><path d="M110 112 164 112 213 82M416 171 379 171 361 162M407 299 385 299 365 281"/><circle cx="164" cy="112" r="2"/></g>
-      </svg>
-      <div class="connection-path"><span>你的 Agent</span><span class="path-line" aria-hidden="true"></span><span class="protocol">MCP</span><span class="path-line" aria-hidden="true"></span><strong>PhageAgent</strong></div>
-      <div class="visual-bottom"><span>DATA → DISCOVERY</span><span>19 TOOLS / ONE CONNECTION</span></div>
-    </div>
-  </section>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#173e32" />
+    <meta
+      name="description"
+      content="PhageAgent MCP 让 Codex、Claude Code 等 AI Agent 接入噬菌体数据与分析服务。检索基因组、蛋白与家族，运行相似性搜索，提交并跟踪分析任务。"
+    />
+    <meta
+      property="og:title"
+      content="PhageAgent MCP · 让 AI Agent 接上噬菌体研究"
+    />
+    <meta
+      property="og:description"
+      content="19 个工具，从噬菌体数据检索到分析任务，在你熟悉的 Agent 中完成。"
+    />
+    <meta property="og:type" content="website" />
+    <title>PhageAgent MCP · 让 AI Agent 接上噬菌体研究</title>
+    <link rel="icon" type="image/svg+xml" href="./assets/mark.svg" />
+    <link
+      rel="preload"
+      href="./assets/phageagent-sc.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link rel="stylesheet" href="./assets/site.css" />
+    <script defer src="./assets/site.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">跳至正文</a>
+    <header class="site-header">
+      <div class="wrap header-inner">
+        <a class="brand" href="#" aria-label="PhageAgent 首页"
+          ><img src="./assets/mark.svg" alt="" width="34" height="38" /><span
+            >PhageAgent <span class="brand-type">/ MCP</span></span
+          ></a
+        >
+        <nav aria-label="主导航">
+          <a href="#capabilities">研究能力</a><a href="#tools">工具目录</a
+          ><a href="#connect">接入指南</a
+          ><a
+            class="nav-github"
+            href="https://github.com/yiyabo/phageagent-mcp"
+            target="_blank"
+            rel="noopener noreferrer"
+            >GitHub ↗</a
+          >
+        </nav>
+        <a class="header-cta" href="#connect"
+          >开始接入 <span aria-hidden="true">↗</span></a
+        >
+      </div>
+    </header>
+    <main id="main">
+      <section class="hero wrap" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="eyebrow">
+            <span class="signal" aria-hidden="true"></span> PHAGE RESEARCH,
+            AGENT READY.
+          </p>
+          <h1 id="hero-title">
+            让你的 AI Agent，<br />接上<span class="serif-accent"
+              >噬菌体研究。</span
+            >
+          </h1>
+          <p class="hero-description">
+            从一句问题，到数据与分析。通过 MCP，把 PhageAgent
+            的噬菌体检索、蛋白搜索和分析能力，带进你熟悉的 AI Agent。
+          </p>
+          <div class="hero-actions">
+            <a class="button primary" href="#connect"
+              >连接你的 Agent <span aria-hidden="true">↗</span></a
+            ><a class="text-link" href="#capabilities"
+              >探索研究能力 <span aria-hidden="true">↓</span></a
+            >
+          </div>
+          <div class="client-line">
+            <span>适用于</span><span class="client-name">Codex</span
+            ><span class="client-name">Claude Code</span
+            ><span class="client-other">及支持远程 MCP 的客户端</span>
+          </div>
+        </div>
+        <div
+          class="hero-visual"
+          aria-label="AI Agent 通过 MCP 连接 PhageAgent 的示意图"
+        >
+          <div class="visual-top">
+            <span class="micro">RESEARCH INTERFACE / 01</span
+            ><span class="visual-tag">MCP · Streamable HTTP</span>
+          </div>
+          <svg
+            class="phage-illustration"
+            viewBox="0 0 560 390"
+            role="img"
+            aria-labelledby="diagram-title"
+          >
+            <title id="diagram-title">噬菌体线框结构，连接数据与分析能力</title>
+            <defs>
+              <pattern
+                id="grid"
+                width="28"
+                height="28"
+                patternUnits="userSpaceOnUse"
+              >
+                <circle cx="1" cy="1" r="1" fill="currentColor" opacity=".16" />
+              </pattern>
+            </defs>
+            <rect width="560" height="390" fill="url(#grid)" />
+            <g class="orbit-lines" fill="none" stroke="currentColor">
+              <ellipse
+                cx="288"
+                cy="210"
+                rx="148"
+                ry="132"
+                stroke-dasharray="3 7"
+              />
+              <ellipse cx="288" cy="210" rx="200" ry="168" opacity=".3" />
+            </g>
+            <g
+              class="phage-wire"
+              fill="none"
+              stroke="currentColor"
+              stroke-linejoin="round"
+              stroke-linecap="round"
+            >
+              <path
+                d="M288 40 357 80 357 160 288 200 219 160 219 80Z"
+                stroke-width="2"
+              />
+              <path
+                d="M288 40 288 120 219 160M288 120 357 160M219 80 288 120 357 80M288 40 253 100 219 160M288 40 322 100 357 160M219 80 288 200 357 80M219 160 357 160M253 100 322 100M288 120 288 200"
+                opacity=".5"
+              />
+              <path
+                d="M277 194 277 273 299 273 299 194M277 210 299 210M277 220 299 220M277 230 299 230M277 240 299 240M277 250 299 250M277 260 299 260M266 274 310 274 310 282 266 282Z"
+                stroke-width="2"
+              />
+              <path
+                d="M272 279 228 310 202 354M282 282 260 319 254 366M298 279 344 309 371 354M291 282 314 320 321 366M268 275 210 281 180 318M309 275 364 281 394 318"
+                stroke-width="2"
+              />
+              <path
+                d="m197 353 5 1 7-1m39 13 6 1 7-1m104-13 6 1 6-2m-61 15 5 1 6-1"
+                stroke-width="2"
+              />
+            </g>
+            <g class="diagram-nodes" fill="currentColor">
+              <circle cx="219" cy="80" r="4" />
+              <circle cx="357" cy="160" r="4" />
+              <circle cx="288" cy="40" r="4" />
+              <circle cx="288" cy="120" r="4" />
+            </g>
+            <g
+              class="diagram-labels"
+              fill="currentColor"
+              font-size="10"
+              font-family="monospace"
+            >
+              <text x="40" y="115">GENOMES</text>
+              <text x="422" y="175">PROTEINS</text>
+              <text x="412" y="303">ANALYSIS</text>
+            </g>
+            <g fill="none" stroke="currentColor" opacity=".35">
+              <path
+                d="M110 112 164 112 213 82M416 171 379 171 361 162M407 299 385 299 365 281"
+              />
+              <circle cx="164" cy="112" r="2" />
+            </g>
+          </svg>
+          <div class="connection-path">
+            <span>你的 Agent</span
+            ><span class="path-line" aria-hidden="true"></span
+            ><span class="protocol">MCP</span
+            ><span class="path-line" aria-hidden="true"></span
+            ><strong>PhageAgent</strong>
+          </div>
+          <div class="visual-bottom">
+            <span>DATA → DISCOVERY</span><span>19 TOOLS / ONE CONNECTION</span>
+          </div>
+        </div>
+      </section>
 
-  <section class="stats-section" aria-label="PhageScope 参考数据库规模">
-    <div class="wrap stats-grid"><div class="stats-intro"><span class="eyebrow">CONNECTED TO PHAGESCOPE</span><p>海量噬菌体数据，<br>一个研究入口。</p></div><div class="stat"><strong>260<span>万</span></strong><span>噬菌体基因组</span></div><div class="stat"><strong>1.31<span>亿</span></strong><span>蛋白质</span></div><div class="stat"><strong>1260<span>万</span></strong><span>蛋白家族</span></div></div>
-    <p class="wrap stats-note">数据库规模为近似值；最新统计可通过 <code>catalog_overview</code> 查询。</p>
-  </section>
+      <section class="stats-section" aria-label="PhageScope 参考数据库规模">
+        <div class="wrap stats-grid">
+          <div class="stats-intro">
+            <span class="eyebrow">CONNECTED TO PHAGESCOPE</span>
+            <p>海量噬菌体数据，<br />一个研究入口。</p>
+          </div>
+          <div class="stat">
+            <strong>260<span>万</span></strong
+            ><span>噬菌体基因组</span>
+          </div>
+          <div class="stat">
+            <strong>1.31<span>亿</span></strong
+            ><span>蛋白质</span>
+          </div>
+          <div class="stat">
+            <strong>1260<span>万</span></strong
+            ><span>蛋白家族</span>
+          </div>
+        </div>
+        <p class="wrap stats-note">
+          数据库规模为近似值；最新统计可通过
+          <code>catalog_overview</code> 查询。
+        </p>
+      </section>
 
-  <section class="section wrap" id="capabilities" aria-labelledby="capabilities-title">
-    <div class="section-heading"><div><p class="eyebrow">01 / CAPABILITIES</p><h2 id="capabilities-title">不止查数据，<br>让研究继续向前。</h2></div><p>把分散的查询与分析串起来。<br>你提出问题，Agent 调用合适的工具。</p></div>
-    <div class="capability-grid">
-      <article class="capability"><span class="cap-icon" aria-hidden="true">⌕</span><span class="card-number">01</span><h3>找到你关心的噬菌体</h3><p>按宿主、分类、生活方式、长度与 GC 含量筛选，查看基因组详情和序列，汇总群体分布。</p><div class="card-foot">基因组检索 · 群体统计</div></article>
-      <article class="capability"><span class="cap-icon molecule" aria-hidden="true">⌘</span><span class="card-number">02</span><h3>从蛋白走向功能</h3><p>查询蛋白与家族成员，查看 tRNA、CRISPR、抗性等已有注释，获取可用的蛋白结构链接。</p><div class="card-foot">功能注释 · 家族 · 结构</div></article>
-      <article class="capability"><span class="cap-icon" aria-hidden="true">≋</span><span class="card-number">03</span><h3>为序列寻找相似线索</h3><p>一次提交 1–50 条蛋白序列，在 PhageScope 蛋白库中进行 MMseqs2 相似性搜索，分页获取命中结果。</p><div class="card-foot">序列搜索 · 异步结果</div></article>
-      <article class="capability featured"><span class="cap-icon" aria-hidden="true">↗</span><span class="card-number">04</span><h3>把分析交给 PhageAgent</h3><p>用自然语言提交分析需求，查看运行进度，获取总结与产物；支持继续追问、列出任务和取消运行。</p><div class="card-foot">分析任务 · 进度 · 交付物</div></article>
-    </div>
-  </section>
+      <section
+        class="section wrap"
+        id="capabilities"
+        aria-labelledby="capabilities-title"
+      >
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">01 / CAPABILITIES</p>
+            <h2 id="capabilities-title">不止查数据，<br />让研究继续向前。</h2>
+          </div>
+          <p>
+            把分散的查询与分析串起来。<br />你提出问题，Agent 调用合适的工具。
+          </p>
+        </div>
+        <div class="capability-grid">
+          <article class="capability">
+            <span class="cap-icon" aria-hidden="true">⌕</span
+            ><span class="card-number">01</span>
+            <h3>找到你关心的噬菌体</h3>
+            <p>
+              按宿主、分类、生活方式、长度与 GC
+              含量筛选，查看基因组详情和序列，汇总群体分布。
+            </p>
+            <div class="card-foot">基因组检索 · 群体统计</div>
+          </article>
+          <article class="capability">
+            <span class="cap-icon molecule" aria-hidden="true">⌘</span
+            ><span class="card-number">02</span>
+            <h3>从蛋白走向功能</h3>
+            <p>
+              查询蛋白与家族成员，查看
+              tRNA、CRISPR、抗性等已有注释，获取可用的蛋白结构链接。
+            </p>
+            <div class="card-foot">功能注释 · 家族 · 结构</div>
+          </article>
+          <article class="capability">
+            <span class="cap-icon" aria-hidden="true">≋</span
+            ><span class="card-number">03</span>
+            <h3>为序列寻找相似线索</h3>
+            <p>
+              一次提交 1–50 条蛋白序列，在 PhageScope 蛋白库中进行 MMseqs2
+              相似性搜索，分页获取命中结果。
+            </p>
+            <div class="card-foot">序列搜索 · 异步结果</div>
+          </article>
+          <article class="capability featured">
+            <span class="cap-icon" aria-hidden="true">↗</span
+            ><span class="card-number">04</span>
+            <h3>把分析交给 PhageAgent</h3>
+            <p>
+              用自然语言提交分析需求，查看运行进度，获取总结与产物；支持继续追问、列出任务和取消运行。
+            </p>
+            <div class="card-foot">分析任务 · 进度 · 交付物</div>
+          </article>
+        </div>
+      </section>
 
-  <section class="workflow-section">
-    <div class="wrap workflow-layout"><div class="workflow-copy"><p class="eyebrow">FROM QUESTION TO EVIDENCE</p><h2>留在你熟悉的对话里，<br>完成下一步研究。</h2><p>不必搬走数据库，也不必切换工作方式。<br>Agent 通过标准 MCP 接口查询数据、提交任务，并把结果带回当前对话。</p><a class="text-link" href="#connect">查看接入方式 <span aria-hidden="true">↗</span></a></div>
-      <div class="example-window"><div class="window-bar"><span class="window-dots" aria-hidden="true">● ● ●</span><span>一次查询示意</span><span class="micro">NOT A LIVE RUN</span></div><div class="example-body"><div class="speaker"><span class="avatar">你</span><span>用 PhageAgent 查询噬菌体 NC_001416.1，告诉我它的宿主和基因组长度。</span></div><div class="tool-call"><span class="call-icon" aria-hidden="true">↳</span><div><span class="micro">TOOL CALL</span><code>get_phage</code><pre>{ "accession": "NC_001416.1" }</pre></div></div><div class="example-result"><span class="result-label">PhageAgent / 参考结果</span><h3>Enterobacteria phage lambda</h3><dl><div><dt>宿主</dt><dd>Escherichia coli</dd></div><div><dt>基因组长度</dt><dd>48,502 bp</dd></div><div><dt>生活方式</dt><dd>温和型 / temperate</dd></div></dl><p>示例来自接入文档；实际结果以工具返回为准。</p></div></div></div>
-    </div>
-  </section>
+      <section class="workflow-section">
+        <div class="wrap workflow-layout">
+          <div class="workflow-copy">
+            <p class="eyebrow">FROM QUESTION TO EVIDENCE</p>
+            <h2>留在你熟悉的对话里，<br />完成下一步研究。</h2>
+            <p>
+              不必搬走数据库，也不必切换工作方式。<br />Agent 通过标准 MCP
+              接口查询数据、提交任务，并把结果带回当前对话。
+            </p>
+            <a class="text-link" href="#connect"
+              >查看接入方式 <span aria-hidden="true">↗</span></a
+            >
+          </div>
+          <div class="example-window">
+            <div class="window-bar">
+              <span class="window-dots" aria-hidden="true">● ● ●</span
+              ><span>一次查询示意</span
+              ><span class="micro">NOT A LIVE RUN</span>
+            </div>
+            <div class="example-body">
+              <div class="speaker">
+                <span class="avatar">你</span
+                ><span
+                  >用 PhageAgent 查询噬菌体
+                  NC_001416.1，告诉我它的宿主和基因组长度。</span
+                >
+              </div>
+              <div class="tool-call">
+                <span class="call-icon" aria-hidden="true">↳</span>
+                <div>
+                  <span class="micro">TOOL CALL</span><code>get_phage</code>
+                  <pre>{ "accession": "NC_001416.1" }</pre>
+                </div>
+              </div>
+              <div class="example-result">
+                <span class="result-label">PhageAgent / 参考结果</span>
+                <h3>Enterobacteria phage lambda</h3>
+                <dl>
+                  <div>
+                    <dt>宿主</dt>
+                    <dd>Escherichia coli</dd>
+                  </div>
+                  <div>
+                    <dt>基因组长度</dt>
+                    <dd>48,502 bp</dd>
+                  </div>
+                  <div>
+                    <dt>生活方式</dt>
+                    <dd>温和型 / temperate</dd>
+                  </div>
+                </dl>
+                <p>示例来自接入文档；实际结果以工具返回为准。</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
 
-  <section class="section wrap" id="tools" aria-labelledby="tools-title">
-    <div class="section-heading"><div><p class="eyebrow">02 / TOOLKIT</p><h2 id="tools-title">19 个工具。<br>从探索，到交付。</h2></div><p>13 个只读数据工具，6 个分析任务工具。<br>数据库查询不修改 PhageScope 参考数据。</p></div>
-    <div class="tools-toolbar"><div class="tool-filters" role="group" aria-label="按能力筛选工具"><button class="filter active" type="button" data-filter="all" aria-pressed="true">全部 <span>19</span></button><button class="filter" type="button" data-filter="genome" aria-pressed="false">基因组 <span>6</span></button><button class="filter" type="button" data-filter="protein" aria-pressed="false">蛋白与注释 <span>5</span></button><button class="filter" type="button" data-filter="similarity" aria-pressed="false">相似性搜索 <span>2</span></button><button class="filter" type="button" data-filter="analysis" aria-pressed="false">分析任务 <span>6</span></button></div><label class="search-box"><span aria-hidden="true">⌕</span><input id="tool-search" type="search" placeholder="搜索工具或能力" aria-label="搜索工具名称或能力"></label></div>
-    <p class="tool-status" id="tool-status" role="status" aria-live="polite">显示 19 个工具</p>
-    <div class="tools-grid" id="tools-grid">
-      <article class="tool" data-category="genome"><span class="tool-kind">基因组 / 只读</span><h3><code>catalog_overview</code></h3><p>查看数据库总体规模、数据集列表，适合作为探索起点。</p></article>
-      <article class="tool" data-category="genome"><span class="tool-kind">基因组 / 只读</span><h3><code>search_phages</code></h3><p>按宿主、分类、生活方式、数据集、长度与 GC 等条件分页检索。</p></article>
-      <article class="tool" data-category="genome"><span class="tool-kind">基因组 / 只读</span><h3><code>cohort_report</code></h3><p>获取筛选群体的规模、组成分布与样本记录。</p></article>
-      <article class="tool" data-category="genome"><span class="tool-kind">基因组 / 只读</span><h3><code>aggregate_phages</code></h3><p>按 1–3 个维度分组，统计噬菌体数量。</p></article>
-      <article class="tool" data-category="genome"><span class="tool-kind">基因组 / 只读</span><h3><code>get_phage</code></h3><p>查看单个噬菌体的分类、宿主谱系、生活方式、质量与聚类信息。</p></article>
-      <article class="tool" data-category="genome"><span class="tool-kind">基因组 / 只读</span><h3><code>get_sequence</code></h3><p>获取单个噬菌体的基因组序列，受 max_bases 长度限制。</p></article>
-      <article class="tool" data-category="protein"><span class="tool-kind">蛋白与注释 / 只读</span><h3><code>search_proteins</code></h3><p>查询指定噬菌体的蛋白，按产物文本、功能类别筛选，或按蛋白 ID 查询。</p></article>
-      <article class="tool" data-category="protein"><span class="tool-kind">蛋白与注释 / 只读</span><h3><code>search_families</code></h3><p>按关键词、成员蛋白 ID 或家族 ID 查找蛋白家族。</p></article>
-      <article class="tool" data-category="protein"><span class="tool-kind">蛋白与注释 / 只读</span><h3><code>family_members</code></h3><p>分页获取一个蛋白家族中的成员蛋白。</p></article>
-      <article class="tool" data-category="protein"><span class="tool-kind">蛋白与注释 / 只读</span><h3><code>query_features</code></h3><p>查询已有 tRNA、CRISPR、抗 CRISPR、终止子、毒力、耐药与跨膜注释。</p></article>
-      <article class="tool" data-category="protein"><span class="tool-kind">蛋白与注释 / 只读</span><h3><code>get_structures</code></h3><p>按蛋白 ID 查询已有结构是否可用，并获取相应链接。</p></article>
-      <article class="tool" data-category="similarity"><span class="tool-kind">相似性搜索 / 只读数据</span><h3><code>similarity_search</code></h3><p>提交 1–50 条蛋白序列，在 PhageScope 中运行 MMseqs2 相似性搜索。</p></article>
-      <article class="tool" data-category="similarity"><span class="tool-kind">相似性搜索 / 只读数据</span><h3><code>get_similarity_result</code></h3><p>凭 search_id 查询搜索状态，分页获取命中结果。</p></article>
-      <article class="tool" data-category="analysis"><span class="tool-kind">分析任务</span><h3><code>submit_analysis</code></h3><p>把自然语言分析需求交给 PhageAgent，获得任务 ID。</p></article>
-      <article class="tool" data-category="analysis"><span class="tool-kind">分析任务</span><h3><code>get_analysis_status</code></h3><p>查看任务状态与最近的执行进度。</p></article>
-      <article class="tool" data-category="analysis"><span class="tool-kind">分析任务</span><h3><code>get_analysis_result</code></h3><p>获取已完成任务的总结、交付物与来源信息。</p></article>
-      <article class="tool" data-category="analysis"><span class="tool-kind">分析任务</span><h3><code>reply_analysis</code></h3><p>发送后续消息，继续已有的分析任务。</p></article>
-      <article class="tool" data-category="analysis"><span class="tool-kind">分析任务</span><h3><code>cancel_analysis</code></h3><p>停止一个正在运行的分析任务。</p></article>
-      <article class="tool" data-category="analysis"><span class="tool-kind">分析任务</span><h3><code>list_analyses</code></h3><p>列出当前令牌的近期任务，最新任务优先。</p></article>
-    </div><p class="empty-state" id="empty-state" hidden>没有匹配的工具。试试“蛋白”“分析”，或清空搜索条件。</p>
-    <p class="section-note">工具可用性以服务的 <code>tools/list</code> 返回为准。<a href="https://github.com/yiyabo/phageagent-mcp#tools" target="_blank" rel="noopener noreferrer">查看完整文档 ↗</a></p>
-  </section>
+      <section class="section wrap" id="tools" aria-labelledby="tools-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">02 / TOOLKIT</p>
+            <h2 id="tools-title">19 个工具。<br />从探索，到交付。</h2>
+          </div>
+          <p>
+            13 个只读数据工具，6 个分析任务工具。<br />数据库查询不修改
+            PhageScope 参考数据。
+          </p>
+        </div>
+        <div class="tools-toolbar">
+          <div class="tool-filters" role="group" aria-label="按能力筛选工具">
+            <button
+              class="filter active"
+              type="button"
+              data-filter="all"
+              aria-pressed="true"
+            >
+              全部 <span>19</span></button
+            ><button
+              class="filter"
+              type="button"
+              data-filter="genome"
+              aria-pressed="false"
+            >
+              基因组 <span>6</span></button
+            ><button
+              class="filter"
+              type="button"
+              data-filter="protein"
+              aria-pressed="false"
+            >
+              蛋白与注释 <span>5</span></button
+            ><button
+              class="filter"
+              type="button"
+              data-filter="similarity"
+              aria-pressed="false"
+            >
+              相似性搜索 <span>2</span></button
+            ><button
+              class="filter"
+              type="button"
+              data-filter="analysis"
+              aria-pressed="false"
+            >
+              分析任务 <span>6</span>
+            </button>
+          </div>
+          <label class="search-box"
+            ><span aria-hidden="true">⌕</span
+            ><input
+              id="tool-search"
+              type="search"
+              placeholder="搜索工具或能力"
+              aria-label="搜索工具名称或能力"
+          /></label>
+        </div>
+        <p
+          class="tool-status"
+          id="tool-status"
+          role="status"
+          aria-live="polite"
+        >
+          显示 19 个工具
+        </p>
+        <div class="tools-grid" id="tools-grid">
+          <article class="tool" data-category="genome">
+            <span class="tool-kind">基因组 / 只读</span>
+            <h3><code>catalog_overview</code></h3>
+            <p>查看数据库总体规模、数据集列表，适合作为探索起点。</p>
+          </article>
+          <article class="tool" data-category="genome">
+            <span class="tool-kind">基因组 / 只读</span>
+            <h3><code>search_phages</code></h3>
+            <p>按宿主、分类、生活方式、数据集、长度与 GC 等条件分页检索。</p>
+          </article>
+          <article class="tool" data-category="genome">
+            <span class="tool-kind">基因组 / 只读</span>
+            <h3><code>cohort_report</code></h3>
+            <p>获取筛选群体的规模、组成分布与样本记录。</p>
+          </article>
+          <article class="tool" data-category="genome">
+            <span class="tool-kind">基因组 / 只读</span>
+            <h3><code>aggregate_phages</code></h3>
+            <p>按 1–3 个维度分组，统计噬菌体数量。</p>
+          </article>
+          <article class="tool" data-category="genome">
+            <span class="tool-kind">基因组 / 只读</span>
+            <h3><code>get_phage</code></h3>
+            <p>查看单个噬菌体的分类、宿主谱系、生活方式、质量与聚类信息。</p>
+          </article>
+          <article class="tool" data-category="genome">
+            <span class="tool-kind">基因组 / 只读</span>
+            <h3><code>get_sequence</code></h3>
+            <p>获取单个噬菌体的基因组序列，受 max_bases 长度限制。</p>
+          </article>
+          <article class="tool" data-category="protein">
+            <span class="tool-kind">蛋白与注释 / 只读</span>
+            <h3><code>search_proteins</code></h3>
+            <p>
+              查询指定噬菌体的蛋白，按产物文本、功能类别筛选，或按蛋白 ID 查询。
+            </p>
+          </article>
+          <article class="tool" data-category="protein">
+            <span class="tool-kind">蛋白与注释 / 只读</span>
+            <h3><code>search_families</code></h3>
+            <p>按关键词、成员蛋白 ID 或家族 ID 查找蛋白家族。</p>
+          </article>
+          <article class="tool" data-category="protein">
+            <span class="tool-kind">蛋白与注释 / 只读</span>
+            <h3><code>family_members</code></h3>
+            <p>分页获取一个蛋白家族中的成员蛋白。</p>
+          </article>
+          <article class="tool" data-category="protein">
+            <span class="tool-kind">蛋白与注释 / 只读</span>
+            <h3><code>query_features</code></h3>
+            <p>
+              查询已有 tRNA、CRISPR、抗 CRISPR、终止子、毒力、耐药与跨膜注释。
+            </p>
+          </article>
+          <article class="tool" data-category="protein">
+            <span class="tool-kind">蛋白与注释 / 只读</span>
+            <h3><code>get_structures</code></h3>
+            <p>按蛋白 ID 查询已有结构是否可用，并获取相应链接。</p>
+          </article>
+          <article class="tool" data-category="similarity">
+            <span class="tool-kind">相似性搜索 / 只读数据</span>
+            <h3><code>similarity_search</code></h3>
+            <p>
+              提交 1–50 条蛋白序列，在 PhageScope 中运行 MMseqs2 相似性搜索。
+            </p>
+          </article>
+          <article class="tool" data-category="similarity">
+            <span class="tool-kind">相似性搜索 / 只读数据</span>
+            <h3><code>get_similarity_result</code></h3>
+            <p>凭 search_id 查询搜索状态，分页获取命中结果。</p>
+          </article>
+          <article class="tool" data-category="analysis">
+            <span class="tool-kind">分析任务</span>
+            <h3><code>submit_analysis</code></h3>
+            <p>把自然语言分析需求交给 PhageAgent，获得任务 ID。</p>
+          </article>
+          <article class="tool" data-category="analysis">
+            <span class="tool-kind">分析任务</span>
+            <h3><code>get_analysis_status</code></h3>
+            <p>查看任务状态与最近的执行进度。</p>
+          </article>
+          <article class="tool" data-category="analysis">
+            <span class="tool-kind">分析任务</span>
+            <h3><code>get_analysis_result</code></h3>
+            <p>获取已完成任务的总结、交付物与来源信息。</p>
+          </article>
+          <article class="tool" data-category="analysis">
+            <span class="tool-kind">分析任务</span>
+            <h3><code>reply_analysis</code></h3>
+            <p>发送后续消息，继续已有的分析任务。</p>
+          </article>
+          <article class="tool" data-category="analysis">
+            <span class="tool-kind">分析任务</span>
+            <h3><code>cancel_analysis</code></h3>
+            <p>停止一个正在运行的分析任务。</p>
+          </article>
+          <article class="tool" data-category="analysis">
+            <span class="tool-kind">分析任务</span>
+            <h3><code>list_analyses</code></h3>
+            <p>列出当前令牌的近期任务，最新任务优先。</p>
+          </article>
+        </div>
+        <p class="empty-state" id="empty-state" hidden>
+          没有匹配的工具。试试“蛋白”“分析”，或清空搜索条件。
+        </p>
+        <p class="section-note">
+          工具可用性以服务的 <code>tools/list</code> 返回为准。<a
+            href="https://github.com/yiyabo/phageagent-mcp#tools"
+            target="_blank"
+            rel="noopener noreferrer"
+            >查看完整文档 ↗</a
+          >
+        </p>
+      </section>
 
-  <section class="connect-section" id="connect" aria-labelledby="connect-title"><div class="wrap">
-    <div class="section-heading"><div><p class="eyebrow">03 / GET CONNECTED</p><h2 id="connect-title">三步，把研究能力<br>接进你的工作流。</h2></div><a class="button primary" href="https://phageagent.deepomics.org/register" target="_blank" rel="noopener noreferrer">注册 PhageAgent <span aria-hidden="true">↗</span></a></div>
-    <div class="connect-layout"><ol class="steps"><li><span class="step-number">01</span><div><h3>创建账号</h3><p>在 PhageAgent <a href="https://phageagent.deepomics.org/register" target="_blank" rel="noopener noreferrer">注册</a>，已有账号可直接<a href="https://phageagent.deepomics.org/login" target="_blank" rel="noopener noreferrer">登录</a>。</p></div></li><li><span class="step-number">02</span><div><h3>创建个人令牌</h3><p>进入<a href="https://phageagent.deepomics.org/extensions" target="_blank" rel="noopener noreferrer">扩展 → 外部接入</a>，创建令牌并立即复制；令牌仅显示一次，有效期 90 天，可随时撤销。</p></div></li><li><span class="step-number">03</span><div><h3>配置客户端，开始提问</h3><p>选择右侧客户端的接入方式。完成后试试：“用 PhageAgent 查询噬菌体 NC_001416.1。”</p></div></li></ol>
-    <div class="config-window"><div class="config-tabs" role="tablist" aria-label="选择 MCP 客户端"><button id="tab-codex" role="tab" type="button" aria-selected="true" aria-controls="panel-codex" tabindex="0">Codex</button><button id="tab-claude" role="tab" type="button" aria-selected="false" aria-controls="panel-claude" tabindex="-1">Claude Code</button><button id="tab-http" role="tab" type="button" aria-selected="false" aria-controls="panel-http" tabindex="-1">通用 HTTP</button></div>
-      <div id="panel-codex" class="config-panel" role="tabpanel" aria-labelledby="tab-codex"><p>在终端设置令牌，再安装插件：</p><div class="code-block"><button class="copy-button" type="button" data-copy="code-codex">复制命令</button><pre><code id="code-codex">export PHAGEAGENT_MCP_TOKEN='替换为你的令牌'
+      <section
+        class="connect-section"
+        id="connect"
+        aria-labelledby="connect-title"
+      >
+        <div class="wrap">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">03 / GET CONNECTED</p>
+              <h2 id="connect-title">三步，把研究能力<br />接进你的工作流。</h2>
+            </div>
+            <a
+              class="button primary"
+              href="https://phageagent.deepomics.org/register"
+              target="_blank"
+              rel="noopener noreferrer"
+              >注册 PhageAgent <span aria-hidden="true">↗</span></a
+            >
+          </div>
+          <div class="connect-layout">
+            <ol class="steps">
+              <li>
+                <span class="step-number">01</span>
+                <div>
+                  <h3>创建账号</h3>
+                  <p>
+                    在 PhageAgent
+                    <a
+                      href="https://phageagent.deepomics.org/register"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      >注册</a
+                    >，已有账号可直接<a
+                      href="https://phageagent.deepomics.org/login"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      >登录</a
+                    >。
+                  </p>
+                </div>
+              </li>
+              <li>
+                <span class="step-number">02</span>
+                <div>
+                  <h3>创建个人令牌</h3>
+                  <p>
+                    进入<a
+                      href="https://phageagent.deepomics.org/extensions"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      >扩展 → 外部接入</a
+                    >，创建令牌并立即复制；令牌仅显示一次，有效期 90
+                    天，可随时撤销。
+                  </p>
+                </div>
+              </li>
+              <li>
+                <span class="step-number">03</span>
+                <div>
+                  <h3>配置客户端，开始提问</h3>
+                  <p>
+                    选择右侧客户端的接入方式。完成后试试：“用 PhageAgent
+                    查询噬菌体 NC_001416.1。”
+                  </p>
+                </div>
+              </li>
+            </ol>
+            <div class="config-window">
+              <div
+                class="config-tabs"
+                role="tablist"
+                aria-label="选择 MCP 客户端"
+              >
+                <button
+                  id="tab-codex"
+                  role="tab"
+                  type="button"
+                  aria-selected="true"
+                  aria-controls="panel-codex"
+                  tabindex="0"
+                >
+                  Codex</button
+                ><button
+                  id="tab-claude"
+                  role="tab"
+                  type="button"
+                  aria-selected="false"
+                  aria-controls="panel-claude"
+                  tabindex="-1"
+                >
+                  Claude Code</button
+                ><button
+                  id="tab-http"
+                  role="tab"
+                  type="button"
+                  aria-selected="false"
+                  aria-controls="panel-http"
+                  tabindex="-1"
+                >
+                  通用 HTTP
+                </button>
+              </div>
+              <div
+                id="panel-codex"
+                class="config-panel"
+                role="tabpanel"
+                aria-labelledby="tab-codex"
+              >
+                <p>在终端设置令牌，再安装插件：</p>
+                <div class="code-block">
+                  <button
+                    class="copy-button"
+                    type="button"
+                    data-copy="code-codex"
+                  >
+                    复制命令
+                  </button>
+                  <pre><code id="code-codex">export PHAGEAGENT_MCP_TOKEN='替换为你的令牌'
 codex plugin marketplace add yiyabo/phageagent-mcp
-codex plugin add phageagent@phageagent</code></pre></div><p class="config-note">令牌通过环境变量读取。请使用支持插件命令的 Codex 版本；其他版本可按客户端文档配置远程 MCP。</p></div>
-      <div id="panel-claude" class="config-panel" role="tabpanel" aria-labelledby="tab-claude" hidden><p>在终端安装插件，并按提示配置令牌：</p><div class="code-block"><button class="copy-button" type="button" data-copy="code-claude">复制命令</button><pre><code id="code-claude">claude plugin marketplace add yiyabo/phageagent-mcp
+codex plugin add phageagent@phageagent</code></pre>
+                </div>
+                <p class="config-note">
+                  令牌通过环境变量读取。请使用支持插件命令的 Codex
+                  版本；其他版本可按客户端文档配置远程 MCP。
+                </p>
+              </div>
+              <div
+                id="panel-claude"
+                class="config-panel"
+                role="tabpanel"
+                aria-labelledby="tab-claude"
+                hidden
+              >
+                <p>在终端安装插件，并按提示配置令牌：</p>
+                <div class="code-block">
+                  <button
+                    class="copy-button"
+                    type="button"
+                    data-copy="code-claude"
+                  >
+                    复制命令
+                  </button>
+                  <pre><code id="code-claude">claude plugin marketplace add yiyabo/phageagent-mcp
 claude plugin install phageagent@phageagent
-claude plugin configure phageagent@phageagent</code></pre></div><p class="config-note">配置时输入第二步创建的个人令牌。此方式适用于支持插件配置命令的 Claude Code 版本。</p></div>
-      <div id="panel-http" class="config-panel" role="tabpanel" aria-labelledby="tab-http" hidden><p>适用于支持远程 HTTP MCP 的客户端：</p><div class="code-block"><button class="copy-button" type="button" data-copy="code-http">复制配置</button><pre><code id="code-http">{
+claude plugin configure phageagent@phageagent</code></pre>
+                </div>
+                <p class="config-note">
+                  配置时输入第二步创建的个人令牌。此方式适用于支持插件配置命令的
+                  Claude Code 版本。
+                </p>
+              </div>
+              <div
+                id="panel-http"
+                class="config-panel"
+                role="tabpanel"
+                aria-labelledby="tab-http"
+                hidden
+              >
+                <p>适用于支持远程 HTTP MCP 的客户端：</p>
+                <div class="code-block">
+                  <button
+                    class="copy-button"
+                    type="button"
+                    data-copy="code-http"
+                  >
+                    复制配置
+                  </button>
+                  <pre><code id="code-http">{
   "mcpServers": {
     "phageagent": {
       "url": "https://phageagent.deepomics.org/mcp",
@@ -122,23 +682,146 @@ claude plugin configure phageagent@phageagent</code></pre></div><p class="config
       }
     }
   }
-}</code></pre></div><p class="config-note">先设置 PHAGEAGENT_MCP_TOKEN 环境变量。变量替换语法因客户端而异，请以客户端文档为准。</p></div>
-      <div class="endpoint-line"><span>ENDPOINT</span><code>https://phageagent.deepomics.org/mcp</code><button class="copy-icon" type="button" data-copy-value="https://phageagent.deepomics.org/mcp" aria-label="复制 MCP 端点">⧉</button></div>
-    </div></div>
-    <div class="connect-foot"><span>Streamable HTTP</span><span>个人 Bearer Token</span><a href="https://registry.modelcontextprotocol.io/?q=io.github.yiyabo/phageagent" target="_blank" rel="noopener noreferrer">MCP Registry ↗</a><a href="https://github.com/yiyabo/phageagent-mcp#2-connect-a-client" target="_blank" rel="noopener noreferrer">Hermes 及更多接入方式 ↗</a></div>
-  </div></section>
+}</code></pre>
+                </div>
+                <p class="config-note">
+                  先设置 PHAGEAGENT_MCP_TOKEN
+                  环境变量。变量替换语法因客户端而异，请以客户端文档为准。
+                </p>
+              </div>
+              <div class="endpoint-line">
+                <span>ENDPOINT</span
+                ><code>https://phageagent.deepomics.org/mcp</code
+                ><button
+                  class="copy-icon"
+                  type="button"
+                  data-copy-value="https://phageagent.deepomics.org/mcp"
+                  aria-label="复制 MCP 端点"
+                >
+                  ⧉
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="connect-foot">
+            <span>Streamable HTTP</span><span>个人 Bearer Token</span
+            ><a
+              href="https://registry.modelcontextprotocol.io/?q=io.github.yiyabo/phageagent"
+              target="_blank"
+              rel="noopener noreferrer"
+              >MCP Registry ↗</a
+            ><a
+              href="https://github.com/yiyabo/phageagent-mcp#2-connect-a-client"
+              target="_blank"
+              rel="noopener noreferrer"
+              >Hermes 及更多接入方式 ↗</a
+            >
+          </div>
+        </div>
+      </section>
 
-  <section class="section wrap faq-section" aria-labelledby="faq-title"><div><p class="eyebrow">GOOD TO KNOW</p><h2 id="faq-title">开始之前。</h2><p class="faq-contact">遇到问题？<br><a href="mailto:xxwang5587@gmail.com">联系 PhageAgent 团队 ↗</a></p></div><div class="faq-list">
-    <details open><summary>需要在本地部署数据库吗？<span aria-hidden="true">+</span></summary><p>不需要。PhageAgent MCP 是远程服务，客户端通过 HTTPS 调用。你的 Agent 需要支持 Streamable HTTP；仅支持 stdio 的客户端可参考接入文档使用桥接。</p></details>
-    <details><summary>数据查询与分析任务有什么区别？<span aria-hidden="true">+</span></summary><p>数据工具只读访问 PhageScope 参考数据库，包括已有注释和结构链接，并不代表预测了新结构。分析工具则把需求交给 PhageAgent 异步执行；返回任务 ID 后，可以继续查询进度和获取交付物。</p></details>
-    <details><summary>谁可以使用？有什么额度？<span aria-hidden="true">+</span></summary><p>任何人都可以注册账号并创建令牌，每个令牌可使用全部 19 个工具。每个令牌每天最多读取 2 GB 数据，测试阶段分析任务暂无配额；查询仍有分页与单次返回限制，服务也可能返回请求过多的提示。</p></details>
-    <details><summary>令牌和分析数据如何处理？<span aria-hidden="true">+</span></summary><p>不要公开个人令牌。本介绍页不接收令牌，也不直接执行分析。MCP 服务会记录调用审计信息；提交的分析需求与输出保存在服务端，需求会发送给 PhageAgent 使用的模型提供方。完整保留与共享规则见<a href="https://github.com/yiyabo/phageagent-mcp/blob/main/PRIVACY.md" target="_blank" rel="noopener noreferrer">隐私政策</a>。</p></details>
-  </div></section>
+      <section class="section wrap faq-section" aria-labelledby="faq-title">
+        <div>
+          <p class="eyebrow">GOOD TO KNOW</p>
+          <h2 id="faq-title">开始之前。</h2>
+          <p class="faq-contact">
+            遇到问题？<br /><a href="mailto:xxwang5587@gmail.com"
+              >联系 PhageAgent 团队 ↗</a
+            >
+          </p>
+        </div>
+        <div class="faq-list">
+          <details open>
+            <summary>
+              需要在本地部署数据库吗？<span aria-hidden="true">+</span>
+            </summary>
+            <p>
+              不需要。PhageAgent MCP 是远程服务，客户端通过 HTTPS 调用。你的
+              Agent 需要支持 Streamable HTTP；仅支持 stdio
+              的客户端可参考接入文档使用桥接。
+            </p>
+          </details>
+          <details>
+            <summary>
+              数据查询与分析任务有什么区别？<span aria-hidden="true">+</span>
+            </summary>
+            <p>
+              数据工具只读访问 PhageScope
+              参考数据库，包括已有注释和结构链接，并不代表预测了新结构。分析工具则把需求交给
+              PhageAgent 异步执行；返回任务 ID
+              后，可以继续查询进度和获取交付物。
+            </p>
+          </details>
+          <details>
+            <summary>
+              谁可以使用？有什么额度？<span aria-hidden="true">+</span>
+            </summary>
+            <p>
+              任何人都可以注册账号并创建令牌，每个令牌可使用全部 19
+              个工具。每个令牌每天最多读取 2 GB
+              数据，测试阶段分析任务暂无配额；查询仍有分页与单次返回限制，服务也可能返回请求过多的提示。
+            </p>
+          </details>
+          <details>
+            <summary>
+              令牌和分析数据如何处理？<span aria-hidden="true">+</span>
+            </summary>
+            <p>
+              不要公开个人令牌。本介绍页不接收令牌，也不直接执行分析。MCP
+              服务会记录调用审计信息；提交的分析需求与输出保存在服务端，需求会发送给
+              PhageAgent 使用的模型提供方。完整保留与共享规则见<a
+                href="https://github.com/yiyabo/phageagent-mcp/blob/main/PRIVACY.md"
+                target="_blank"
+                rel="noopener noreferrer"
+                >隐私政策</a
+              >。
+            </p>
+          </details>
+        </div>
+      </section>
 
-  <section class="closing"><div class="wrap closing-inner"><div><p class="eyebrow">YOUR NEXT QUESTION STARTS HERE.</p><h2>把下一个研究问题，<br>交给你的 Agent。</h2></div><a class="button light" href="#connect">接入 PhageAgent MCP <span aria-hidden="true">↗</span></a></div></section>
-</main>
-<footer class="wrap footer"><a class="brand" href="#"><img src="./assets/mark.svg" alt="" width="28" height="32"><span>PhageAgent</span></a><p>面向 AI Agent 的噬菌体数据与分析接口。</p><div><a href="https://github.com/yiyabo/phageagent-mcp" target="_blank" rel="noopener noreferrer">GitHub ↗</a><a href="https://github.com/yiyabo/phageagent-mcp/blob/main/PRIVACY.md" target="_blank" rel="noopener noreferrer">隐私政策 ↗</a><a href="mailto:xxwang5587@gmail.com">联系我们 ↗</a></div><span class="footer-note">数据来源：PhageScope · 服务：PhageAgent</span></footer>
-<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-<noscript><p class="noscript">已展示全部工具与 Codex 接入方式。更多客户端配置请查看 <a href="https://github.com/yiyabo/phageagent-mcp#2-connect-a-client">GitHub 接入文档</a>。</p></noscript>
-</body>
+      <section class="closing">
+        <div class="wrap closing-inner">
+          <div>
+            <p class="eyebrow">YOUR NEXT QUESTION STARTS HERE.</p>
+            <h2>把下一个研究问题，<br />交给你的 Agent。</h2>
+          </div>
+          <a class="button light" href="#connect"
+            >接入 PhageAgent MCP <span aria-hidden="true">↗</span></a
+          >
+        </div>
+      </section>
+    </main>
+    <footer class="wrap footer">
+      <a class="brand" href="#"
+        ><img src="./assets/mark.svg" alt="" width="28" height="32" /><span
+          >PhageAgent</span
+        ></a
+      >
+      <p>面向 AI Agent 的噬菌体数据与分析接口。</p>
+      <div>
+        <a
+          href="https://github.com/yiyabo/phageagent-mcp"
+          target="_blank"
+          rel="noopener noreferrer"
+          >GitHub ↗</a
+        ><a
+          href="https://github.com/yiyabo/phageagent-mcp/blob/main/PRIVACY.md"
+          target="_blank"
+          rel="noopener noreferrer"
+          >隐私政策 ↗</a
+        ><a href="mailto:xxwang5587@gmail.com">联系我们 ↗</a>
+      </div>
+      <span class="footer-note">数据来源：PhageScope · 服务：PhageAgent</span>
+    </footer>
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <noscript
+      ><p class="noscript">
+        已展示全部工具与 Codex 接入方式。更多客户端配置请查看
+        <a href="https://github.com/yiyabo/phageagent-mcp#2-connect-a-client"
+          >GitHub 接入文档</a
+        >。
+      </p></noscript
+    >
+  </body>
 </html>
