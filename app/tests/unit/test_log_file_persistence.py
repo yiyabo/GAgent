@@ -78,3 +78,31 @@ def test_file_logging_survives_reinit_same_dir(tmp_path, monkeypatch) -> None:
     content = (tmp_path / "app.log").read_text(encoding="utf-8")
     assert "before-restart" in content
     assert "after-restart" in content
+
+
+def test_unwritable_log_dir_warns_with_path(tmp_path, monkeypatch, capsys) -> None:
+    # setup_logging() replaces root handlers (caplog's too), so read stdout.
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("", encoding="utf-8")
+    monkeypatch.setenv("LOG_DIR", str(blocker / "logs"))
+    monkeypatch.setenv("LOG_FILE_ENABLED", "1")
+    get_settings.cache_clear()
+
+    setup_logging()
+
+    out = capsys.readouterr().out
+    assert "File logging disabled" in out
+    assert str(blocker / "logs") in out
+
+
+def test_compose_puts_app_file_logs_on_the_data_mount() -> None:
+    from pathlib import Path
+
+    import yaml
+
+    compose_path = Path(__file__).resolve().parents[3] / "deploy" / "docker-compose.yml"
+    app = yaml.safe_load(compose_path.read_text())["services"]["app"]
+    env = app["environment"]
+    assert any(str(v).endswith(":/app/data") for v in app["volumes"])
+    assert env["LOG_DIR"].startswith("/app/data/")
+    assert env["MODERATION_LOG_FILE"].startswith(env["LOG_DIR"] + "/")

@@ -109,7 +109,11 @@ one text block, shortened here):
 ```
 
 A null field means unknown, never zero. `401` means the token is missing,
-mistyped, revoked or expired.
+mistyped, revoked or expired; its body links to [Get a token](#1-get-a-token)
+in `error.help_url`. A failed tool call returns `isError: true` with
+`{"error": {"code", "message"}}`; bad or missing arguments always use the code
+`invalid_arguments`. `429` (with `Retry-After`) means too many requests per
+token or per client IP.
 
 ## Tools
 

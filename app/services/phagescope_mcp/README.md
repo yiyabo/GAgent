@@ -54,7 +54,9 @@ occurrence kept), returns `results` in input order, and adds `missing_ids`
 | `PHAGESCOPE_MCP_ALLOWED_USER_IDS` | empty | immutable user ids that may self-issue/use tokens; required alongside email entries when open signup is enabled |
 | `PHAGESCOPE_MCP_OPEN_ACCESS` | `0` | `1` lets every signed-in, active user self-issue tokens without an allowlist entry; they get `data:read`, plus `analysis:submit` when analysis is enabled |
 | `PHAGESCOPE_MCP_ANON_DISCOVERY` | `0` | `1` lets requests without a token `initialize`, `ping` and `tools/list` (no tool calls, no resources), so directories such as mcptry can list the tools |
-| `PHAGESCOPE_MCP_ANON_REQUESTS_PER_MINUTE` | `30` | rate limit for those token-less requests, per client IP (`X-Real-IP` from the gateway) |
+| `PHAGESCOPE_MCP_ANON_REQUESTS_PER_MINUTE` | `30` | rate limit, per client IP (`X-Real-IP` from the gateway), for every request without a valid token: anonymous discovery and the 401s for missing, mistyped or revoked tokens; over it answers 429 |
+| `PHAGESCOPE_MCP_IP_REQUESTS_PER_MINUTE` | `120` | all `/mcp` requests per client IP, with or without a token (on top of the per-token limit); `0` = unlimited |
+| `PHAGESCOPE_MCP_TOKEN_HELP_URL` | `https://github.com/yiyabo/phageagent-mcp#1-get-a-token` | how-to-get-a-token link put in every 401 body (`error.help_url` and the message) |
 | `PHAGESCOPE_MCP_ALLOWED_HOSTS` | `phageagent.deepomics.org,localhost,127.0.0.1` | exact Host values accepted by the `/mcp` transport |
 | `PHAGESCOPE_MCP_ALLOWED_ORIGINS` | `https://phageagent.deepomics.org,http://localhost,http://127.0.0.1` | exact Origin values accepted by the `/mcp` transport |
 | `PHAGESCOPE_MCP_DAILY_BYTES` | 2 GiB | returned bytes per token per UTC day |
