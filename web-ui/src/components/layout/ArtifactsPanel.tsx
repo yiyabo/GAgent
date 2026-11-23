@@ -151,8 +151,10 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
   const focusRequest = useLayoutStore((state) => state.artifactFocusRequest);
   const clearArtifactFocus = useLayoutStore((state) => state.clearArtifactFocus);
   const [pendingFocusPath, setPendingFocusPath] = React.useState<string | null>(null);
+  const focusPinnedModeRef = React.useRef(false);
 
   React.useEffect(() => {
+    focusPinnedModeRef.current = false;
     setUserPickedMode(false);
     setMode(hasPlanTasks ? 'deliverables' : 'raw');
     setShowAllRawFiles(true);
@@ -166,6 +168,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
     if (!focusRequest || !sessionId || focusRequest.sessionId !== sessionId) {
       return;
     }
+    focusPinnedModeRef.current = true;
     setUserPickedMode(true);
     setMode('deliverables');
     setKeyword('');
@@ -174,7 +177,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
   }, [clearArtifactFocus, focusRequest, sessionId]);
 
   React.useEffect(() => {
-    if (userPickedMode) {
+    if (userPickedMode || focusPinnedModeRef.current) {
       return;
     }
     if (!hasPlanTasks) {
