@@ -32,7 +32,10 @@ const { Text } = Typography;
 export const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg']);
 export const CSV_EXTS = new Set(['csv', 'tsv']);
 export const PDF_EXTS = new Set(['pdf']);
-export const TEXT_EXTS = new Set(['md', 'txt', 'csv', 'tsv', 'json', 'log', 'py', 'r', 'html', 'tex', 'bib']);
+export const TEXT_EXTS = new Set([
+  'md', 'txt', 'csv', 'tsv', 'json', 'log', 'py', 'r', 'html', 'tex', 'bib', 'yaml', 'yml',
+  'fasta', 'fa', 'fna', 'faa', 'ffn', 'fastq', 'fq', 'gb', 'gbk', 'gff', 'gff3', 'gtf', 'bed', 'vcf', 'nwk', 'newick',
+]);
 // Files that need rendering (LaTeX -> PDF, Markdown -> HTML)
 export const RENDERABLE_EXTS = new Set(['tex', 'md', 'docx']);
 
