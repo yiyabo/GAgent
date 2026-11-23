@@ -177,6 +177,27 @@ describe('ArtifactsPanel', () => {
     expect(screen.getByText(/No plan bound/i)).toBeInTheDocument();
   });
 
+  it('opens a deliverable requested before the panel mounted, even without plan tasks', async () => {
+    useTasksStore.setState({ tasks: [], selectedTaskId: null, selectedTask: null } as any);
+    setupDeliverableItems();
+    mockedArtifactsApi.getSessionDeliverableText.mockResolvedValue({
+      path: 'report.md',
+      content: '# Report',
+      truncated: false,
+    } as any);
+    useLayoutStore.setState({
+      artifactFocusRequest: { sessionId: 'session_1776695619644_hb1elmfc0', path: 'report.md', nonce: 1 },
+    } as any);
+
+    renderPanel();
+
+    await waitFor(() => {
+      expect(screen.getAllByText('report.md').length).toBeGreaterThan(1);
+    });
+    expect(screen.queryByText(/No plan bound/i)).not.toBeInTheDocument();
+    expect(useLayoutStore.getState().artifactFocusRequest).toBeNull();
+  });
+
   it('defaults raw browsing to all raw files and can toggle back to the selected task subtree', async () => {
     renderPanel();
 
