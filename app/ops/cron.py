@@ -10,6 +10,8 @@ It sleeps until the next 03:00 Beijing time, then runs:
     1. ``backup.run_backup``     — VACUUM INTO snapshots + prune old ones
     2. ``retention.run_retention --apply`` — session GC + DB log retention
     3. on Sundays, the same retention pass also VACUUMs the DBs
+    4. on Mondays, ``feedback_digest.write_weekly_digest`` writes last week's
+       dissatisfaction digest under ``<runtime>/ops/feedback-digest/``
 
 Failure policy: a failed run is logged with its traceback and the loop simply
 waits for the next 03:00. No partial-state repair here — each sub-step is
@@ -53,9 +55,10 @@ def run_once(
     *,
     apply: bool = True,
     vacuum: Optional[bool] = None,
+    digest: Optional[bool] = None,
     now: Optional[datetime] = None,
 ) -> Dict[str, object]:
-    """One ops pass: backup first, then retention. *vacuum* defaults to Sunday."""
+    """One ops pass: backup, retention, then the digest. *vacuum* defaults to Sunday, *digest* to Monday."""
     from app.config.database_config import get_database_config
     from app.ops import backup as backup_module
     from app.ops import retention as retention_module
@@ -67,6 +70,8 @@ def run_once(
     now = now or datetime.now(_UTC8)
     if vacuum is None:
         vacuum = now.astimezone(_UTC8).weekday() == 6  # Sunday
+    if digest is None:
+        digest = now.astimezone(_UTC8).weekday() == 0  # Monday
 
     backup_dir = Path(settings.backup_dir)
     backup_report = backup_module.run_backup(
@@ -97,7 +102,18 @@ def run_once(
         vacuum=vacuum,
         now=now,
     )
-    return {"backup": backup_report, "retention": retention_report}
+    report: Dict[str, object] = {"backup": backup_report, "retention": retention_report}
+    if digest:
+        from app.services import feedback_digest
+
+        try:
+            report["feedback_digest"] = feedback_digest.write_weekly_digest(
+                main_db=Path(db.get_main_db_path()), runtime_root=get_runtime_root(), now=now
+            )
+        except Exception:
+            logger.exception("ops cron: feedback digest failed")
+            report["feedback_digest"] = {"error": "failed"}
+    return report
 
 
 def main(argv: Optional[list] = None) -> int:
@@ -136,6 +152,8 @@ def main(argv: Optional[list] = None) -> int:
                 retention_report.get("bytes_freed"),  # type: ignore[union-attr]
                 retention_report.get("usage_rows"),  # type: ignore[union-attr]
             )
+            if "feedback_digest" in report:
+                logger.info("ops cron: feedback digest %s", report["feedback_digest"])
         except Exception:
             logger.exception("ops cron: run failed; retrying at the next scheduled time")
     return 0  # pragma: no cover - the loop never exits

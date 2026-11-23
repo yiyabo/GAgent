@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
+from app.config.database_config import get_database_config
 from app.repository import conversation_quality as repository
 from app.routers import register_router
+from app.services import feedback_digest
 from app.services.request_principal import require_quality_analytics_access
 
 router = APIRouter(prefix="/quality", tags=["quality"])
@@ -146,3 +151,18 @@ async def get_quality_case(evaluation_id: int, request: Request) -> Dict[str, An
         "evaluated_at": row.get("evaluated_at"),
         "finalized_at": row.get("finalized_at"),
     }
+
+
+@router.get("/feedback-digest")
+async def get_feedback_digest(
+    request: Request,
+    days: int = Query(default=7, ge=1, le=90),
+    format: Literal["json", "markdown"] = Query(default="json"),
+):
+    require_quality_analytics_access(request)
+    digest = await asyncio.to_thread(
+        feedback_digest.load_digest, Path(get_database_config().get_main_db_path()), days=days
+    )
+    if format == "markdown":
+        return PlainTextResponse(feedback_digest.render_markdown(digest), media_type="text/markdown; charset=utf-8")
+    return digest
