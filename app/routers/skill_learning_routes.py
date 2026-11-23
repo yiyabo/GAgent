@@ -21,9 +21,13 @@ class RunAction(BaseModel):
     session_id:str
 
 
+FeedbackReason=Literal['wrong','incomplete','failed','slow','off_topic','other']
+
+
 class Feedback(RunAction):
     rating:Literal['useful','needs_work']
     comment:str=Field(default='',max_length=1000)
+    reasons:list[FeedbackReason]=Field(default_factory=list,max_length=6)
 
 
 class Review(RunAction):
@@ -93,7 +97,7 @@ async def run_feedback(run_id:str,request:Request,session_id:str=Query(...)):
 async def feedback(run_id:str,body:Feedback,request:Request):
     run=scoped_run(run_id,body.session_id,request)
     if run['status'] not in {'succeeded','failed','cancelled'}:raise HTTPException(409,'task has not finished')
-    await asyncio.to_thread(get_skill_learning_service().feedback,run_id,body.rating,body.comment)
+    await asyncio.to_thread(get_skill_learning_service().feedback,run_id,body.rating,body.comment.strip(),list(dict.fromkeys(body.reasons)))
     return {'run_id':run_id,'feedback':repository.feedback(run_id)}
 
 

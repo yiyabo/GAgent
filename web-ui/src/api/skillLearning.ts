@@ -14,11 +14,13 @@ export interface LearningRunInfo {
   job?: {status:string;error_code?:string};skills:LearnedSkill[];feedback?:{rating:string;comment:string};
 }
 export type FeedbackRating='useful'|'needs_work';
+export type FeedbackReason='wrong'|'incomplete'|'failed'|'slow'|'off_topic'|'other';
+export interface RunFeedback {rating:string;comment:string;reasons?:FeedbackReason[]}
 class SkillLearningApi extends BaseApi {
   getRun = (runId:string,sessionId:string):Promise<LearningRunInfo> => this.get(`/skill-learning/runs/${encodeURIComponent(runId)}`,{session_id:sessionId});
   capture = (runId:string,sessionId:string) => this.post(`/skill-learning/runs/${encodeURIComponent(runId)}/capture`,{session_id:sessionId});
-  getFeedback = (runId:string,sessionId:string):Promise<{run_id:string;feedback:{rating:string;comment:string}|null}> => this.get(`/skill-learning/runs/${encodeURIComponent(runId)}/feedback`,{session_id:sessionId});
-  feedback = (runId:string,sessionId:string,rating:FeedbackRating,comment='') => this.post(`/skill-learning/runs/${encodeURIComponent(runId)}/feedback`,{session_id:sessionId,rating,comment});
+  getFeedback = (runId:string,sessionId:string):Promise<{run_id:string;feedback:RunFeedback|null}> => this.get(`/skill-learning/runs/${encodeURIComponent(runId)}/feedback`,{session_id:sessionId});
+  feedback = (runId:string,sessionId:string,rating:FeedbackRating,comment='',reasons:FeedbackReason[]=[]) => this.post(`/skill-learning/runs/${encodeURIComponent(runId)}/feedback`,{session_id:sessionId,rating,comment,reasons});
   list = (sessionId:string,query=""):Promise<{skills:LearnedSkill[];recommended_skills?:LearnedSkill[];recommendations?:Array<{id:string;reason:string}>}> => this.get(`/skill-learning/sessions/${encodeURIComponent(sessionId)}`,{query});
   detail = (id:string,sessionId:string):Promise<LearnedSkill> => this.get(`/skill-learning/skills/${encodeURIComponent(id)}`,{session_id:sessionId});
   review = (skill:LearnedSkill,sessionId:string,decision:'accept'|'reject'|'disable'):Promise<LearnedSkill> => this.post(`/skill-learning/skills/${skill.id}/review`,{session_id:sessionId,version:skill.current_version,decision});
