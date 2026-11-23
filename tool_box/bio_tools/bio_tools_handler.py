@@ -20,7 +20,7 @@ from pathlib import Path
 from string import Formatter
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
-from . import native_client, native_exec, native_publish, output_paths, param_hints, session_scope
+from . import native_client, native_exec, native_publish, operation_hints, output_paths, param_hints, session_scope
 from .remote_executor import (
     RemoteExecutionConfig,
     create_remote_run_dirs,
@@ -503,6 +503,41 @@ def _param_refusal(
                 tool_name, operation, requires_input=_operation_requires_input(tool_name, operation),
             ),
         },
+    )
+
+
+def _unknown_tool_error(config: Dict[str, Any], tool_name: str) -> Dict[str, Any]:
+    names = [t for t, info in config.items() if not _hidden_in_this_mode(info)]
+    exposure = _native_exposure(config)
+    if exposure is not None:
+        names = [t for t in names if any(r is None for r in (exposure.get(t) or {}).values())] or names
+    details = operation_hints.unknown_tool_details(tool_name, names)
+    logger.info("[bio_tools] tool_refused tool=%s suggested=%s", tool_name, ",".join(details["suggested_tools"]))
+    return {"success": False, "error_code": "unknown_tool", **details}
+
+
+def _unknown_operation_error(config: Dict[str, Any], tool_name: str, operation: str) -> Dict[str, Any]:
+    """The refusal of an operation the tool does not have, with the operations it does have and the usage of
+    the closest one, so the caller can retry once instead of guessing another name."""
+    names = list(config.get(tool_name, {}).get("operations", {}))
+    exposure = _native_exposure(config)
+    if exposure is not None:
+        names = [op for op, reason in (exposure.get(tool_name) or {}).items() if reason is None] or names
+    details = operation_hints.unknown_operation_details(config, tool_name, operation, names)
+    logger.info(
+        "[bio_tools] operation_refused tool=%s operation=%s suggested=%s",
+        tool_name,
+        operation,
+        ",".join(details["suggested_operations"]),
+    )
+    error = details.pop("error")
+    return _build_bio_tools_error(
+        tool_name=tool_name,
+        operation=operation,
+        error=error,
+        error_code="unknown_operation",
+        error_stage="operation_validation",
+        extra=details,
     )
 
 
@@ -1951,11 +1986,7 @@ async def bio_tools_handler(
     if operation == "help":
         config = get_tools_config()
         if tool_name not in config or _hidden_in_this_mode(config[tool_name]):
-            return {
-                "success": False,
-                "error": f"Unknown tool: {tool_name}",
-                "available_tools": [t for t, info in config.items() if not _hidden_in_this_mode(info)],
-            }
+            return _unknown_tool_error(config, tool_name)
         
         exposure = _native_exposure(config)
         hidden: Dict[str, str] = {}
@@ -2041,20 +2072,15 @@ async def bio_tools_handler(
     # 
     config = get_tools_config()
     if tool_name not in config or _hidden_in_this_mode(config[tool_name]):
-        return {
-            "success": False,
-            "error": f"Unknown tool: {tool_name}",
-            "available_tools": [t for t, info in config.items() if not _hidden_in_this_mode(info)],
-        }
+        return _unknown_tool_error(config, tool_name)
 
     operations = config[tool_name].get("operations", {})
+    resolved_operation = operation_hints.resolve_operation(operation, tool_name, operations)
+    if resolved_operation is not None and resolved_operation != operation:
+        logger.info("[bio_tools] operation_renamed tool=%s %s -> %s", tool_name, operation, resolved_operation)
+        operation = resolved_operation
     if operation not in operations:
-        return _build_bio_tools_error(
-            tool_name=tool_name,
-            operation=operation,
-            error=f"Unknown operation '{operation}' for {tool_name}. Available: {list(operations.keys())}",
-            error_code="unknown_operation",
-        )
+        return _unknown_operation_error(config, tool_name, operation)
 
     normalized_input_file = str(input_file).strip() if isinstance(input_file, str) else ""
     has_input_file = bool(normalized_input_file)
