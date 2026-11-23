@@ -432,3 +432,99 @@ def test_explicit_output_names_get_the_format_suffix(fake_efetch) -> None:
         sequence_fetch_module.sequence_fetch_handler(accession="NC_001416.1", format="genbank", output_name="lambda")
     )
     assert result["output_file"].endswith("lambda.gb")
+
+
+# ------------------------------------------------------------ per-session storage
+@pytest.fixture()
+def per_session_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """Real output-dir resolution with every session rooted under tmp_path."""
+
+    def _session_dir(session_id: str, *, create: bool = False) -> Path:
+        path = tmp_path / "runtime" / session_id
+        if create:
+            path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    monkeypatch.setattr(session_paths, "get_runtime_session_dir", _session_dir)
+
+    async def _fake_ncbi(_client: Any, accessions: Sequence[str], *, database: str, timeout_sec: float) -> str:
+        _ = (database, timeout_sec)
+        return "".join(f">{acc}\nACGT\n" for acc in accessions)
+
+    monkeypatch.setattr(sequence_fetch_module, "_fetch_ncbi_fasta", _fake_ncbi)
+    sequence_fetch_module._RECORD_CACHE.clear()
+    yield tmp_path / "runtime"
+    sequence_fetch_module._RECORD_CACHE.clear()
+
+
+def test_same_output_name_in_two_sessions_lands_in_two_files(per_session_runtime: Path) -> None:
+    from tool_box.context import ToolContext
+
+    first = asyncio.run(sequence_fetch_module.sequence_fetch_handler(
+        accession="NC_001416.1", output_name="refs", tool_context=ToolContext(session_id="session_a"),
+    ))
+    second = asyncio.run(sequence_fetch_module.sequence_fetch_handler(
+        accession="NC_001417.1", output_name="refs", tool_context=ToolContext(session_id="session_b"),
+    ))
+
+    path_a, path_b = Path(first["output_file"]), Path(second["output_file"])
+    assert path_a == (per_session_runtime / "session_a" / "tool_outputs" / "sequence_fetch" / "refs.fasta").resolve()
+    assert path_b == (per_session_runtime / "session_b" / "tool_outputs" / "sequence_fetch" / "refs.fasta").resolve()
+    assert path_a.read_text().startswith(">NC_001416.1")
+    assert path_b.read_text().startswith(">NC_001417.1")
+    assert first["output_file_rel"] == "tool_outputs/sequence_fetch/refs.fasta"
+
+
+def test_tool_context_session_wins_over_a_session_id_argument(per_session_runtime: Path) -> None:
+    from tool_box.context import ToolContext
+
+    result = asyncio.run(sequence_fetch_module.sequence_fetch_handler(
+        accession="NC_001416.1",
+        session_id="session_someone_else",
+        tool_context=ToolContext(session_id="session_mine"),
+    ))
+
+    assert Path(result["output_file"]).is_relative_to((per_session_runtime / "session_mine").resolve())
+    assert not (per_session_runtime / "session_someone_else").exists()
+
+
+def test_execute_tool_forwards_the_session_from_tool_context(per_session_runtime: Path) -> None:
+    from tool_box.context import ToolContext
+
+    result = asyncio.run(tool_box.execute_tool(
+        "sequence_fetch", accession="NC_001416.1", tool_context=ToolContext(session_id="session_ctx"),
+    ))
+
+    assert result["success"] is True
+    assert Path(result["output_file"]).is_relative_to((per_session_runtime / "session_ctx").resolve())
+
+
+def test_without_a_session_an_existing_file_is_never_overwritten(
+    monkeypatch: pytest.MonkeyPatch, per_session_runtime: Path, tmp_path: Path,
+) -> None:
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "refs.fasta").write_text(">KEEP\nAAAA\n")
+    monkeypatch.setattr(sequence_fetch_module, "_resolve_output_dir", lambda _sid: shared)
+
+    result = asyncio.run(sequence_fetch_module.sequence_fetch_handler(accession="NC_001416.1", output_name="refs"))
+
+    assert (shared / "refs.fasta").read_text() == ">KEEP\nAAAA\n"
+    written = Path(result["output_file"])
+    assert written.parent == shared and written.name.startswith("refs_") and written.suffix == ".fasta"
+    assert written.read_text().startswith(">NC_001416.1")
+
+
+def test_chat_action_params_keep_the_chat_session_over_a_model_supplied_one() -> None:
+    from types import SimpleNamespace
+
+    from app.routers.chat.action_tool_params import _normalize_sequence_fetch_params
+
+    params = _normalize_sequence_fetch_params(
+        SimpleNamespace(session_id="session_mine"),
+        None,
+        "sequence_fetch",
+        {"accession": "NC_001416.1", "session_id": "session_someone_else"},
+    )
+
+    assert params["session_id"] == "session_mine"
