@@ -36,6 +36,8 @@ class FakeDataService:
         if path == "v2/phages/detail/":
             if body.get("accession") == "missing":
                 raise tools.PhageScopeDataError("not_found", "No such phage.", 404)
+            if body.get("accession") == "bad-param":
+                raise tools.PhageScopeDataError("invalid_parameter", "accession is malformed.", 400)
             return {"id": 7, "Acession_ID": "PS00007", "lifestyle": None}
         if path == "v2/structures/resolve/":
             rows = [dict(STRUCTURE_ROWS.get(pid, {"protein_id": pid, "available": False})) for pid in body["protein_ids"]]
@@ -520,3 +522,62 @@ def test_numeric_phage_id_still_accepted(mcp_client, tool, extra, good_id):
     assert result["isError"] is False
     method, path, sent = fake.calls[0]
     assert (sent or {}).get("phage_id") == 7 or path == "phages/7/sequence/"
+
+
+def test_data_service_parameter_errors_use_the_mcp_argument_code(mcp_client):
+    client, _ = mcp_client
+    token, record = store.issue_token("u1", name="t")
+    result, payload = _call(client, token, "get_phage", {"accession": "bad-param"})
+    assert result["isError"] is True
+    assert payload["error"] == {"code": "invalid_arguments", "message": "accession is malformed."}
+    assert store.recent_audit(record.id)[0]["error_code"] == "invalid_arguments"
+
+
+def test_unauthorized_responses_say_how_to_get_a_token(mcp_client, monkeypatch):
+    client, _ = mcp_client
+    for token in (None, "gpsk_not-a-real-token"):
+        resp = _rpc(client, token, "tools/list")
+        error = resp.json()["error"]
+        assert resp.status_code == 401 and error["code"] == "unauthorized"
+        assert error["help_url"] == "https://github.com/yiyabo/phageagent-mcp#1-get-a-token"
+        assert "Authorization: Bearer gpsk_" in error["message"] and error["help_url"] in error["message"]
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_TOKEN_HELP_URL", "https://example.org/tokens")
+    assert _rpc(client, None, "tools/list").json()["error"]["help_url"] == "https://example.org/tokens"
+
+
+def test_requests_without_a_valid_token_are_rate_limited_per_ip(mcp_client, monkeypatch):
+    client, _ = mcp_client
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_ANON_REQUESTS_PER_MINUTE", "2")
+    ip_a = {"X-Real-IP": "203.0.113.7"}
+    assert _rpc(client, None, "tools/list", extra_headers=ip_a).status_code == 401
+    assert _rpc(client, "gpsk_not-a-real-token", "tools/list", extra_headers=ip_a).status_code == 401
+    resp = _rpc(client, "gpsk_other-guess", "tools/list", extra_headers=ip_a)
+    assert resp.status_code == 429 and resp.headers["retry-after"]
+    assert _rpc(client, None, "tools/list", extra_headers={"X-Real-IP": "203.0.113.8"}).status_code == 401
+    token, _ = store.issue_token("u1", name="t")
+    assert _rpc(client, token, "tools/list", extra_headers=ip_a).status_code == 200
+
+
+def test_every_request_counts_against_the_per_ip_limit(mcp_client, monkeypatch):
+    client, _ = mcp_client
+    _setenv(monkeypatch, "PHAGESCOPE_MCP_IP_REQUESTS_PER_MINUTE", "2")
+    ip_a = {"X-Real-IP": "203.0.113.9"}
+    first, _ = store.issue_token("u1", name="a")
+    second, _ = store.issue_token("u1", name="b")
+    assert _rpc(client, first, "tools/list", extra_headers=ip_a).status_code == 200
+    assert _rpc(client, second, "tools/list", extra_headers=ip_a).status_code == 200
+    resp = _rpc(client, second, "tools/list", extra_headers=ip_a)
+    assert resp.status_code == 429 and resp.json()["error"]["code"] == "rate_limited"
+    assert _rpc(client, first, "tools/list", extra_headers={"X-Real-IP": "203.0.113.10"}).status_code == 200
+
+
+def test_limiter_prunes_idle_keys(monkeypatch):
+    lim = limits.TokenLimiter()
+    monkeypatch.setattr(limits, "_PRUNE_ABOVE", 3)
+    clock = iter([0.0, 0.0, 0.0, 0.0, 100.0])
+    monkeypatch.setattr(limits.time, "monotonic", lambda: next(clock))
+    for key in ("a", "b", "c", "d"):
+        assert lim.acquire(key, per_minute=5, max_concurrency=0) is None
+        lim.release(key)
+    assert lim.acquire("e", per_minute=5, max_concurrency=0) is None
+    assert set(lim._calls) == {"e"}

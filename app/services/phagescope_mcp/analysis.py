@@ -260,18 +260,18 @@ def deliverable_file(task_id: str, rel_path: str):
 def _compose_message(arguments: dict[str, Any]) -> tuple[str, str]:
     instructions = str(arguments.get("instructions") or "").strip()
     if not instructions:
-        raise AnalysisError("invalid_argument", "instructions is required.")
+        raise AnalysisError("invalid_arguments", "instructions is required.")
     if len(instructions) > MAX_INSTRUCTIONS:
-        raise AnalysisError("invalid_argument", f"instructions is limited to {MAX_INSTRUCTIONS} characters.")
+        raise AnalysisError("invalid_arguments", f"instructions is limited to {MAX_INSTRUCTIONS} characters.")
     accessions = arguments.get("phage_accessions") or []
     if not isinstance(accessions, list) or len(accessions) > MAX_ACCESSIONS:
-        raise AnalysisError("invalid_argument", f"phage_accessions must be a list of at most {MAX_ACCESSIONS}.")
+        raise AnalysisError("invalid_arguments", f"phage_accessions must be a list of at most {MAX_ACCESSIONS}.")
     accessions = [str(a).strip() for a in accessions if str(a).strip()]
     inline = arguments.get("inline_data")
     if inline is not None and not isinstance(inline, str):
-        raise AnalysisError("invalid_argument", "inline_data must be text (CSV, TSV or FASTA).")
+        raise AnalysisError("invalid_arguments", "inline_data must be text (CSV, TSV or FASTA).")
     if inline and len(inline.encode("utf-8")) > MAX_INLINE_BYTES:
-        raise AnalysisError("invalid_argument", f"inline_data is limited to {MAX_INLINE_BYTES} bytes.")
+        raise AnalysisError("invalid_arguments", f"inline_data is limited to {MAX_INLINE_BYTES} bytes.")
     hints = [str(h) for h in (arguments.get("deliverables_hint") or []) if str(h).strip()][:8]
 
     parts = [
@@ -431,7 +431,7 @@ async def reply_analysis(token: store.McpToken, arguments: dict[str, Any]) -> di
     task = _owned_task(token, arguments)
     message = str(arguments.get("message") or "").strip()
     if not message or len(message) > MAX_INSTRUCTIONS:
-        raise AnalysisError("invalid_argument", f"message is required and limited to {MAX_INSTRUCTIONS} characters.")
+        raise AnalysisError("invalid_arguments", f"message is required and limited to {MAX_INSTRUCTIONS} characters.")
     key = str(arguments.get("idempotency_key") or "").strip()[:128]
     client_message_id = f"{task.task_id}:reply:{key or uuid.uuid4().hex}"
     reply = None
@@ -497,7 +497,7 @@ async def list_analyses(token: store.McpToken, arguments: dict[str, Any]) -> dic
     try:
         limit = max(1, min(50, int(arguments.get("limit") or 20)))
     except (TypeError, ValueError):
-        raise AnalysisError("invalid_argument", "limit must be an integer between 1 and 50.")
+        raise AnalysisError("invalid_arguments", "limit must be an integer between 1 and 50.")
     wanted = str(arguments.get("status") or "").strip() or None
     rows = []
     for task in store.list_analysis_tasks(token.id, limit=limit):
