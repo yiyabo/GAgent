@@ -1160,7 +1160,7 @@
     },
     {
       "function": {
-        "description": "Submit FINAL output files to the session Deliverables panel. Use this ONLY for publication-ready artifacts:\n- Visualization plots (PNG/SVG/PDF charts, figures)\n- Summary tables (final analysis results, NOT raw data)\n- Manuscripts and reports (LaTeX, Markdown)\n- Finished code scripts that produced the above\nDo NOT submit: raw input data, intermediate CSVs, downloaded references, logs.\nEach artifact requires a path and target module (code, image_tabular, paper, refs, docs).",
+        "description": "Submit FINAL output files to the session Deliverables panel. Use this ONLY for publication-ready artifacts:\n- Visualization plots (PNG/SVG/PDF charts, figures)\n- Summary tables (final analysis results, NOT raw data)\n- Manuscripts and reports (LaTeX, Markdown)\n- Finished code scripts that produced the above\nDo NOT submit: raw input data, intermediate CSVs, downloaded references, logs.\nPublished files are attached to your reply as clickable file cards and listed in the “产物” panel under “交付物” (English UI: Artifacts › Deliverables); tell the user that, not an internal path.\nEach artifact requires a path and target module (code, image_tabular, paper, refs, docs).",
         "name": "deliverable_submit",
         "parameters": {
           "properties": {
@@ -1480,7 +1480,7 @@
     },
     {
       "function": {
-        "description": "Submit FINAL output files to the session Deliverables panel. Use this ONLY for publication-ready artifacts:\n- Visualization plots (PNG/SVG/PDF charts, figures)\n- Summary tables (final analysis results, NOT raw data)\n- Manuscripts and reports (LaTeX, Markdown)\n- Finished code scripts that produced the above\nDo NOT submit: raw input data, intermediate CSVs, downloaded references, logs.\nEach artifact requires a path and target module (code, image_tabular, paper, refs, docs).",
+        "description": "Submit FINAL output files to the session Deliverables panel. Use this ONLY for publication-ready artifacts:\n- Visualization plots (PNG/SVG/PDF charts, figures)\n- Summary tables (final analysis results, NOT raw data)\n- Manuscripts and reports (LaTeX, Markdown)\n- Finished code scripts that produced the above\nDo NOT submit: raw input data, intermediate CSVs, downloaded references, logs.\nPublished files are attached to your reply as clickable file cards and listed in the “产物” panel under “交付物” (English UI: Artifacts › Deliverables); tell the user that, not an internal path.\nEach artifact requires a path and target module (code, image_tabular, paper, refs, docs).",
         "name": "deliverable_submit",
         "parameters": {
           "properties": {

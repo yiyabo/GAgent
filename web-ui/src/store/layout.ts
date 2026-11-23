@@ -24,6 +24,12 @@ function savePlanPanelVisible(visible: boolean): void {
   }
 }
 
+export interface ArtifactFocusRequest {
+  sessionId: string;
+  path: string;
+  nonce: number;
+}
+
 interface LayoutState {
   workspaceMode: WorkspaceMode;
   workspacePlanWidth: number | null;
@@ -42,6 +48,9 @@ interface LayoutState {
   setDagSidebarWidth: (width: number) => void;
   toggleDagSidebarFullscreen: () => void;
   setDagSidebarFullscreen: (fullscreen: boolean) => void;
+  artifactFocusRequest: ArtifactFocusRequest | null;
+  focusDeliverable: (sessionId: string, path: string) => void;
+  clearArtifactFocus: (nonce: number) => void;
 }
 
 export const useLayoutStore = create<LayoutState>()(
@@ -76,5 +85,15 @@ export const useLayoutStore = create<LayoutState>()(
     toggleDagSidebarFullscreen: () =>
       set((state) => ({ dagSidebarFullscreen: !state.dagSidebarFullscreen })),
     setDagSidebarFullscreen: (fullscreen) => set({ dagSidebarFullscreen: fullscreen }),
+    artifactFocusRequest: null,
+    focusDeliverable: (sessionId, path) => {
+      savePlanPanelVisible(true);
+      set((state) => ({
+        planPanelVisible: true,
+        artifactFocusRequest: { sessionId, path, nonce: (state.artifactFocusRequest?.nonce ?? 0) + 1 },
+      }));
+    },
+    clearArtifactFocus: (nonce) =>
+      set((state) => (state.artifactFocusRequest?.nonce === nonce ? { artifactFocusRequest: null } : {})),
   }))
 );

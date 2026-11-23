@@ -15,6 +15,7 @@ import { skillLearningApi } from '@api/skillLearning';
 import {
   collectArtifactGallery,
   mergeArtifactGalleries,
+  collectArtifactFiles,
 } from '@/utils/artifactGallery';
 import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
 import { recoverPlanBindingFromMessages } from './planRecovery';
@@ -191,8 +192,17 @@ const _consumeUnifiedStream = async (
           collectArtifactGallery(existingMetadata.artifact_gallery),
           collectArtifactGallery([event]),
         );
-        if (mergedGallery.length > 0) {
-          existingMetadata.artifact_gallery = mergedGallery;
+        const mergedFiles = collectArtifactFiles([
+          ...(Array.isArray(existingMetadata.artifact_files) ? existingMetadata.artifact_files : []),
+          ...((event as { origin?: string }).origin === 'deliverable' ? [event] : []),
+        ]);
+        if (mergedFiles.length > 0) {
+          existingMetadata.artifact_files = mergedFiles;
+        }
+        if (mergedGallery.length > 0 || mergedFiles.length > 0) {
+          if (mergedGallery.length > 0) {
+            existingMetadata.artifact_gallery = mergedGallery;
+          }
           ctx.get().updateMessage(ctx.assistantMessageId, { metadata: existingMetadata });
         }
       }

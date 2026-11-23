@@ -567,6 +567,9 @@
     "previewFile": "Click to preview {{name}} in the side panel",
     "previewPdf": "Click to preview PDF in the side panel: {{name}}",
     "downloadFile": "Download {{name}}",
+    "openInArtifacts": "View {{name}} in the Artifacts panel",
+    "deliverableLocation": "Artifacts › Deliverables",
+    "viewFile": "View {{name}}",
     "inspectRun": "Inspect run"
   },
   "artifacts": {

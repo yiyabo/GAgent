@@ -567,6 +567,9 @@
     "previewFile": "点击在侧边栏预览 {{name}}",
     "previewPdf": "点击在侧边栏预览 PDF: {{name}}",
     "downloadFile": "下载 {{name}}",
+    "openInArtifacts": "在“产物”面板中查看 {{name}}",
+    "deliverableLocation": "产物 › 交付物",
+    "viewFile": "查看 {{name}}",
     "inspectRun": "查看运行详情"
   },
   "artifacts": {

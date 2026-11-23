@@ -63,6 +63,11 @@ services:
       SERVE_SPA: "0"          # the gateway owns the frontend
       TERMINAL_ENABLED: "0"   # stays off until the P3 sandbox exists
       APP_ENV: ${APP_ENV:-production}
+      # File logs go on the persistent data mount: the default relative "logs"
+      # resolves under the root-owned /app (EACCES, so file logging was off),
+      # and anything in the container layer is lost when it is recreated.
+      LOG_DIR: /app/data/logs
+      MODERATION_LOG_FILE: /app/data/logs/moderation.log
     volumes:
       - ${GAGENT_RUNTIME_DIR}:/app/runtime
       # GAGENT_DATA_DIR (a host path, owned by APP_UID:APP_GID) bind-mounts /app/data;

@@ -317,7 +317,7 @@ class _DeepThinkMethods:
                 "Do NOT place final deliverables under session workspace/. "
                 "If the task instruction or user goal explicitly names an absolute final output directory, "
                 "also copy the final deliverables there; the task output directory is a canonical staging/fallback location, not a replacement for a user-requested output directory. "
-                "After producing publication-ready files, call deliverable_submit with those final file paths so they appear in the session Deliverables panel."
+                "After producing publication-ready files, call deliverable_submit with those final file paths so they appear in the session Deliverables (the “产物” panel under “交付物” in the Chinese UI)."
             )
         if dep_outputs or dependency_paths:
             constraints.append(
