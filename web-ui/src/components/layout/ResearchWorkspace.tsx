@@ -4,6 +4,7 @@ import { LeftOutlined, MenuUnfoldOutlined, MessageOutlined, PartitionOutlined } 
 import { useLayoutStore } from '@store/layout';
 import { useChatStore } from '@store/chat';
 import { useT } from '@/i18n/useT';
+import { useArtifactFocusSignal } from '@hooks/useArtifactFocusSignal';
 import ChatSidebar from './ChatSidebar';
 import ChatMainArea from './ChatMainArea';
 import DAGSidebar from './DAGSidebar';
@@ -24,6 +25,11 @@ const ResearchWorkspace: React.FC = () => {
   const drag = useRef(false);
   const frame = useRef<number>();
   const geometry = workspaceGeometry(width, chatListVisible, workspacePlanWidth ?? (currentPlanId == null ? 420 : null));
+
+  useArtifactFocusSignal(() => {
+    setPane('plan');
+    setDagSidebarFullscreen(false);
+  });
 
   useEffect(() => {
     if (!container.current) return;

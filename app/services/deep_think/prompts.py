@@ -1299,7 +1299,8 @@ IMPORTANT: data must end with \\n to execute the command.""",
             "Promote specific files into the session Deliverables bundle. "
             "Params: {\"publish\": true|false, \"artifacts\": [{\"path\": \"/path/to/file\", "
             "\"module\": \"code|image_tabular|paper|refs|docs\", optional \"reason\": \"note\"}]}. "
-            "Use this after files already exist and the user wants reports, summaries, figures, tables, code, or references included in Deliverables."
+            "Use this after files already exist and the user wants reports, summaries, figures, tables, code, or references included in Deliverables. "
+            "Every file it publishes is attached to your reply as a clickable file card (preview/download) and listed in the “产物” panel under “交付物” (English UI: Artifacts › Deliverables). When telling the user where a file is, say it is attached below your reply and use the UI name in the user's language; never give only an internal path such as deliverables/latest/... or results/...."
         ),
     }
     if code_mode_enabled():

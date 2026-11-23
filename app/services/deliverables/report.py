@@ -74,7 +74,10 @@ class PublishReport:
                 f"Deliverable submit published {published} artifact(s); "
                 f"skipped {skipped} with warnings{suffix}"
             )
-        return f"Deliverable submit published {published} artifact(s) to Deliverables"
+        return (
+            f"Deliverable submit published {published} artifact(s) to Deliverables; "
+            "they are attached to the reply as clickable file cards and listed in the 产物 panel under 交付物"
+        )
 
 
 def format_deliverable_submit_summary(report: Optional[PublishReport]) -> Optional[str]:

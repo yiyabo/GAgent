@@ -452,8 +452,8 @@ def test_provider_failure_final_is_a_failed_job_without_restarting_acceptance(mo
     assert 'mark_failure' in jobs.names() and 'mark_success' not in jobs.names()
 
 
-@pytest.mark.parametrize("failure", ["provider", "exception"])
-def test_failed_chat_keeps_only_files_published_in_this_turn(tmp_path, monkeypatch, failure):
+@pytest.mark.parametrize("failure", ["provider", "exception", None])
+def test_chat_final_keeps_only_files_published_in_this_turn(tmp_path, monkeypatch, failure):
     from dataclasses import replace
     from io import BytesIO
 
@@ -516,6 +516,8 @@ def test_failed_chat_keeps_only_files_published_in_this_turn(tmp_path, monkeypat
             await self.kwargs["tool_executor"]("deliverable_submit", {})
             if failure == "exception":
                 raise RuntimeError("synthetic stream interruption")
+            if failure is None:
+                return await super().think(*args, **kwargs)
             return replace(await super().think(*args, **kwargs), final_answer="", termination_reason="llm_unavailable")
 
     monkeypatch.setattr(chat_routes, "DeepThinkAgent", FailedAfterPublish)
@@ -529,9 +531,14 @@ def test_failed_chat_keeps_only_files_published_in_this_turn(tmp_path, monkeypat
     assert _types(events).count("final") == 1
     assert events[-1]["type"] == "final"
     metadata = events[-1]["payload"]["metadata"]
-    assert metadata["status"] == "failed"
-    assert metadata["partial"] is True
+    if failure is None:
+        assert metadata.get("status") != "failed"
+        assert "partial" not in metadata
+    else:
+        assert metadata["status"] == "failed"
+        assert metadata["partial"] is True
     assert {item["path"] for item in metadata["artifact_files"]} == expected_paths
+    assert all(item["origin"] == "deliverable" for item in metadata["artifact_files"])
     assert saved[-1]["artifact_files"] == metadata["artifact_files"]
     assert json.loads((root / "image_tabular/summary.json").read_bytes()) == summary
     with Image.open(root / "image_tabular/group_means.png") as published_chart:
