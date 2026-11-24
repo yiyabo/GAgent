@@ -6,6 +6,7 @@
   font-weight: 400;
 }
 :root {
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --paper: #fafaf6;
   --white: #fff;
   --ink: #182c25;
@@ -28,6 +29,7 @@
 html {
   scroll-behavior: smooth;
   scroll-padding-top: 100px;
+  scrollbar-gutter: stable;
 }
 body {
   margin: 0;
@@ -59,6 +61,22 @@ a,
 button,
 summary {
   touch-action: manipulation;
+}
+.header-inner nav a,
+.header-cta,
+.text-link,
+.filter,
+.config-tabs button,
+.copy-button,
+.copy-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    color 180ms ease,
+    background-color 180ms ease,
+    border-color 180ms ease,
+    box-shadow 180ms ease;
 }
 a:focus-visible,
 button:focus-visible,
@@ -146,6 +164,14 @@ pre {
   gap: 30px;
   font-size: 13px;
 }
+.header-inner nav a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-block-size: 44px;
+  min-inline-size: 44px;
+}
+.header-inner nav a[aria-current="location"],
 .header-inner nav a:hover,
 .footer a:hover {
   color: var(--green-mid);
@@ -222,11 +248,16 @@ pre {
   border-radius: 4px;
   font-weight: 500;
   transition:
-    background 0.2s,
-    transform 0.2s;
+    background-color 180ms ease,
+    transform 240ms var(--ease-out);
 }
-.button:hover {
-  transform: translateY(-2px);
+@media (hover: hover) and (pointer: fine) {
+  .button:hover {
+    transform: translateY(-2px);
+  }
+}
+.button:active {
+  transform: translateY(0) scale(0.98);
 }
 .primary {
   background: var(--green);
@@ -630,6 +661,7 @@ pre {
   flex-wrap: wrap;
 }
 .filter {
+  min-block-size: 44px;
   border: 1px solid transparent;
   background: transparent;
   color: var(--muted);
@@ -682,6 +714,7 @@ pre {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 12px;
+  align-content: start;
 }
 .tool {
   border: 1px solid var(--line);
@@ -689,6 +722,15 @@ pre {
   padding: 20px;
   min-width: 0;
   background: var(--white);
+  transition:
+    border-color 180ms ease,
+    box-shadow 240ms ease;
+}
+@media (hover: hover) and (pointer: fine) {
+  .tool:hover {
+    border-color: var(--green-mid);
+    box-shadow: 0 4px 18px #173e3209;
+  }
 }
 .tool-kind {
   font-size: 9px;
@@ -781,6 +823,8 @@ pre {
   text-underline-offset: 3px;
 }
 .config-window {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   border: 1px solid var(--line);
   border-radius: 5px;
   background: var(--paper);
@@ -788,12 +832,14 @@ pre {
   overflow: hidden;
 }
 .config-tabs {
+  grid-area: 1 / 1;
   display: flex;
   gap: 18px;
   border-bottom: 1px solid var(--line);
   padding: 0 22px;
 }
 .config-tabs button {
+  min-inline-size: 44px;
   background: transparent;
   border: 0;
   border-bottom: 2px solid transparent;
@@ -806,7 +852,17 @@ pre {
   color: var(--ink);
 }
 .config-panel {
+  grid-area: 2 / 1;
+  align-self: start;
+  min-width: 0;
   padding: 19px 20px 12px;
+}
+/* Keep the tallest configuration in flow: switching tabs must not move the page.
+   Visibility also keeps inactive panels out of focus and the accessibility tree. */
+.config-panel[hidden] {
+  display: block !important;
+  visibility: hidden;
+  pointer-events: none;
 }
 .config-panel > p {
   font-size: 11px;
@@ -837,9 +893,15 @@ pre {
   border-radius: 3px;
   background: transparent;
   padding: 4px 9px;
+  min-inline-size: 6em;
 }
-.copy-button:hover {
+.copy-button:hover,
+.copy-button.is-copied,
+.copy-icon.is-copied {
   background: var(--green-mid);
+}
+.copy-icon.is-copied {
+  color: var(--white);
 }
 .copy-button:focus-visible,
 .copy-icon:focus-visible {
@@ -935,9 +997,29 @@ pre {
   color: var(--green-mid);
   font-size: 19px;
   line-height: 1;
+  transition: transform 240ms var(--ease-out);
 }
 .faq-list details[open] summary > span {
   transform: rotate(45deg);
+}
+@supports (interpolate-size: allow-keywords) and
+  (transition-behavior: allow-discrete) {
+  .faq-list details {
+    interpolate-size: allow-keywords;
+  }
+  .faq-list details::details-content {
+    block-size: 0;
+    opacity: 0;
+    overflow: clip;
+    transition:
+      block-size 240ms var(--ease-out),
+      opacity 180ms ease,
+      content-visibility 240ms allow-discrete;
+  }
+  .faq-list details[open]::details-content {
+    block-size: auto;
+    opacity: 1;
+  }
 }
 .faq-list details p {
   color: var(--muted);
@@ -1271,6 +1353,23 @@ pre {
   .search-box {
     width: 100%;
     padding: 10px;
+  }
+  .search-box input {
+    /* Avoid iOS auto-zoom when focusing the search field. */
+    font-size: 16px;
+    min-block-size: 24px;
+  }
+  .filter,
+  .config-tabs button {
+    min-block-size: 44px;
+  }
+  .copy-button,
+  .copy-icon {
+    min-block-size: 44px;
+    min-inline-size: 44px;
+  }
+  .code-block {
+    padding-top: 64px;
   }
   .tools-grid {
     grid-template-columns: 1fr 1fr;
@@ -1696,7 +1795,8 @@ pre {
   }
   *,
   *:before,
-  *:after {
+  *:after,
+  .faq-list details::details-content {
     transition: none !important;
     animation: none !important;
   }
