@@ -164,7 +164,9 @@ pre {
 .header-inner nav a {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   min-block-size: 44px;
+  min-inline-size: 44px;
 }
 .header-inner nav a[aria-current="location"],
 .header-inner nav a:hover,
@@ -819,6 +821,7 @@ pre {
 }
 .config-window {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   border: 1px solid var(--line);
   border-radius: 5px;
   background: var(--paper);
@@ -833,6 +836,7 @@ pre {
   padding: 0 22px;
 }
 .config-tabs button {
+  min-inline-size: 44px;
   background: transparent;
   border: 0;
   border-bottom: 2px solid transparent;
@@ -847,6 +851,7 @@ pre {
 .config-panel {
   grid-area: 2 / 1;
   align-self: start;
+  min-width: 0;
   padding: 19px 20px 12px;
 }
 /* Keep the tallest configuration in flow: switching tabs must not move the page.
@@ -891,6 +896,9 @@ pre {
 .copy-button.is-copied,
 .copy-icon.is-copied {
   background: var(--green-mid);
+}
+.copy-icon.is-copied {
+  color: var(--white);
 }
 .copy-button:focus-visible,
 .copy-icon:focus-visible {
