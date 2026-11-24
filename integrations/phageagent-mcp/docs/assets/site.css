@@ -69,6 +69,9 @@ summary {
 .config-tabs button,
 .copy-button,
 .copy-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   transition:
     color 180ms ease,
     background-color 180ms ease,

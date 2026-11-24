@@ -161,7 +161,7 @@ for (const button of document.querySelectorAll(
     }
     feedbackTimer = setTimeout(() => {
       button.classList.remove("is-copied");
-      button.textContent = label;
+      if (button.classList.contains("copy-button")) button.textContent = label;
     }, 2000);
     announce(
       copied ? "已复制到剪贴板" : "复制未获浏览器允许，请选中文本手动复制",
