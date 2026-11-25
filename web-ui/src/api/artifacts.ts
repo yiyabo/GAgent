@@ -17,6 +17,7 @@ class ArtifactsApi extends BaseApi {
       limit?: number;
       extensions?: string;
       pathPrefix?: string;
+      view?: 'workspace';
     }
   ): Promise<ArtifactListResponse> => {
     return this.get<ArtifactListResponse>(`/artifacts/sessions/${sessionId}`, {
@@ -25,6 +26,7 @@ class ArtifactsApi extends BaseApi {
       limit: options?.limit,
       extensions: options?.extensions,
       path_prefix: options?.pathPrefix,
+      view: options?.view,
     });
   };
 

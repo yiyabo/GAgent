@@ -29,6 +29,10 @@ from .session_dirs import (
 )
 
 _INTERNAL_FILE_NAMES = frozenset({SOURCE_OWNERSHIP_MAP, ".DS_Store", "Thumbs.db"})
+_WORKSPACE_INTERNAL_DIRS = frozenset({"tool_outputs", "scratch", "uploads", "subagents"})
+_WORKSPACE_INTERNAL_FILES = frozenset(
+    {"artifacts/events.jsonl", "artifacts/events.jsonl.lock", "artifacts/registry.json"}
+)
 
 
 def _facade() -> Any:
@@ -331,7 +335,15 @@ def _iter_items(
     extensions: Optional[List[str]] = None,
     hidden_prefixes: Optional[List[str]] = None,
     hidden_check_prefix: str = "",
+    workspace_view: bool = False,
 ) -> List[ArtifactItem]:
+    """Walk *base_dir* into a flat file listing.
+
+    ``workspace_view`` lists a whole session directory as one user-facing
+    file list: runtime bookkeeping (tool call records, kernels, uploads,
+    dot-files, the artifact event log) is left out so only produced files
+    remain.
+    """
     items: List[ArtifactItem] = []
     base_dir = base_dir.resolve()
 
@@ -354,8 +366,12 @@ def _iter_items(
 
     _SKIP_FILE_NAMES = _INTERNAL_FILE_NAMES
 
-    def _should_skip_dir(dir_path: Path) -> bool:
+    def _should_skip_dir(dir_path: Path, depth: int) -> bool:
         name = dir_path.name
+        if workspace_view and (
+            name.startswith(".") or (depth == 0 and name in _WORKSPACE_INTERNAL_DIRS)
+        ):
+            return True
         if name in _SKIP_DIR_NAMES:
             return True
         if any(name.startswith(prefix) for prefix in _SKIP_DIR_PREFIXES):
@@ -391,7 +407,7 @@ def _iter_items(
                 continue
 
             if path.is_dir():
-                if _should_skip_dir(path):
+                if _should_skip_dir(path, depth):
                     continue
                 if include_dirs:
                     items.append(
@@ -410,6 +426,10 @@ def _iter_items(
             if extensions and ext not in extensions:
                 continue
             if path.name in _SKIP_FILE_NAMES:
+                continue
+            if workspace_view and (
+                path.name.startswith(".") or normalized_rel in _WORKSPACE_INTERNAL_FILES
+            ):
                 continue
 
             stat = path.stat()

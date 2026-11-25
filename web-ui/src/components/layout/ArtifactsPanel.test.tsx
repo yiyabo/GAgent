@@ -130,15 +130,13 @@ describe('ArtifactsPanel', () => {
     mockedDownloadSessionBatch.mockResolvedValue(undefined);
   });
 
-  it('opens raw file preview using sourcePath instead of trimmed display path', async () => {
+  it('opens raw file preview using sourcePath', async () => {
     renderPanel();
-
-    fireEvent.click(screen.getByRole('radio', { name: 'Raw Files' }));
 
     await waitFor(() => {
       expect(mockedArtifactsApi.listSessionArtifacts).toHaveBeenCalledWith(
         'session_1776695619644_hb1elmfc0',
-        expect.objectContaining({ pathPrefix: 'raw_files' })
+        expect.objectContaining({ view: 'workspace' })
       );
     });
 
@@ -158,23 +156,55 @@ describe('ArtifactsPanel', () => {
     });
   });
 
-  it('defaults to Raw Files when the session has no plan tasks', async () => {
-    useTasksStore.setState({
-      tasks: [],
-      selectedTaskId: null,
-      selectedTask: null,
+  it('shows deliverables and workspace files in one list without duplicating published sources', async () => {
+    useTasksStore.setState({ tasks: [], selectedTaskId: null, selectedTask: null } as any);
+    mockedArtifactsApi.listSessionDeliverables.mockResolvedValue({
+      session_id: 'session_1776695619644_hb1elmfc0',
+      scope: 'latest',
+      root_path: 'deliverables/latest',
+      count: 1,
+      items: [
+        {
+          name: 'categories.png',
+          path: 'image_tabular/categories.png',
+          extension: 'png',
+          size: 10,
+          module: 'image_tabular',
+          status: 'final',
+          source_path: '/srv/runtime/session_1776695619644_hb1elmfc0/results/categories.png',
+        },
+      ],
+      modules: {},
+      paper_status: {},
+      release_state: 'final',
+      public_release_ready: true,
+      hidden_artifact_prefixes: [],
+      available_versions: [],
+    } as any);
+    mockedArtifactsApi.listSessionArtifacts.mockResolvedValue({
+      session_id: 'session_1776695619644_hb1elmfc0',
+      root_path: '',
+      count: 2,
+      items: [
+        { name: 'categories.png', path: 'results/categories.png', type: 'file', size: 10, extension: 'png' },
+        { name: 'screening.tsv', path: 'results/phagescope/screening.tsv', type: 'file', size: 5, extension: 'tsv' },
+      ],
     } as any);
 
     renderPanel();
 
-    await waitFor(() => {
-      expect(mockedArtifactsApi.listSessionArtifacts).toHaveBeenCalledWith(
-        'session_1776695619644_hb1elmfc0',
-        expect.objectContaining({ pathPrefix: 'raw_files' })
-      );
-    });
+    expect(await screen.findByText('screening.tsv')).toBeInTheDocument();
+    expect(screen.getAllByText('categories.png')).toHaveLength(1);
+    expect(screen.queryByRole('radio')).not.toBeInTheDocument();
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument();
 
-    expect(screen.getByText(/No plan bound/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /download\s*all/i }));
+    await waitFor(() => {
+      expect(mockedDownloadSessionBatch).toHaveBeenCalledWith('session_1776695619644_hb1elmfc0', [
+        { path: 'image_tabular/categories.png', scope: 'deliverables' },
+        { path: 'results/phagescope/screening.tsv', scope: 'raw' },
+      ]);
+    });
   });
 
   it('opens a deliverable requested before the panel mounted, even without plan tasks', async () => {
@@ -194,27 +224,24 @@ describe('ArtifactsPanel', () => {
     await waitFor(() => {
       expect(screen.getAllByText('report.md').length).toBeGreaterThan(1);
     });
-    expect(screen.queryByText(/No plan bound/i)).not.toBeInTheDocument();
     expect(useLayoutStore.getState().artifactFocusRequest).toBeNull();
   });
 
-  it('defaults raw browsing to all raw files and can toggle back to the selected task subtree', async () => {
+  it('defaults to every session file and can toggle back to the selected task subtree', async () => {
     renderPanel();
 
-    fireEvent.click(screen.getByRole('radio', { name: 'Raw Files' }));
-
-    expect(await screen.findByText('Raw Files · All Tasks')).toBeInTheDocument();
+    expect(await screen.findByText('Session Files')).toBeInTheDocument();
 
     await waitFor(() => {
       expect(mockedArtifactsApi.listSessionArtifacts).toHaveBeenCalledWith(
         'session_1776695619644_hb1elmfc0',
-        expect.objectContaining({ pathPrefix: 'raw_files' })
+        expect.objectContaining({ view: 'workspace' })
       );
     });
 
-    fireEvent.click(screen.getByRole('switch', { name: 'All Raw Files' }));
+    fireEvent.click(screen.getByRole('switch', { name: 'All Tasks' }));
 
-    expect(await screen.findByText('Raw Files · Task #34')).toBeInTheDocument();
+    expect(await screen.findByText('Session Files · Task #34')).toBeInTheDocument();
 
     await waitFor(() => {
       expect(mockedArtifactsApi.listSessionArtifacts).toHaveBeenLastCalledWith(
@@ -228,10 +255,9 @@ describe('ArtifactsPanel', () => {
     useLanguageStore.setState({ language: 'zh-CN' });
     renderPanel();
 
-    expect(await screen.findByRole('radio', { name: '原始文件' })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: '交付物' })).toBeInTheDocument();
+    expect(await screen.findByText('会话文件')).toBeInTheDocument();
     expect(screen.getByPlaceholderText('搜索文件路径')).toBeInTheDocument();
-    expect(screen.queryByText('Raw Files')).not.toBeInTheDocument();
+    expect(screen.queryByText('Session Files')).not.toBeInTheDocument();
   });
 
   describe('batch download', () => {
@@ -269,7 +295,7 @@ describe('ArtifactsPanel', () => {
       });
     });
 
-    it('Download All calls downloadSessionBatch with deliverable entries using item.path', async () => {
+    it('Download All sends deliverables and workspace files with their own scope', async () => {
       setupDeliverableItems();
       renderPanel();
 
@@ -284,6 +310,7 @@ describe('ArtifactsPanel', () => {
           [
             { path: 'report.md', scope: 'deliverables' },
             { path: 'figures/figure.png', scope: 'deliverables' },
+            { path: 'raw_files/task_1/task_8/task_34/merge/coverage_report.json', scope: 'raw' },
           ]
         );
       });
@@ -292,9 +319,7 @@ describe('ArtifactsPanel', () => {
     it('Download All calls downloadSessionBatch with raw entries using item.sourcePath', async () => {
       renderPanel();
 
-      fireEvent.click(screen.getByRole('radio', { name: 'Raw Files' }));
-
-      await screen.findByText('coverage_report.json');
+        await screen.findByText('coverage_report.json');
 
       const btn = screen.getByRole('button', { name: /download\s*all/i });
       fireEvent.click(btn);
@@ -358,6 +383,12 @@ describe('ArtifactsPanel', () => {
     });
 
     it('disables Download All when no files are visible', async () => {
+      mockedArtifactsApi.listSessionArtifacts.mockResolvedValue({
+        session_id: 'session_1776695619644_hb1elmfc0',
+        root_path: '',
+        count: 0,
+        items: [],
+      } as any);
       renderPanel();
 
       await waitFor(() => {

@@ -6,7 +6,6 @@ import {
   Button,
   Empty,
   Input,
-  Segmented,
   Space,
   Switch,
   Tag,
@@ -88,7 +87,7 @@ interface ArtifactsPanelProps {
   sessionId: string | null;
 }
 
-type PanelMode = 'deliverables' | 'raw';
+type FileSourceType = 'deliverables' | 'raw';
 
 type ArtifactTreeNode = DataNode & {
   filePath?: string;
@@ -102,7 +101,8 @@ interface DisplayFileItem {
   extension?: string | null;
   size?: number;
   module?: string;
-  sourceType: PanelMode;
+  sourceType: FileSourceType;
+  originPath?: string;
   status?: string;
 }
 
@@ -115,7 +115,22 @@ const isNotFoundError = (error: unknown): boolean => {
   return status === 404 || message.includes('404') || message.includes('not found');
 };
 
-const trimDisplayPrefix = (path: string, prefix: string | null): string => {
+const SESSION_RELATIVE_ROOTS = ['raw_files/', 'results/', 'artifacts/'];
+
+// Deliverables published from a workspace file record where it came from; map
+// that back to the session-relative path the workspace listing (and chat) uses.
+const sessionRelativeSourcePath = (sourcePath?: string | null, sessionId?: string | null): string => {
+  const normalized = String(sourcePath ?? '').replace(/\\/g, '/').replace(/^\.\//, '');
+  if (!normalized) return '';
+  if (SESSION_RELATIVE_ROOTS.some((root) => normalized.startsWith(root))) return normalized;
+  const parts = normalized.split('/');
+  const sessionIndex = parts.findIndex(
+    (part) => Boolean(sessionId) && (part === sessionId || part === `session_${sessionId}`)
+  );
+  return sessionIndex >= 0 ? parts.slice(sessionIndex + 1).join('/') : '';
+};
+
+const trimDisplayPrefix = (path: string, prefix: string | null | undefined): string => {
   const normalizedPath = String(path ?? '').trim().replace(/^\/+/, '');
   const normalizedPrefix = String(prefix ?? '').trim().replace(/^\/+|\/+$/g, '');
   if (!normalizedPath || !normalizedPrefix) {
@@ -139,8 +154,6 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
     selectedTaskId: state.selectedTaskId,
   }));
   const hasPlanTasks = Array.isArray(tasks) && tasks.length > 0;
-  const [mode, setMode] = React.useState<PanelMode>('raw');
-  const [userPickedMode, setUserPickedMode] = React.useState(false);
   const [showAllRawFiles, setShowAllRawFiles] = React.useState(true);
   const [keyword, setKeyword] = React.useState('');
   const [selectedPath, setSelectedPath] = React.useState<string | null>(null);
@@ -151,12 +164,8 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
   const focusRequest = useLayoutStore((state) => state.artifactFocusRequest);
   const clearArtifactFocus = useLayoutStore((state) => state.clearArtifactFocus);
   const [pendingFocusPath, setPendingFocusPath] = React.useState<string | null>(null);
-  const focusPinnedModeRef = React.useRef(false);
 
   React.useEffect(() => {
-    focusPinnedModeRef.current = false;
-    setUserPickedMode(false);
-    setMode(hasPlanTasks ? 'deliverables' : 'raw');
     setShowAllRawFiles(true);
     setSelectedPath(null);
     setPreviewOpen(false);
@@ -168,23 +177,10 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
     if (!focusRequest || !sessionId || focusRequest.sessionId !== sessionId) {
       return;
     }
-    focusPinnedModeRef.current = true;
-    setUserPickedMode(true);
-    setMode('deliverables');
     setKeyword('');
     setPendingFocusPath(focusRequest.path);
     clearArtifactFocus(focusRequest.nonce);
   }, [clearArtifactFocus, focusRequest, sessionId]);
-
-  React.useEffect(() => {
-    if (userPickedMode || focusPinnedModeRef.current) {
-      return;
-    }
-    if (!hasPlanTasks) {
-      setMode('raw');
-      setShowAllRawFiles(true);
-    }
-  }, [hasPlanTasks, userPickedMode]);
 
   const taskScopedRawPathPrefix = React.useMemo(() => {
     if (!hasPlanTasks || selectedTaskId == null) {
@@ -215,7 +211,8 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
     return ['raw_files', ...ancestors.map((id) => `task_${id}`), `task_${selectedTaskId}`].join('/');
   }, [selectedTaskId, tasks]);
 
-  const rawPathPrefix = !hasPlanTasks || showAllRawFiles ? 'raw_files' : taskScopedRawPathPrefix;
+  const taskScoped = hasPlanTasks && !showAllRawFiles && taskScopedRawPathPrefix !== 'raw_files';
+  const rawPathPrefix = taskScoped ? taskScopedRawPathPrefix : undefined;
 
   const {
     data: rawData,
@@ -227,12 +224,12 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
     queryKey: ['artifacts', 'raw', sessionId, rawPathPrefix],
     queryFn: () =>
       artifactsApi.listSessionArtifacts(sessionId ?? '', {
-        maxDepth: 6,
+        maxDepth: 8,
         includeDirs: false,
         limit: 3000,
-        pathPrefix: rawPathPrefix,
+        ...(rawPathPrefix ? { pathPrefix: rawPathPrefix } : { view: 'workspace' as const }),
       }),
-    enabled: Boolean(sessionId && mode === 'raw'),
+    enabled: Boolean(sessionId),
     refetchInterval: 10000,
   });
 
@@ -250,34 +247,40 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
         includeDraft: false,
         limit: 100,
       }),
-    enabled: Boolean(sessionId && mode === 'deliverables'),
+    enabled: Boolean(sessionId),
     refetchInterval: 10000,
   });
 
   const displayItems = React.useMemo<DisplayFileItem[]>(() => {
-    if (mode === 'deliverables') {
-      return (deliverableData?.items ?? []).map((item: DeliverableItem) => ({
-        path: item.path,
-        sourcePath: item.path,
-        name: item.name,
-        extension: item.extension,
-        size: item.size,
-        module: item.module,
-        sourceType: 'deliverables',
-        status: item.status,
-      }));
-    }
-    return (rawData?.items ?? [])
-      .filter((item: ArtifactItem) => item.type === 'file')
+    const published = (deliverableData?.items ?? [])
+      .map((item: DeliverableItem) => {
+        const originPath = sessionRelativeSourcePath(item.source_path, sessionId);
+        return {
+          path: originPath || item.path,
+          sourcePath: item.path,
+          originPath: originPath || undefined,
+          name: item.name,
+          extension: item.extension,
+          size: item.size,
+          module: item.module,
+          sourceType: 'deliverables' as const,
+          status: item.status,
+        };
+      })
+      .filter((item) => !rawPathPrefix || item.originPath?.startsWith(`${rawPathPrefix}/`));
+    const publishedOrigins = new Set(published.map((item) => item.originPath).filter(Boolean));
+    const workspace = (rawData?.items ?? [])
+      .filter((item: ArtifactItem) => item.type === 'file' && !publishedOrigins.has(item.path))
       .map((item: ArtifactItem) => ({
-        path: trimDisplayPrefix(item.path, rawPathPrefix) || item.name,
+        path: (rawPathPrefix ? trimDisplayPrefix(item.path, rawPathPrefix) : item.path) || item.name,
         sourcePath: item.path,
         name: item.name,
         extension: item.extension,
         size: item.size,
-        sourceType: 'raw',
+        sourceType: 'raw' as const,
       }));
-  }, [deliverableData?.items, mode, rawData?.items, rawPathPrefix]);
+    return [...published, ...workspace];
+  }, [deliverableData?.items, rawData?.items, rawPathPrefix, sessionId]);
 
   const filteredItems = React.useMemo(() => {
     const normalizedKeyword = keyword.trim().toLowerCase();
@@ -311,14 +314,17 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
   };
 
   React.useEffect(() => {
-    if (!pendingFocusPath || mode !== 'deliverables' || deliverableFetching || !deliverableData) {
+    if (!pendingFocusPath || deliverableFetching || rawFetching || !deliverableData || !rawData) {
       return;
     }
     setPendingFocusPath(null);
-    if (displayItems.some((item) => item.sourcePath === pendingFocusPath)) {
-      handleSelectFile(pendingFocusPath);
+    const target = displayItems.find(
+      (item) => item.sourcePath === pendingFocusPath || item.originPath === pendingFocusPath
+    );
+    if (target) {
+      handleSelectFile(target.sourcePath);
     }
-  }, [deliverableData, deliverableFetching, displayItems, mode, pendingFocusPath]);
+  }, [deliverableData, deliverableFetching, displayItems, pendingFocusPath, rawData, rawFetching]);
 
   const handleClosePreview = () => {
     setPreviewOpen(false);
@@ -340,7 +346,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
         throw new Error('filepath');
       }
       if (selectedItem.sourceType === 'deliverables') {
-        return artifactsApi.getSessionDeliverableText(sessionId ?? '', selectedItem.path, {
+        return artifactsApi.getSessionDeliverableText(sessionId ?? '', selectedItem.sourcePath, {
           maxBytes: 200000,
         });
       }
@@ -364,7 +370,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
       }
       return artifactsApi.renderArtifact(
         sessionId ?? '',
-        selectedItem.sourceType === 'raw' ? selectedItem.sourcePath : selectedItem.path,
+        selectedItem.sourcePath,
         {
         sourceType: selectedItem.sourceType,
         }
@@ -469,27 +475,24 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
     return roots;
   }, [filteredItems]);
 
-  const activeError = mode === 'deliverables' ? deliverableError : rawError;
-  const isLoading = mode === 'deliverables' ? deliverableLoading : rawLoading;
-  const isFetching = mode === 'deliverables' ? deliverableFetching : rawFetching;
+  const activeError = deliverableError ?? rawError;
+  const isLoading = deliverableLoading || rawLoading;
+  const isFetching = deliverableFetching || rawFetching;
 
   const fileUrl = selectedItem
     ? selectedItem.sourceType === 'deliverables'
-      ? buildDeliverableFileUrl(sessionId!, selectedItem.path)
+      ? buildDeliverableFileUrl(sessionId!, selectedItem.sourcePath)
       : buildArtifactFileUrl(sessionId!, selectedItem.sourcePath)
     : null;
 
   const handleRefetch = () => {
-    if (mode === 'deliverables') {
-      void refetchDeliverables();
-      return;
-    }
+    void refetchDeliverables();
     void refetchRaw();
   };
 
   const toBatchEntries = (items: DisplayFileItem[]): BatchDownloadEntry[] =>
     items.map((item) => ({
-      path: item.sourceType === 'deliverables' ? item.path : item.sourcePath,
+      path: item.sourcePath,
       scope: item.sourceType,
     }));
 
@@ -565,29 +568,23 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
           <div className="artifacts-panel-title-row">
             <div className="artifacts-panel-title-block">
               <div className="artifacts-panel-title">
-                {mode === 'deliverables'
-                  ? t('artifactsPanel.deliverables')
-                  : showAllRawFiles
-                  ? t('artifactsPanel.rawFilesAll')
-                  : selectedTaskId != null
-                  ? t('artifactsPanel.rawFilesTask', { id: selectedTaskId })
-                  : t('artifactsPanel.rawFiles')}
+                {taskScoped && selectedTaskId != null
+                  ? t('artifactsPanel.filesTask', { id: selectedTaskId })
+                  : t('artifactsPanel.files')}
               </div>
-              {mode === 'deliverables' && (
-                <div className="artifacts-panel-subtitle">
-                  <span>
-                    {showPaperProgress
-                      ? t('artifactsPanel.fileCountPaper', { count: deliverableData?.count ?? 0, done: paperCompleted, total: paperTotal })
-                      : t('artifactsPanel.fileCount', { count: deliverableData?.count ?? 0 })}
-                  </span>
-                  {releaseStateMeta && (
-                    <Tag icon={releaseStateMeta.icon} color={releaseStateMeta.color} style={{ marginInlineEnd: 0 }}>
-                      {releaseStateMeta.label}
-                    </Tag>
-                  )}
-                </div>
-              )}
-              {mode === 'deliverables' && releaseSummary ? (
+              <div className="artifacts-panel-subtitle">
+                <span>
+                  {showPaperProgress
+                    ? t('artifactsPanel.fileCountPaper', { count: displayItems.length, done: paperCompleted, total: paperTotal })
+                    : t('artifactsPanel.fileCount', { count: displayItems.length })}
+                </span>
+                {releaseStateMeta && (deliverableData?.count ?? 0) > 0 && (
+                  <Tag icon={releaseStateMeta.icon} color={releaseStateMeta.color} style={{ marginInlineEnd: 0 }}>
+                    {releaseStateMeta.label}
+                  </Tag>
+                )}
+              </div>
+              {releaseSummary ? (
                 <div className="artifacts-panel-hint" title={releaseSummary}>
                   {releaseSummary}
                 </div>
@@ -632,24 +629,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
             </Tooltip>
           </div>
 
-          <Segmented
-            className="artifacts-panel-segmented"
-            value={mode}
-            options={[
-              { label: t('artifactsPanel.deliverables'), value: 'deliverables' },
-              { label: t('artifactsPanel.rawFiles'), value: 'raw' },
-            ]}
-            onChange={(value) => {
-              setUserPickedMode(true);
-              setMode(value as PanelMode);
-              setSelectedPath(null);
-              setPreviewOpen(false);
-              setKeyword('');
-            }}
-            block
-          />
-
-          {mode === 'raw' && (
+          {hasPlanTasks && (
             <div className="artifacts-panel-raw-filter">
               <Switch
                 size="small"
@@ -664,9 +644,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
               />
               <span className="artifacts-panel-raw-label">{t('artifactsPanel.allRawFiles')}</span>
               <span className="artifacts-panel-hint">
-                {!hasPlanTasks
-                  ? t('artifactsPanel.hintNoPlan')
-                  : showAllRawFiles
+                {showAllRawFiles
                   ? t('artifactsPanel.hintFullTree')
                   : selectedTaskId != null
                   ? t('artifactsPanel.hintTaskOnly', { id: selectedTaskId })
