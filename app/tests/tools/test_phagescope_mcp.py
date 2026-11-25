@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from app.database import get_db
-from app.services.phagescope_mcp import limits, store, tools
+from app.services.phagescope_mcp import limits, local_tools, store, tools
 
 ACCEPT = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
 PROTOCOL = "2025-06-18"
@@ -181,7 +181,7 @@ def test_mcp_initialize_and_lists_read_only_tools(mcp_client):
     assert init.status_code == 200, init.text
     assert init.json()["result"]["serverInfo"]["name"] == "phageagent"
     listed = _rpc(client, token, "tools/list").json()["result"]["tools"]
-    assert {t["name"] for t in listed} == set(tools.TOOLS_BY_NAME)
+    assert {t["name"] for t in listed} == set(tools.TOOLS_BY_NAME) | set(local_tools.LOCAL_TOOLS_BY_NAME)
     assert all(t["annotations"]["readOnlyHint"] and not t["annotations"]["destructiveHint"] for t in listed)
     resources = _rpc(client, token, "resources/list").json()["result"]["resources"]
     assert resources[0]["uri"] == "phageagent://reference/query-guide"

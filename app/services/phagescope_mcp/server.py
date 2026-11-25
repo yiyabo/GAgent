@@ -41,7 +41,7 @@ from starlette.types import Receive, Scope, Send
 from app.services.foundation.settings import get_settings
 from tool_box.tools_impl.phagescope_data.config import PhageScopeDataError
 
-from . import analysis, store
+from . import analysis, local_tools, store
 from .limits import limiter
 from .tools import (
     FEATURE_TYPES,
@@ -119,7 +119,7 @@ async def _list_tools(ctx: ServerRequestContext, params: Optional[PaginatedReque
     if anonymous or store.SCOPE_DATA_READ in token.scopes:
         tools += [
             Tool(name=t.name, title=t.title, description=t.description, input_schema=t.input_schema, annotations=annotations)
-            for t in TOOLS
+            for t in (*TOOLS, *local_tools.LOCAL_TOOLS)
         ]
     settings = get_settings()
     show_analysis = _analysis_allowed(token) or (
@@ -175,6 +175,44 @@ async def _call_analysis_tool(token: store.McpToken, name: str, arguments: dict[
             logger.exception("PhageScope MCP audit write failed")
 
 
+async def _call_local_tool(token: store.McpToken, name: str, arguments: dict[str, Any]) -> CallToolResult:
+    spec = local_tools.LOCAL_TOOLS_BY_NAME[name]
+    started = time.monotonic()
+    status, code, nbytes = "error", None, 0
+    try:
+        if store.SCOPE_DATA_READ not in token.scopes:
+            code = "insufficient_scope"
+            return _error(code, "Token lacks the data:read scope.")
+        try:
+            data = await spec.run(arguments)
+        except ToolInputError as exc:
+            code = _public_code(exc.code)
+            return _error(code, str(exc))
+        except Exception:
+            logger.exception("PhageScope MCP local tool %s failed", name)
+            code = "internal_error"
+            return _error(code, f"{name} failed unexpectedly.")
+        text = json.dumps(
+            {"tool": name, "source": local_tools.SOURCE, "data": data}, ensure_ascii=False, default=str
+        )
+        nbytes = len(text.encode("utf-8"))
+        status = "ok"
+        return CallToolResult(content=[TextContent(type="text", text=text)], is_error=False)
+    finally:
+        try:
+            store.record_audit(
+                token=token,
+                tool=name,
+                arguments=arguments,
+                status=status,
+                error_code=code,
+                duration_ms=int((time.monotonic() - started) * 1000),
+                result_bytes=nbytes,
+            )
+        except Exception:
+            logger.exception("PhageScope MCP audit write failed")
+
+
 async def _call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) -> CallToolResult:
     token = _token_for(ctx)
     if token is None:
@@ -184,6 +222,8 @@ async def _call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) -
     arguments = dict(params.arguments or {})
     if spec is None and params.name in analysis.ANALYSIS_TOOLS_BY_NAME:
         return await _call_analysis_tool(token, params.name, arguments)
+    if spec is None and params.name in local_tools.LOCAL_TOOLS_BY_NAME:
+        return await _call_local_tool(token, params.name, arguments)
     if spec is None:
         return _error("unknown_tool", f"Unknown tool: {params.name}")
     if store.SCOPE_DATA_READ not in token.scopes:

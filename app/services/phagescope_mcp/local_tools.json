@@ -1,0 +1,69 @@
+{
+  "about": "Docker tools PhageAgent MCP recommends for analysis on the user's own machine. Tools come from tool_box/bio_tools/tools_config.json (the images PhageAgent runs itself); `packages` adds images that exist only for local use (same shape as a tools_config.json entry), `overrides` changes fields of a tool for local use, `workflows` are ready-made plans.",
+  "packages": {},
+  "overrides": {
+    "prodigal": {"image": "biocontainers/prodigal:v1-2.6.3-4-deb_cv1"},
+    "dorado": {"gpu": true},
+    "virsorter2": {
+      "env": ["SNAKEMAKE_CONDA_PREFIX=/work/.conda_envs", "CONDA_PKGS_DIRS=/work/.conda/pkgs"],
+      "database": {"size": "~12 GB", "dir": "virsorter2/db", "setup": "virsorter setup -d /db/db -j 4"}
+    },
+    "checkv": {"database": {"size": "~6.4 GB", "dir": "checkv/checkv-db-v1.5", "setup": "checkv download_database /db", "note": "The download creates a checkv-db-v* folder; mount that folder (the version may differ)."}},
+    "genomad": {"database": {"size": "~2.7 GB", "dir": "genomad/genomad_db", "setup": "genomad download-database /db"}},
+    "iphop": {"database": {"dir": "iphop/Aug_2023_pub_rw", "setup": "iphop download --db_dir /db", "note": "The iPHoP database is very large; check free disk space and https://bitbucket.org/srouxjgi/iphop first."}},
+    "bakta": {"database": {"size": "~71 GB full, a few GB light", "dir": "bakta/db-light", "setup": "bakta_db download --output /db --type light", "note": "--type full creates db/ instead of db-light/ and gives better annotation."}},
+    "checkm": {"database": {"size": "~1.7 GB", "dir": "checkm", "host_setup": "mkdir -p \"$PHAGEAGENT_DB/checkm\" && curl -L https://data.ace.uq.edu.au/public/CheckM_databases/checkm_data_2015_01_16.tar.gz | tar -xz -C \"$PHAGEAGENT_DB/checkm\""}},
+    "gtdbtk": {"database": {"size": "~105 GB", "dir": "gtdbtk/gtdbtk_r220_data", "note": "Download the GTDB-Tk R220 reference package (https://ecogenomics.github.io/GTDBTk/installing/) and unpack it into this folder."}}
+  },
+  "workflows": {
+    "phage_discovery": {
+      "title": "Find phage contigs and check their quality",
+      "input": "Assembled contigs or a genome, nucleotide FASTA (e.g. contigs.fna)",
+      "steps": [
+        {"tool": "genomad", "operation": "end_to_end", "params": {"output": "genomad_out"}},
+        {"tool": "checkv", "operation": "end_to_end", "input": "genomad_out/{sample}_summary/{sample}_virus.fna", "params": {"output": "checkv_out"}}
+      ],
+      "follow_up": ["Look up close relatives of the phage contigs with similarity_search on their proteins.", "Compare hosts and lifestyles with search_phages / cohort_report."]
+    },
+    "phage_quality": {
+      "title": "Completeness and contamination of phage genomes",
+      "input": "Phage genomes or viral contigs, nucleotide FASTA",
+      "steps": [{"tool": "checkv", "operation": "end_to_end", "params": {"output": "checkv_out"}}]
+    },
+    "phage_gene_annotation": {
+      "title": "Predict genes and match them to PhageScope",
+      "input": "One phage genome, nucleotide FASTA",
+      "steps": [
+        {"tool": "seqkit", "operation": "stats_all"},
+        {"tool": "prodigal", "operation": "predict", "params": {"mode": "meta"}}
+      ],
+      "follow_up": ["Send up to 50 proteins from genes.faa to similarity_search to find PhageScope homologs, then search_families / get_structures for function and structure."]
+    },
+    "phage_host_prediction": {
+      "title": "Predict phage hosts",
+      "input": "Phage genomes, nucleotide FASTA",
+      "steps": [{"tool": "iphop", "operation": "predict", "params": {"output": "iphop_out"}}],
+      "follow_up": ["Without the iPHoP database, submit_analysis can run host prediction on PhageAgent instead."]
+    },
+    "nanopore_phage_assembly": {
+      "title": "Assemble phages from Nanopore reads",
+      "input": "Nanopore reads, FASTQ (e.g. reads.fastq.gz)",
+      "steps": [
+        {"tool": "nanoplot", "operation": "basic", "params": {"output": "nanoplot_out", "prefix": "{sample}_"}},
+        {"tool": "flye", "operation": "meta", "params": {"output": "flye_out"}},
+        {"tool": "genomad", "operation": "end_to_end", "input": "flye_out/assembly.fasta", "params": {"output": "genomad_out"}},
+        {"tool": "checkv", "operation": "end_to_end", "input": "genomad_out/assembly_summary/assembly_virus.fna", "params": {"output": "checkv_out"}}
+      ]
+    },
+    "illumina_virome": {
+      "title": "Viromes from paired-end Illumina reads",
+      "input": "Paired-end reads, two FASTQ files given as r1 and r2",
+      "steps": [
+        {"tool": "trim_galore", "operation": "trim_paired"},
+        {"tool": "megahit", "operation": "assemble", "params": {"r1": "{r1_trimmed}", "r2": "{r2_trimmed}", "output": "megahit_out"}},
+        {"tool": "genomad", "operation": "end_to_end", "input": "megahit_out/final.contigs.fa", "params": {"output": "genomad_out"}},
+        {"tool": "checkv", "operation": "end_to_end", "input": "genomad_out/final.contigs_summary/final.contigs_virus.fna", "params": {"output": "checkv_out"}}
+      ]
+    }
+  }
+}

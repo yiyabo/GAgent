@@ -6,9 +6,9 @@ responses). Design: `design/2026-11-19-phagescope-mcp.md` (phase 1).
 
 ## Tools
 
-Every token with `data:read` gets the 13 data tools (annotated read-only);
-`analysis:submit` adds the 6 analysis-task tools (`analysis.py`), 19 tools in
-all. Plus the resource `phageagent://reference/query-guide`.
+Every token with `data:read` gets the 13 data tools (annotated read-only)
+and the 2 local-analysis tools (`local_tools.py`); `analysis:submit` adds the
+6 analysis-task tools (`analysis.py`), 21 tools in all. Plus the resource `phageagent://reference/query-guide`.
 
 <!-- tools:begin -->
 - `catalog_overview`
@@ -24,6 +24,8 @@ all. Plus the resource `phageagent://reference/query-guide`.
 - `get_structures`
 - `similarity_search`
 - `get_similarity_result`
+- `list_local_tools`
+- `plan_local_analysis`
 - `submit_analysis`
 - `get_analysis_status`
 - `get_analysis_result`
@@ -31,6 +33,17 @@ all. Plus the resource `phageagent://reference/query-guide`.
 - `cancel_analysis`
 - `list_analyses`
 <!-- tools:end -->
+
+## Local analysis
+
+`list_local_tools` and `plan_local_analysis` let the client agent plan work on
+the user's own machine: they return Docker images, database setup and
+`docker run` commands, and run nothing on the server. The catalog is
+`tool_box/bio_tools/tools_config.json` (the images PhageAgent runs itself)
+merged with `local_tools.json`, where `packages` adds local-only images (same
+shape as a `tools_config.json` entry), `overrides` changes fields for local
+use (image, GPU, env, database size and download command) and `workflows` holds
+the ready-made plans.
 
 Adding or removing a tool means updating this list and the Tools table in
 `integrations/phageagent-mcp/README.md`; `app/tests/tools/test_phagescope_mcp_docs.py`

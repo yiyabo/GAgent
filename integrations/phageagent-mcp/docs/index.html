@@ -14,7 +14,7 @@
     />
     <meta
       property="og:description"
-      content="19 个工具，从噬菌体数据检索到分析任务，在你熟悉的 Agent 中完成。"
+      content="21 个工具，从噬菌体数据检索到分析任务，在你熟悉的 Agent 中完成。"
     />
     <meta property="og:type" content="website" />
     <title>PhageAgent MCP · 让 AI Agent 接上噬菌体研究</title>
@@ -178,7 +178,7 @@
             ><strong>PhageAgent</strong>
           </div>
           <div class="visual-bottom">
-            <span>DATA → DISCOVERY</span><span>19 TOOLS / ONE CONNECTION</span>
+            <span>DATA → DISCOVERY</span><span>21 TOOLS / ONE CONNECTION</span>
           </div>
         </div>
       </section>
@@ -327,10 +327,10 @@
         <div class="section-heading">
           <div>
             <p class="eyebrow">02 / TOOLKIT</p>
-            <h2 id="tools-title">19 个工具。<br />从探索，到交付。</h2>
+            <h2 id="tools-title">21 个工具。<br />从探索，到交付。</h2>
           </div>
           <p>
-            13 个只读数据工具，6 个分析任务工具。<br />数据库查询不修改
+            13 个只读数据工具，2 个本地分析工具，6 个分析任务工具。<br />数据库查询不修改
             PhageScope 参考数据。
           </p>
         </div>
@@ -342,7 +342,7 @@
               data-filter="all"
               aria-pressed="true"
             >
-              全部 <span>19</span></button
+              全部 <span>21</span></button
             ><button
               class="filter"
               type="button"
@@ -367,6 +367,13 @@
             ><button
               class="filter"
               type="button"
+              data-filter="local"
+              aria-pressed="false"
+            >
+              本地分析 <span>2</span></button
+            ><button
+              class="filter"
+              type="button"
               data-filter="analysis"
               aria-pressed="false"
             >
@@ -388,7 +395,7 @@
           role="status"
           aria-live="polite"
         >
-          显示 19 个工具
+          显示 21 个工具
         </p>
         <div class="tools-grid" id="tools-grid">
           <article class="tool" data-category="genome">
@@ -461,6 +468,16 @@
             <span class="tool-kind">相似性搜索 / 只读数据</span>
             <h3><code>get_similarity_result</code></h3>
             <p>凭 search_id 查询搜索状态，分页获取命中结果。</p>
+          </article>
+          <article class="tool" data-category="local">
+            <span class="tool-kind">本地分析 / 只读</span>
+            <h3><code>list_local_tools</code></h3>
+            <p>列出可在本机运行的 Docker 生信工具和现成流程。</p>
+          </article>
+          <article class="tool" data-category="local">
+            <span class="tool-kind">本地分析 / 只读</span>
+            <h3><code>plan_local_analysis</code></h3>
+            <p>按本机资源生成镜像拉取、数据库下载和 docker run 命令。</p>
           </article>
           <article class="tool" data-category="analysis">
             <span class="tool-kind">分析任务</span>
