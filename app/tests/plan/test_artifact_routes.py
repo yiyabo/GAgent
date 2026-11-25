@@ -566,3 +566,53 @@ def test_list_session_artifacts_raw_files_view_unions_session_results(
     paths = [item.path for item in response.items]
     assert "raw_files/tmp/task_1/script.py" in paths
     assert "results/患者临床数据提取.csv" in paths
+
+
+def test_list_session_artifacts_workspace_view_lists_all_produced_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """The workspace view is the panel's single file list: every produced file
+    in the session (raw_files, results, artifacts outputs, top-level files),
+    without runtime bookkeeping."""
+    runtime_root = tmp_path / "runtime"
+    session_dir = runtime_root / "session_workspace_view"
+    files = {
+        "raw_files/task_1/report.md": True,
+        "results/figure.png": True,
+        "artifacts/plan_9/output/summary.tsv": True,
+        "pool.fasta": True,
+        "artifacts/events.jsonl": False,
+        "artifacts/registry.json": False,
+        "tool_outputs/job_1/step_1/result.json": False,
+        "scratch/code_mode/kernels/k1/runner.py": False,
+        "uploads/input.gbk": False,
+        ".render_cache/report.html": False,
+        "deliverables/latest/paper/report.md": False,
+        "_scratch/task_1/run_1/tmp.txt": False,
+    }
+    for rel in files:
+        target = session_dir / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("x", encoding="utf-8")
+
+    monkeypatch.setattr(artifact_routes, "RUNTIME_DIR", runtime_root)
+    monkeypatch.setattr(artifact_routes, "INFO_SESSIONS_DIR", tmp_path / "information_sessions")
+    monkeypatch.setattr(artifact_routes, "_ensure_session_access", _allow_access)
+    monkeypatch.setattr(artifact_routes, "_load_hidden_artifact_prefixes", lambda _sid: [])
+
+    response = asyncio.run(
+        artifact_routes.list_session_artifacts(
+            "session_workspace_view",
+            None,
+            max_depth=6,
+            include_dirs=False,
+            limit=100,
+            extensions=None,
+            path_prefix=None,
+            view="workspace",
+        )
+    )
+
+    paths = {item.path for item in response.items}
+    assert paths == {rel for rel, visible in files.items() if visible}

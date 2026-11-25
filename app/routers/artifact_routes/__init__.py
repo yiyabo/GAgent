@@ -151,6 +151,7 @@ async def list_session_artifacts(
     limit: int = Query(500, ge=1, le=5000),
     extensions: Optional[str] = Query(None),
     path_prefix: Optional[str] = Query(None),
+    view: Optional[Literal["workspace"]] = Query(None),
 ) -> ArtifactListResponse:
     _ensure_session_access(session_id, request)
     session_dir = _resolve_session_dir(session_id, purpose="raw")
@@ -190,6 +191,7 @@ async def list_session_artifacts(
         extensions=ext_list,
         hidden_prefixes=hidden_prefixes,
         hidden_check_prefix=normalized_prefix,
+        workspace_view=view == "workspace" and not normalized_prefix,
     )
 
     if normalized_prefix:
