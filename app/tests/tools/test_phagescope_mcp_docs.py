@@ -6,7 +6,7 @@ import importlib.util
 import json
 from pathlib import Path
 
-from app.services.phagescope_mcp import analysis, tools
+from app.services.phagescope_mcp import analysis, local_tools, tools
 
 from .test_phagescope_mcp import ACCEPT, PROTOCOL, _setenv, mcp_client  # noqa: F401
 
@@ -35,7 +35,7 @@ def test_public_docs_match_tools_list(mcp_client, monkeypatch):
     for name in ("PHAGESCOPE_MCP_ANON_DISCOVERY", "PHAGESCOPE_MCP_ANALYSIS_ENABLED", "PHAGESCOPE_MCP_OPEN_ACCESS"):
         _setenv(monkeypatch, name, "1")
     served = _served(client)
-    assert set(served) == set(tools.TOOLS_BY_NAME) | set(analysis.ANALYSIS_TOOLS_BY_NAME)
+    assert set(served) == set(tools.TOOLS_BY_NAME) | set(local_tools.LOCAL_TOOLS_BY_NAME) | set(analysis.ANALYSIS_TOOLS_BY_NAME)
     docs = {str(path.relative_to(ROOT)): path.read_text(encoding="utf-8") for path in DOCS}
     assert check.compare(served, docs) == []
 
