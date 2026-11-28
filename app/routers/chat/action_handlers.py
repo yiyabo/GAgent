@@ -946,6 +946,10 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
             if tool_context is not None:
                 params["tool_context"] = tool_context
 
+    elif tool_name == "phage_kg":
+        # The handler validates and clamps its own parameters.
+        pass
+
     elif _is_mounted_mcp_tool(tool_name):
         # The server's own input schema is the parameter contract, and the mount
         # handler drops anything that schema does not declare.

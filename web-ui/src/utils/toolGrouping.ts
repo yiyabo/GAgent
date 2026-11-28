@@ -39,6 +39,7 @@ const KIND_BY_TOOL: Record<string, ToolKind> = {
   document_reader: 'read',
   vision_reader: 'read',
   lightrag_query: 'knowledge',
+  phage_kg: 'knowledge',
   graph_rag: 'knowledge',
   code_executor: 'code',
   execute_code: 'code',

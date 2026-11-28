@@ -58,6 +58,11 @@ def code_executor_enabled() -> bool:
     return os.environ.get("CODE_EXECUTOR_ENABLED", "").strip() == "1"
 
 
+def phage_kg_enabled() -> bool:
+    """Whether ``phage_kg`` (PhageRAG literature knowledge graph) is offered."""
+    return os.environ.get("PHAGE_KG_ENABLED", "").strip() == "1"
+
+
 def phagescope_data_enabled() -> bool:
     """Whether ``phagescope_data`` (PhageScope V2 catalog & materializer) is offered."""
     return os.environ.get("PHAGESCOPE_DATA_ENABLED", "").strip() == "1"
@@ -234,8 +239,9 @@ def _build_registry() -> Dict[str, Dict[str, Any]]:
                 content["description"],
                 content["parameters"],
             )
-        elif name == "phagescope_data":
-            if not phagescope_data_enabled():
+        elif name in ("phagescope_data", "phage_kg"):
+            gate = phagescope_data_enabled if name == "phagescope_data" else phage_kg_enabled
+            if not gate():
                 continue
             registry[name] = _function_schema(
                 name,
@@ -436,6 +442,8 @@ def build_tool_schemas(available_tools: List[str]) -> List[Dict[str, Any]]:
         and "phagescope_data" in registry
     ):
         names.append("phagescope_data")
+    if phage_kg_enabled() and "phage_kg" not in names and "phage_kg" in registry:
+        names.append("phage_kg")
     schemas = []
     for name in names:
         schema = registry.get(name) or _mounted_schema(name)
@@ -471,6 +479,13 @@ def build_executor_tool_schemas(available_tools: Optional[List[str]] = None) -> 
         and "phagescope_data" in registry
     ):
         names.append("phagescope_data")
+    if (
+        available_tools is None
+        and phage_kg_enabled()
+        and "phage_kg" not in names
+        and "phage_kg" in registry
+    ):
+        names.append("phage_kg")
     schemas = []
     for name in names:
         schema = registry.get(name)

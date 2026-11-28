@@ -1192,6 +1192,13 @@ def _build_system_prompt(
             "\"hl_keywords\": [\"broad themes in English\"], \"mode\": \"mix\", \"top_k\": 5, \"max_chunks\": 12}. "
             "Always give both keyword lists: LightRAG then skips its per-shard LLM keyword extraction."
         ),
+        "phage_kg": (
+            "PhageRAG literature knowledge graph (1.3M entities, 3M relations from the LightRAG phage corpus). "
+            "Use for entity lookup, relation neighbourhoods, entity evidence and full source papers. "
+            "Chain: search_entities -> subgraph -> evidence -> document; cite document_id/file_path. "
+            "Params: {\"operation\": \"search_entities|subgraph|evidence|document|hierarchy|topology\", "
+            "\"query\": \"entity or phrase\", \"identifier\": \"e:... or name\", \"document_id\": \"doc-...\"}."
+        ),
         "graph_rag": (
             "LEGACY small local triples graph with limited coverage. Prefer lightrag_query. "
             "Params: {\"query\": \"your question\", \"top_k\": 12, \"hops\": 1, \"return_subgraph\": true}."

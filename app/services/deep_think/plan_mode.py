@@ -20,6 +20,7 @@ _READ_TOOLS = frozenset(
         "document_reader",
         "vision_reader",
         "lightrag_query",
+        "phage_kg",
         "graph_rag",
         "sequence_fetch",
         "ncbi_search",

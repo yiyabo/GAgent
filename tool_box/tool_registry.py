@@ -28,6 +28,7 @@ from .tools_impl import (
     memory_operation_tool,
     ncbi_search_tool,
     paper_replication_tool,
+    phage_kg_tool,
     phagescope_data_tool,
     phagescope_research_tool,
     phagescope_tool,
@@ -43,6 +44,7 @@ from .tools_impl import (
 )
 from .tools_impl.delegate_task import delegate_task_backend, delegate_task_enabled
 from .tools_impl.deliverable_submit import deliverable_submit_tool
+from .tools_impl.phage_kg import phage_kg_enabled
 from .tools_impl.phagescope_data import phagescope_data_enabled
 
 logger = logging.getLogger(__name__)
@@ -79,6 +81,11 @@ _TOOL_METADATA: dict[str, dict[str, Any]] = {
         "is_read_only": True,
         "is_concurrent_safe": True,
         "search_hint": "lightrag knowledge graph rag literature corpus entity relation shard",
+    },
+    "phage_kg": {
+        "is_read_only": True,
+        "is_concurrent_safe": True,
+        "search_hint": "phagerag knowledge graph entity subgraph evidence paper document hierarchy phage host protein",
     },
     "graph_rag": {
         "is_read_only": True,
@@ -186,6 +193,7 @@ _STANDARD_TOOLS: list[dict[str, Any]] = [
     paper_replication_tool,
     generate_experiment_card_tool,
     lightrag_query_tool,
+    phage_kg_tool,
     graph_rag_tool,
     manuscript_writer_tool,
     phagescope_tool,
@@ -266,6 +274,7 @@ def _dynamic_concurrent_safe(name: str) -> bool:
 _GATED_TOOLS = {
     "delegate_task": delegate_task_enabled,
     "phagescope_data": phagescope_data_enabled,
+    "phage_kg": phage_kg_enabled,
 }
 
 

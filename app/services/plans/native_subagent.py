@@ -80,6 +80,7 @@ FORBIDDEN_CHILD_TOOLS: frozenset[str] = frozenset(
         "url_fetch",
         "graph_rag",
         "lightrag_query",
+        "phage_kg",
         "literature_pipeline",
         "phagescope",
         "phagescope_data",

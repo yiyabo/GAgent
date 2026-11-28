@@ -55,7 +55,7 @@ _PHAGE_INTENT_PATTERN = re.compile(
     r"depolymerase|checkv|genomad|phabox|seqkit|fastani|mmseqs|hmmer|prodigal|"
     r"crispr|anticrispr|trna|esmfold)"
 )
-_PHAGE_INTENT_TOOLS = ("phagescope_data", "bio_tools")
+_PHAGE_INTENT_TOOLS = ("phagescope_data", "bio_tools", "phage_kg")
 
 
 def progressive_enabled() -> bool:
@@ -75,7 +75,7 @@ class SchemaDisclosure:
         self._disclosed: Set[str] = set()
         self.enabled = progressive_enabled() and bool(self._full)
         self._phage_intent = (
-            "phagescope_data" in self._available
+            ("phagescope_data" in self._available or "phage_kg" in self._available)
             and bool(task_hint)
             and bool(_PHAGE_INTENT_PATTERN.search(task_hint))
         )

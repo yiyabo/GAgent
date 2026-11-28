@@ -42,7 +42,7 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
   } = useMemo(() => {
     const toolValue = typeof payload.name === 'string' && payload.name ? payload.name : 'tool';
     const isWeb = toolValue === 'web_search';
-    const isGraph = toolValue === 'graph_rag' || toolValue === 'lightrag_query';
+    const isGraph = toolValue === 'graph_rag' || toolValue === 'lightrag_query' || toolValue === 'phage_kg';
 
     const providerValue =
       isWeb && typeof payload.result?.provider === 'string'
@@ -194,7 +194,7 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
       key: 'result',
       label: (
         <Space>
-            <Tag color={success ? ((toolName === 'graph_rag' || toolName === 'lightrag_query') ? 'purple' : 'green') : 'red'}>
+            <Tag color={success ? ((toolName === 'graph_rag' || toolName === 'lightrag_query' || toolName === 'phage_kg') ? 'purple' : 'green') : 'red'}>
             {toolName}
           </Tag>
           {providerLabel && <Tag color="blue">{providerLabel}</Tag>}

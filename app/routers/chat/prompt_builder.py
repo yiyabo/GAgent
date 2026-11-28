@@ -321,6 +321,7 @@ def compose_plan_artifact_access_hint(agent: Any, plan_bound: bool) -> str:
 def _mounted_action_lines(policy: dict[str, Any], existing_names: set[str]) -> list[str]:
     from app.services.tool_schemas import (
         format_mounted_tool_catalog_entry,
+        phage_kg_enabled,
         phagescope_data_enabled,
     )
     from tool_box.mcp_mount import get_mount_manager
@@ -339,6 +340,13 @@ def _mounted_action_lines(policy: dict[str, Any], existing_names: set[str]) -> l
             "completeness/lifestyle/taxonomy/host/host_rank/host_name/cluster/subcluster/is_rep/length_min/length_max/"
             "gc_min/gc_max/group_by/protein_id/protein_ids/product_query/family_query/family_id/feature_type/keyword/"
             "kinds/combine/save_tsv/materialize_pdb/output_subdir/max_items/page/pagesize/target_task_id)"
+        )
+    if phage_kg_enabled() and "phage_kg" not in existing_names and is_tool_allowed("phage_kg", policy):
+        lines.append(
+            "- tool_operation: phage_kg (PhageRAG literature knowledge graph over the 8-shard phage corpus, read-only; "
+            "requires `operation` in search_entities/subgraph/evidence/document/hierarchy/topology; optional query/"
+            "identifier/limit/offset/node_limit/edge_limit/max_hops/document_id/file_path/shard_id/max_chars/parent_id/"
+            "cursor/target_task_id; chain search_entities -> subgraph -> evidence -> document and cite document_id/file_path)"
         )
     for name in get_mount_manager().tool_names():
         if name in existing_names or not is_tool_allowed(name, policy):

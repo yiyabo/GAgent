@@ -270,6 +270,8 @@ def summarize_tool_step_display(step: ThinkingStep, *, language: str) -> str:
         return _localized_text(language, "分析图像内容", "Analyzing visual content")
     if tool_name == "lightrag_query":
         return _localized_text(language, "查询 LightRAG 知识库", "Querying LightRAG knowledge base")
+    if tool_name == "phage_kg":
+        return _localized_text(language, "查询噬菌体知识图谱", "Querying the phage knowledge graph")
     if tool_name == "graph_rag":
         return _localized_text(language, "查询本地小图谱", "Querying local triples graph")
     if tool_name == "result_interpreter":

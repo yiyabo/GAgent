@@ -75,6 +75,7 @@ const TOOL_LABELS: Record<string, string> = {
   document_reader: 'document_reader',
   file_operations: 'file_operations',
   lightrag_query: 'lightrag_query',
+  phage_kg: 'phage_kg',
   graph_rag: 'graph_rag',
   result_interpreter: 'result_interpreter',
   code_executor: 'code_executor',
