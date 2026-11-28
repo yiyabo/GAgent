@@ -24,7 +24,6 @@ MAX_CANDIDATES = 6
 MAX_ENTITIES = 4
 EVIDENCE_ENTITIES = 2
 EVIDENCE_PER_ENTITY = 2
-_LINKED_MATCHES = {"exact_id", "exact_name"}
 
 _PHAGE_INTENT = re.compile(
     r"(?i)(phagescope|phage|噬菌体|prophage|前噬菌体|裂解酶|endolysin|lysin|holin|"
