@@ -16,6 +16,24 @@
 ARG GATEWAY_BASE_IMAGE=docker.byoryn.cn/ms/webui:ms
 FROM ${GATEWAY_BASE_IMAGE}
 
+# Base images lag their distro's security updates (Trivy runs with --ignore-unfixed, so
+# every finding it reports has a fix in the update channel). Upgrade the installed
+# packages: apt on Debian bases (the production nginx base), apk on Alpine (CI).
+# Mirrors: CN hosts cannot reach deb.debian.org; override with --build-arg for a networked builder.
+ARG APT_MIRROR_HOST=mirrors.tuna.tsinghua.edu.cn
+RUN set -e; \
+    if command -v apt-get >/dev/null 2>&1; then \
+      if [ -n "${APT_MIRROR_HOST}" ]; then \
+        sed -i "s|deb.debian.org|${APT_MIRROR_HOST}|g" /etc/apt/sources.list.d/*.sources 2>/dev/null || true; \
+        sed -i "s|deb.debian.org|${APT_MIRROR_HOST}|g" /etc/apt/sources.list 2>/dev/null || true; \
+      fi; \
+      apt-get update; \
+      DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends; \
+      rm -rf /var/lib/apt/lists/*; \
+    elif command -v apk >/dev/null 2>&1; then \
+      apk upgrade --no-cache; \
+    fi
+
 # Replace the base image's own site config and static assets with ours.
 #
 # Removing default.conf is NOT enough: the base image's entrypoint runs
