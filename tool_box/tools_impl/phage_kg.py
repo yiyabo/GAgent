@@ -9,9 +9,11 @@ Retrieval only: the answer is written by Phage-Agent's own LLM.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import os
+import weakref
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -34,7 +36,19 @@ OPERATIONS: Dict[str, str] = {
     "document": "domain_kg_phagerag_get_document",
     "hierarchy": "domain_kg_phagerag_browse_hierarchy",
     "topology": "domain_kg_phagerag_graph_topology",
+    "rag_query": "domain_kg_phagerag_rag_query",
 }
+ENV_RAG_ENABLED = "PHAGE_KG_RAG_ENABLED"
+ENV_RAG_TIMEOUT = "PHAGE_KG_RAG_TIMEOUT"
+DEFAULT_RAG_TIMEOUT_SECONDS = 90.0
+RAG_CONCURRENCY = 4
+RAG_MODES = ("mix", "hybrid", "local", "global", "naive")
+RAG_NOTE = (
+    "Server-side synthesis from the 8-shard PhageRAG corpus. Treat the answer as evidence, "
+    "not as the final reply: check key claims against the references (evidence/document), "
+    "write the answer yourself and cite file_path/document_id."
+)
+_RAG_SEMAPHORES: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
 
 NOTE = (
     "Retrieval-only evidence from the PhageRAG literature knowledge graph. Synthesize "
@@ -47,15 +61,40 @@ def phage_kg_enabled() -> bool:
     return os.environ.get(ENV_ENABLED, "").strip() == "1"
 
 
+def rag_query_enabled() -> bool:
+    return phage_kg_enabled() and os.environ.get(ENV_RAG_ENABLED, "").strip() == "1"
+
+
+def available_operations() -> List[str]:
+    return [op for op in OPERATIONS if op != "rag_query" or rag_query_enabled()]
+
+
+def parameters_schema() -> Dict[str, Any]:
+    """PARAMETERS_SCHEMA with the operations this deployment offers."""
+    schema = copy.deepcopy(PARAMETERS_SCHEMA)
+    schema["properties"]["operation"]["enum"] = available_operations()
+    return schema
+
+
+def _rag_semaphore() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    semaphore = _RAG_SEMAPHORES.get(loop)
+    if semaphore is None:
+        semaphore = _RAG_SEMAPHORES[loop] = asyncio.Semaphore(RAG_CONCURRENCY)
+    return semaphore
+
+
 def _endpoint() -> str:
     return (os.environ.get(ENV_URL, "").strip() or DEFAULT_URL).rstrip("/")
 
 
-def _timeout_seconds() -> float:
+def _timeout_seconds(tool: str = "") -> float:
+    rag = tool == OPERATIONS["rag_query"]
+    env, default = (ENV_RAG_TIMEOUT, DEFAULT_RAG_TIMEOUT_SECONDS) if rag else (ENV_TIMEOUT, DEFAULT_TIMEOUT_SECONDS)
     try:
-        value = float(os.environ.get(ENV_TIMEOUT, "").strip() or DEFAULT_TIMEOUT_SECONDS)
+        value = float(os.environ.get(env, "").strip() or default)
     except ValueError:
-        return DEFAULT_TIMEOUT_SECONDS
+        return default
     return max(1.0, min(value, 300.0))
 
 
@@ -126,10 +165,10 @@ async def _call_once(tool: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     }
     url = _endpoint()
     try:
-        async with httpx.AsyncClient(timeout=_timeout_seconds(), trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=_timeout_seconds(tool), trust_env=False) as client:
             response = await client.post(url, headers=headers, json=request)
     except httpx.TimeoutException as exc:
-        raise _KGError("timeout", f"PhageRAG MCP timed out after {_timeout_seconds():g}s.", retryable=True) from exc
+        raise _KGError("timeout", f"PhageRAG MCP timed out after {_timeout_seconds(tool):g}s.", retryable=True) from exc
     except httpx.RequestError as exc:
         raise _KGError("unreachable", f"PhageRAG MCP unreachable: {exc}", retryable=True) from exc
 
@@ -164,6 +203,10 @@ async def _call_once(tool: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def _call(tool: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    if tool == OPERATIONS["rag_query"]:
+        # Each call runs an LLM synthesis over 8 shards; bound concurrency and do not retry.
+        async with _rag_semaphore():
+            return await _call_once(tool, arguments)
     attempt = 0
     while True:
         try:
@@ -242,6 +285,18 @@ def _shape(operation: str, data: Dict[str, Any], max_chars: int) -> Dict[str, An
         )
         out["content"] = content[:max_chars]
         out["content_truncated"] = bool(data.get("truncated")) or len(content) > max_chars
+    elif operation == "rag_query":
+        references = []
+        for item in _items(data.get("references"))[:60]:
+            references.append(
+                {key: item.get(key) for key in ("reference_id", "file_path", "shard", "document_id") if item.get(key) is not None}
+            )
+        out.update(
+            answer=_truncate(data.get("answer"), 12000),
+            references=references,
+            related_entities=[_entity(item, 200) for item in _items(data.get("related_entities"))[:12]],
+            **{key: data.get(key) for key in ("mode", "shards_ok", "shards_total", "partial", "elapsed_seconds") if key in data},
+        )
     elif operation == "hierarchy":
         items = []
         for item in _items(data.get("items")):
@@ -298,6 +353,23 @@ def _arguments(operation: str, params: Dict[str, Any]) -> Dict[str, Any] | str:
             return "phage_kg document requires `document_id` or `file_path` (from evidence results)."
         args["max_chars"] = _int(params.get("max_chars"), 12000, 500, 40000)
         return args
+    if operation == "rag_query":
+        query = _text(params.get("query"))[:1000]
+        if not query:
+            return "phage_kg rag_query requires a non-empty `query` (a question)."
+        mode = _text(params.get("mode")).lower() or "mix"
+        if mode not in RAG_MODES:
+            return f"phage_kg rag_query `mode` must be one of {list(RAG_MODES)}."
+        return {
+            "command": {
+                "query": query,
+                "mode": mode,
+                "top_k": _int(params.get("limit"), 5, 1, 20),
+                "max_chunks": 20,
+                "max_references": 30,
+                "include_subgraph_links": True,
+            }
+        }
     if operation == "hierarchy":
         args = {"limit": _int(params.get("limit"), 25, 1, 100)}
         for key in ("parent_id", "cursor"):
@@ -324,11 +396,14 @@ async def phage_kg_handler(
     max_chars: Optional[int] = None,
     parent_id: Optional[str] = None,
     cursor: Optional[str] = None,
+    mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     op = str(operation or "").strip().lower()
     base: Dict[str, Any] = {"tool": "phage_kg", "operation": op}
     if not phage_kg_enabled():
         return {**base, "success": False, "code": "disabled", "error": f"phage_kg is disabled ({ENV_ENABLED}!=1)."}
+    if op == "rag_query" and not rag_query_enabled():
+        return {**base, "success": False, "code": "disabled", "error": f"phage_kg rag_query is disabled ({ENV_RAG_ENABLED}!=1)."}
     if op not in OPERATIONS:
         return {
             **base,
@@ -350,6 +425,7 @@ async def phage_kg_handler(
         "max_chars": max_chars,
         "parent_id": parent_id,
         "cursor": cursor,
+        "mode": mode,
     }
     arguments = _arguments(op, params)
     if isinstance(arguments, str):
@@ -363,7 +439,9 @@ async def phage_kg_handler(
             failure["request_id"] = exc.request_id
         return failure
     shaped = _shape(op, data, int(arguments.get("max_chars") or 12000))
-    result = {**base, "success": True, "arguments": arguments, **shaped, "note": NOTE}
+    result = {**base, "success": True, "arguments": arguments, **shaped, "note": RAG_NOTE if op == "rag_query" else NOTE}
+    if op == "rag_query" and not result.get("answer"):
+        result["empty_result"] = True
     if op in {"search_entities", "evidence"} and not result.get("returned"):
         result["empty_result"] = True
     if op == "subgraph" and not result.get("nodes"):
@@ -379,7 +457,9 @@ DESCRIPTION = (
     "neighbourhood with relation descriptions), `evidence` (paper text chunks for an "
     "entity id or name), `document` (full Markdown of a source paper by document_id/"
     "file_path from evidence), `hierarchy` (browse components/communities), "
-    "`topology` (graph version and size). Typical chain: search_entities -> subgraph "
+    "`topology` (graph version and size), `rag_query` (only when listed in the operation enum: "
+    "server-side LightRAG synthesis with references, 12-25s; for broad factual/review questions, "
+    "then verify via evidence/document). Typical chain: search_entities -> subgraph "
     "-> evidence -> document. Retrieval only; queries in English work best. Use "
     "`lightrag_query` for one-shot semantic retrieval of passages."
 )
@@ -389,7 +469,7 @@ PARAMETERS_SCHEMA: Dict[str, Any] = {
     "properties": {
         "operation": {
             "type": "string",
-            "enum": list(OPERATIONS),
+            "enum": [op for op in OPERATIONS if op != "rag_query"],
             "description": "What to retrieve (see tool description).",
         },
         "query": {
@@ -424,6 +504,11 @@ PARAMETERS_SCHEMA: Dict[str, Any] = {
         },
         "parent_id": {"type": "string", "description": "hierarchy: node id to expand (omit for top level)."},
         "cursor": {"type": "string", "description": "hierarchy: next_cursor from the previous page."},
+        "mode": {
+            "type": "string",
+            "enum": list(RAG_MODES),
+            "description": "rag_query: retrieval mode (default mix). `query` is the question; `limit` sets top_k (1-20).",
+        },
     },
     "required": ["operation"],
 }

@@ -145,3 +145,64 @@ def test_offered_only_when_enabled(monkeypatch):
     monkeypatch.setenv("PHAGE_KG_ENABLED", "1")
     assert "phage_kg" in get_all_tools()
     assert plan_mode_tool_allowed("phage_kg", {"operation": "subgraph"})
+
+
+RAG_REPLY = {
+    "query": "q",
+    "mode": "mix",
+    "answer": "LysK has CHAP, amidase and SH3b domains.",
+    "references": [{"reference_id": "1", "file_path": "paper.md", "shard": "00", "extra": "x"}],
+    "related_entities": [{"id": "e:lysk", "name": "LysK", "entity_type": "artifact", "evidence_count": 99}],
+    "shards_ok": 8,
+    "shards_total": 8,
+    "partial": False,
+    "elapsed_seconds": 14.8,
+}
+
+
+def test_rag_query_disabled_unless_flagged(fake, monkeypatch):
+    monkeypatch.delenv("PHAGE_KG_RAG_ENABLED", raising=False)
+    result = asyncio.run(kg.phage_kg_handler(operation="rag_query", query="LysK domains?"))
+    assert result["code"] == "disabled" and fake.calls == []
+    assert "rag_query" not in kg.parameters_schema()["properties"]["operation"]["enum"]
+    monkeypatch.setenv("PHAGE_KG_RAG_ENABLED", "1")
+    assert "rag_query" in kg.parameters_schema()["properties"]["operation"]["enum"]
+    assert "rag_query" not in kg.PARAMETERS_SCHEMA["properties"]["operation"]["enum"]
+
+
+def test_rag_query_wraps_command_and_shapes_answer(fake, monkeypatch):
+    monkeypatch.setenv("PHAGE_KG_RAG_ENABLED", "1")
+    fake.replies = [_rpc(RAG_REPLY)]
+    result = asyncio.run(kg.phage_kg_handler(operation="rag_query", query="LysK domains?", mode="LOCAL", limit=50))
+    sent = fake.calls[0]["json"]["params"]
+    assert sent["name"] == "domain_kg_phagerag_rag_query"
+    assert sent["arguments"]["command"]["query"] == "LysK domains?"
+    assert sent["arguments"]["command"]["mode"] == "local"
+    assert sent["arguments"]["command"]["top_k"] == 20
+    assert result["success"] and result["answer"].startswith("LysK")
+    assert result["references"] == [{"reference_id": "1", "file_path": "paper.md", "shard": "00"}]
+    assert result["related_entities"][0]["id"] == "e:lysk"
+    assert result["shards_ok"] == 8 and "check key claims" in result["note"]
+
+
+def test_rag_query_rejects_bad_mode_and_is_not_retried(fake, monkeypatch):
+    monkeypatch.setenv("PHAGE_KG_RAG_ENABLED", "1")
+    bad = asyncio.run(kg.phage_kg_handler(operation="rag_query", query="q", mode="deep"))
+    assert bad["code"] == "invalid_arguments" and fake.calls == []
+    fake.replies = [httpx.Response(503)]
+    failed = asyncio.run(kg.phage_kg_handler(operation="rag_query", query="q"))
+    assert failed["success"] is False and len(fake.calls) == 1
+
+
+def test_rag_query_uses_its_own_timeout(monkeypatch):
+    monkeypatch.delenv("PHAGE_KG_RAG_TIMEOUT", raising=False)
+    monkeypatch.delenv("PHAGE_KG_TIMEOUT", raising=False)
+    assert kg._timeout_seconds("domain_kg_phagerag_rag_query") == 90.0
+    assert kg._timeout_seconds("domain_kg_phagerag_search_entities") == 30.0
+
+
+def test_offered_schema_lists_rag_query_only_when_enabled(monkeypatch):
+    monkeypatch.setenv("PHAGE_KG_ENABLED", "1")
+    monkeypatch.setenv("PHAGE_KG_RAG_ENABLED", "1")
+    schema = next(s for s in tool_schemas.build_tool_schemas(["phage_kg"]) if s["function"]["name"] == "phage_kg")
+    assert "rag_query" in schema["function"]["parameters"]["properties"]["operation"]["enum"]
