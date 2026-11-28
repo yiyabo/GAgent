@@ -1940,5 +1940,10 @@
     "deliveryFailed": "任务已结束，最终报告交付失败",
     "downloadDeliveryReport": "下载报告",
     "downloadDeliveryReview": "下载领域复核"
+  },
+  "phageKgDocument": {
+    "loading": "正在加载原文…",
+    "failed": "原文加载失败",
+    "truncated": "这篇文献只显示前 40,000 个字符。"
   }
 }

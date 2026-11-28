@@ -27,6 +27,7 @@ _DEFAULT_MODULES: Iterable[str] = (
     "app.routers.extensions_routes",
     "app.routers.pipeline_routes",
     "app.routers.phagescope_mcp_routes",
+    "app.routers.phage_kg_routes",
 )
 
 
