@@ -100,6 +100,13 @@ def test_echo_cell_returns_stdout_and_kernel_metadata(ctx):
 
 
 @pytest.mark.timeout(60)
+def test_results_dir_exists_for_the_first_cell(ctx):
+    result = _run("open('results/chart.txt', 'w').write('ok')", ctx)
+    assert result["status"] == "success", result
+    assert (Path(ctx.work_dir) / "results" / "chart.txt").read_text() == "ok"
+
+
+@pytest.mark.timeout(60)
 def test_variables_survive_across_cells(ctx):
     first = _run("shared_state = 41", ctx)
     assert first["status"] == "success"
