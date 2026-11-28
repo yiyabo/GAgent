@@ -1276,6 +1276,11 @@ def run_cell(
     collect_root: Optional[Path] = None
     if work_dir and child_cwd == Path(work_dir):
         collect_root = child_cwd
+        # The tool tells the model to save outputs under results/; make that path exist.
+        try:
+            (child_cwd / "results").mkdir(exist_ok=True)
+        except OSError:
+            pass
     allowlist = tuple(sorted(set(config.allowed_tools())))
     key = (session_id, allowlist, str(child_cwd))
     timeout = config.resolve_cell_timeout(timeout_seconds)
