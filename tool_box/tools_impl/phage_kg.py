@@ -9,10 +9,12 @@ Retrieval only: the answer is written by Phage-Agent's own LLM.
 from __future__ import annotations
 
 import asyncio
+import collections
 import copy
 import json
 import logging
 import os
+import re
 import weakref
 from typing import Any, Dict, List, Optional
 
@@ -48,6 +50,11 @@ RAG_NOTE = (
     "not as the final reply: check key claims against the references (evidence/document), "
     "write the answer yourself and cite file_path/document_id."
 )
+_DOCUMENT_REF = re.compile(r"(doc-[0-9a-f]{8,64})(?:-chunk-\d+)?")
+_ENTITY_REF = re.compile(r"e:[0-9a-f]{16,128}")
+_SEEN_ENTITY_LIMIT = 4096
+_MAX_ID_TYPOS = 3
+_SEEN_ENTITIES: "collections.OrderedDict[str, str]" = collections.OrderedDict()
 _RAG_SEMAPHORES: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
 
 NOTE = (
@@ -216,6 +223,35 @@ async def _call(tool: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                 raise
             attempt += 1
             await asyncio.sleep(0.5 * (2 ** (attempt - 1)))
+
+
+def _document_id(value: Any) -> Optional[str]:
+    """``doc-<hex>`` for a document or chunk id (``doc-<hex>-chunk-N``), else None."""
+    match = _DOCUMENT_REF.fullmatch(_text(value))
+    return match.group(1) if match else None
+
+
+def _remember_entities(rows: List[Dict[str, Any]]) -> None:
+    for row in rows:
+        entity_id, name = row.get("id"), _text(row.get("name"))
+        if isinstance(entity_id, str) and _ENTITY_REF.fullmatch(entity_id):
+            _SEEN_ENTITIES[entity_id] = name
+            _SEEN_ENTITIES.move_to_end(entity_id)
+    while len(_SEEN_ENTITIES) > _SEEN_ENTITY_LIMIT:
+        _SEEN_ENTITIES.popitem(last=False)
+
+
+def _known_entity_id(value: str) -> Optional[str]:
+    """The id returned earlier that ``value`` is a near-copy of (LLMs mistype long hex ids)."""
+    if value in _SEEN_ENTITIES or not _ENTITY_REF.fullmatch(value):
+        return None
+    best, best_distance = None, _MAX_ID_TYPOS + 1
+    for seen in _SEEN_ENTITIES:
+        if len(seen) == len(value):
+            distance = sum(a != b for a, b in zip(seen, value))
+            if distance < best_distance:
+                best, best_distance = seen, distance
+    return best
 
 
 def _entity(raw: Dict[str, Any], max_chars: int) -> Dict[str, Any]:
@@ -427,6 +463,20 @@ async def phage_kg_handler(
         "cursor": cursor,
         "mode": mode,
     }
+    if op == "document":
+        params["document_id"] = _document_id(document_id) or document_id
+    elif op == "evidence" and _document_id(identifier or query):
+        # Evidence is keyed by entity; a cited paper id (doc-...) means "show me this source".
+        op = "document"
+        base["operation"] = op
+        base["redirected_from"] = "evidence"
+        params["document_id"] = _document_id(identifier or query)
+    elif op == "evidence":
+        requested = _text(identifier or query)
+        corrected = _known_entity_id(requested)
+        if corrected:
+            params["identifier"] = corrected
+            base["identifier_corrected_from"] = requested
     arguments = _arguments(op, params)
     if isinstance(arguments, str):
         return {**base, "success": False, "code": "invalid_arguments", "error": arguments}
@@ -437,8 +487,15 @@ async def phage_kg_handler(
         failure = {**base, "success": False, "code": exc.code, "error": exc.message}
         if exc.request_id:
             failure["request_id"] = exc.request_id
+        if op == "evidence" and _ENTITY_REF.fullmatch(_text(arguments.get("identifier"))):
+            failure["hint"] = (
+                "Entity ids must be copied exactly from search_entities/subgraph results; "
+                "retry evidence with the exact entity name instead."
+            )
         return failure
     shaped = _shape(op, data, int(arguments.get("max_chars") or 12000))
+    if op in {"search_entities", "subgraph"}:
+        _remember_entities(_items(shaped.get("entities") or shaped.get("nodes")))
     result = {**base, "success": True, "arguments": arguments, **shaped, "note": RAG_NOTE if op == "rag_query" else NOTE}
     if op == "rag_query" and not result.get("answer"):
         result["empty_result"] = True
@@ -478,7 +535,10 @@ PARAMETERS_SCHEMA: Dict[str, Any] = {
         },
         "identifier": {
             "type": "string",
-            "description": "evidence: entity id (e:...) from search/subgraph results, or an exact entity name.",
+            "description": (
+                "evidence: entity id (e:...) from search/subgraph results, or an exact entity name. "
+                "For a cited paper (doc-...) use operation=document with document_id."
+            ),
         },
         "limit": {
             "type": "integer",

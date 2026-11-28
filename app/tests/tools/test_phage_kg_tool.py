@@ -206,3 +206,45 @@ def test_offered_schema_lists_rag_query_only_when_enabled(monkeypatch):
     monkeypatch.setenv("PHAGE_KG_RAG_ENABLED", "1")
     schema = next(s for s in tool_schemas.build_tool_schemas(["phage_kg"]) if s["function"]["name"] == "phage_kg")
     assert "rag_query" in schema["function"]["parameters"]["properties"]["operation"]["enum"]
+
+
+def test_document_accepts_chunk_id(fake):
+    doc = "doc-33e9af421bcc12d462ea04162032168c"
+    fake.replies = [_rpc({"graph_version": "g1", "document_id": doc, "content_markdown": "# T"})]
+    result = asyncio.run(kg.phage_kg_handler(operation="document", document_id=f"{doc}-chunk-003"))
+    assert result["success"] is True
+    assert fake.calls[0]["json"]["params"]["arguments"]["document_id"] == doc
+
+
+def test_evidence_for_cited_paper_reads_document(fake):
+    doc = "doc-33e9af421bcc12d462ea04162032168c"
+    fake.replies = [_rpc({"graph_version": "g1", "document_id": doc, "content_markdown": "# T"})]
+    result = asyncio.run(kg.phage_kg_handler(operation="evidence", identifier=f"{doc}-chunk-1"))
+    assert result["success"] is True
+    assert result["operation"] == "document" and result["redirected_from"] == "evidence"
+    call = fake.calls[0]["json"]["params"]
+    assert call["name"] == "domain_kg_phagerag_get_document"
+    assert call["arguments"]["document_id"] == doc
+
+
+def test_evidence_corrects_mistyped_entity_id(fake, monkeypatch):
+    monkeypatch.setattr(kg, "_SEEN_ENTITIES", kg.collections.OrderedDict())
+    real = "e:663b71de141659532ec620da3d1b00ed1fceb17e423dee1a77773746f2f5df39"
+    typo = real.replace("17e423", "17c423")
+    fake.replies = [
+        _rpc({"graph_version": "g1", "total": 1, "items": [{"id": real, "name": "Anti-CRISPR Proteins"}]}),
+        _rpc({"graph_version": "g1", "total": 1, "items": [{"chunk_id": "doc-a-chunk-1", "content": "x"}]}),
+    ]
+    asyncio.run(kg.phage_kg_handler(operation="search_entities", query="anti-CRISPR"))
+    result = asyncio.run(kg.phage_kg_handler(operation="evidence", identifier=typo))
+    assert result["success"] is True and result["identifier_corrected_from"] == typo
+    assert fake.calls[1]["json"]["params"]["arguments"]["identifier"] == real
+
+
+def test_unknown_entity_id_failure_hints_at_name(fake, monkeypatch):
+    monkeypatch.setattr(kg, "_SEEN_ENTITIES", kg.collections.OrderedDict())
+    body = {"jsonrpc": "2.0", "id": 1, "result": {"isError": True, "content": [{"type": "text", "text": "not found"}], "structuredContent": {"error": {"code": "RESOURCE_NOT_ACCESSIBLE", "message": "Requested PhageRAG resource was not found."}}}}
+    fake.replies = [httpx.Response(200, json=body)]
+    result = asyncio.run(kg.phage_kg_handler(operation="evidence", identifier="e:" + "0" * 64))
+    assert result["success"] is False and "entity name" in result["hint"]
+    assert "identifier_corrected_from" not in result
