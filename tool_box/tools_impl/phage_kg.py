@@ -13,6 +13,7 @@ import copy
 import json
 import logging
 import os
+import re
 import weakref
 from typing import Any, Dict, List, Optional
 
@@ -48,6 +49,7 @@ RAG_NOTE = (
     "not as the final reply: check key claims against the references (evidence/document), "
     "write the answer yourself and cite file_path/document_id."
 )
+_DOCUMENT_REF = re.compile(r"(doc-[0-9a-f]{8,64})(?:-chunk-\d+)?")
 _RAG_SEMAPHORES: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
 
 NOTE = (
@@ -216,6 +218,12 @@ async def _call(tool: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                 raise
             attempt += 1
             await asyncio.sleep(0.5 * (2 ** (attempt - 1)))
+
+
+def _document_id(value: Any) -> Optional[str]:
+    """``doc-<hex>`` for a document or chunk id (``doc-<hex>-chunk-N``), else None."""
+    match = _DOCUMENT_REF.fullmatch(_text(value))
+    return match.group(1) if match else None
 
 
 def _entity(raw: Dict[str, Any], max_chars: int) -> Dict[str, Any]:
@@ -427,6 +435,14 @@ async def phage_kg_handler(
         "cursor": cursor,
         "mode": mode,
     }
+    if op == "document":
+        params["document_id"] = _document_id(document_id) or document_id
+    elif op == "evidence" and _document_id(identifier or query):
+        # Evidence is keyed by entity; a cited paper id (doc-...) means "show me this source".
+        op = "document"
+        base["operation"] = op
+        base["redirected_from"] = "evidence"
+        params["document_id"] = _document_id(identifier or query)
     arguments = _arguments(op, params)
     if isinstance(arguments, str):
         return {**base, "success": False, "code": "invalid_arguments", "error": arguments}
@@ -478,7 +494,10 @@ PARAMETERS_SCHEMA: Dict[str, Any] = {
         },
         "identifier": {
             "type": "string",
-            "description": "evidence: entity id (e:...) from search/subgraph results, or an exact entity name.",
+            "description": (
+                "evidence: entity id (e:...) from search/subgraph results, or an exact entity name. "
+                "For a cited paper (doc-...) use operation=document with document_id."
+            ),
         },
         "limit": {
             "type": "integer",

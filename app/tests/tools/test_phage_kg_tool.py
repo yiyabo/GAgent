@@ -206,3 +206,22 @@ def test_offered_schema_lists_rag_query_only_when_enabled(monkeypatch):
     monkeypatch.setenv("PHAGE_KG_RAG_ENABLED", "1")
     schema = next(s for s in tool_schemas.build_tool_schemas(["phage_kg"]) if s["function"]["name"] == "phage_kg")
     assert "rag_query" in schema["function"]["parameters"]["properties"]["operation"]["enum"]
+
+
+def test_document_accepts_chunk_id(fake):
+    doc = "doc-33e9af421bcc12d462ea04162032168c"
+    fake.replies = [_rpc({"graph_version": "g1", "document_id": doc, "content_markdown": "# T"})]
+    result = asyncio.run(kg.phage_kg_handler(operation="document", document_id=f"{doc}-chunk-003"))
+    assert result["success"] is True
+    assert fake.calls[0]["json"]["params"]["arguments"]["document_id"] == doc
+
+
+def test_evidence_for_cited_paper_reads_document(fake):
+    doc = "doc-33e9af421bcc12d462ea04162032168c"
+    fake.replies = [_rpc({"graph_version": "g1", "document_id": doc, "content_markdown": "# T"})]
+    result = asyncio.run(kg.phage_kg_handler(operation="evidence", identifier=f"{doc}-chunk-1"))
+    assert result["success"] is True
+    assert result["operation"] == "document" and result["redirected_from"] == "evidence"
+    call = fake.calls[0]["json"]["params"]
+    assert call["name"] == "domain_kg_phagerag_get_document"
+    assert call["arguments"]["document_id"] == doc
