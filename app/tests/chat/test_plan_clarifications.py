@@ -461,3 +461,30 @@ def test_missing_header_falls_back_to_the_question_not_an_option() -> None:
     assert topic["header"] == "研究边界"
     assert plain["header"] == "Which host s"
     assert clarifications.ask_user_questions_schema()["items"]["required"] == ["header", "question", "options"]
+
+
+@pytest.mark.parametrize("typed", ["按推荐继续", "就按推荐来吧。", "Continue with the recommendations", "use the recommended options"])
+def test_typed_continue_with_recommendations_answers_the_card(store, typed) -> None:
+    from app.routers.chat.models import ChatRequest
+    from app.routers.chat.run_routes import _consume_plan_clarification
+
+    clarifications.issue_plan_clarification(
+        session_id="s1", owner_id="u", bound_plan_id=None, params={"questions": QUESTIONS}, request_id="r1"
+    )
+    request = ChatRequest(message=typed, session_id="s1", context={"plan_mode": True})
+    metadata: dict[str, Any] = {}
+    _consume_plan_clarification(request, metadata, session_id="s1", owner_id="u")
+    expected = {"request_id": "r1", "mode": "recommended", "answers": []}
+    assert metadata["plan_clarification_response"] == expected
+    assert request.context == {"plan_mode": True, "plan_clarification_response": expected}
+    assert clarifications.pending_settings(store["s1"]) == {}
+    assert "accepted all of your recommended options" in " ".join(clarifications.clarification_prompt_lines(expected))
+
+
+@pytest.mark.parametrize("typed", ["按推荐继续，但只看大肠杆菌", "推荐几篇论文"])
+def test_other_text_or_no_pending_card_is_not_a_recommendation(store, typed) -> None:
+    clarifications.issue_plan_clarification(
+        session_id="s1", owner_id="u", bound_plan_id=None, params={"questions": QUESTIONS}, request_id="r1"
+    )
+    assert clarifications.typed_recommendation_response("s1", typed) is None
+    assert clarifications.typed_recommendation_response("s2", "按推荐继续") is None
