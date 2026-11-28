@@ -26,6 +26,10 @@ from .tools_impl.lightrag_query import (
     DESCRIPTION as _LIGHTRAG_DESC,
     PARAMETERS_SCHEMA as _LIGHTRAG_PARAMS,
 )
+from .tools_impl.phage_kg import (
+    DESCRIPTION as _PHAGE_KG_DESC,
+    PARAMETERS_SCHEMA as _PHAGE_KG_PARAMS,
+)
 from .tools_impl.phagescope_data.schema import (
     DESCRIPTION as _PHAGESCOPE_DATA_DESC,
     PARAMETERS_SCHEMA as _PHAGESCOPE_DATA_PARAMS,
@@ -1355,6 +1359,10 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
     "lightrag_query": {
         "description": _LIGHTRAG_DESC,
         "parameters": _LIGHTRAG_PARAMS,
+    },
+    "phage_kg": {
+        "description": _PHAGE_KG_DESC,
+        "parameters": _PHAGE_KG_PARAMS,
     },
     # Single source shared with tools_impl so the schema cannot drift from the handler.
     "memory_operation": {

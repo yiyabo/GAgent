@@ -115,6 +115,8 @@ def allowed_tools() -> List[str]:
         tools: list[str] = list(DEFAULT_ALLOWED_TOOLS)
         if phagescope_data_offered():
             tools.append("phagescope_data")
+        if os.environ.get("PHAGE_KG_ENABLED", "").strip() == "1":
+            tools.append("phage_kg")
         return tools
     names = [part.strip() for part in raw.split(",") if part.strip()]
     # preserve order, drop duplicates

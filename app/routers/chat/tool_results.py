@@ -861,6 +861,12 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
                 sanitized[key] = [str(item)[:300] for item in value[:50]]
         return sanitized
 
+    if tool_name == "phage_kg" and isinstance(raw_result, dict):
+        # The handler already returns a compact, bounded payload.
+        kg_out = {key: value for key, value in raw_result.items() if key != "arguments"}
+        kg_out.setdefault("success", False)
+        return kg_out
+
     if tool_name == "phagescope_data" and isinstance(raw_result, dict):
         ps_out: dict[str, Any] = {
             "tool": tool_name,
@@ -1656,6 +1662,20 @@ def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
             cnt = result.get("returned") if result.get("returned") is not None else result.get("count")
             return f"phagescope_data {op}: {cnt} record(s){saved_note}."
         return f"phagescope_data {op} completed{saved_note}."
+
+    if tool_name == "phage_kg":
+        op = str(result.get("operation") or "query")
+        if result.get("success") is False:
+            return f"phage_kg {op} failed: {_trim_text(str(result.get('error') or 'request failed'), limit=400)}"
+        if result.get("empty_result"):
+            return f"phage_kg {op} finished, but no matching graph evidence was found."
+        if op == "subgraph":
+            return f"phage_kg subgraph: {len(result.get('nodes') or [])} node(s), {len(result.get('edges') or [])} edge(s)."
+        if op == "document":
+            return f"phage_kg document {result.get('document_id') or result.get('file_path') or ''}: {len(str(result.get('content') or ''))} chars."
+        if "returned" in result:
+            return f"phage_kg {op}: {result.get('returned')} of {result.get('total')} item(s)."
+        return f"phage_kg {op} completed."
 
     if tool_name.startswith(MCP_TOOL_PREFIX):
         if result.get("success") is False:

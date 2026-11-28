@@ -71,6 +71,7 @@ const TOOL_META: Record<string, { icon: React.ReactNode; zh: string; en: string 
   document_reader: { icon: <FileTextOutlined />, zh: '阅读文档', en: 'Reading documents' },
   vision_reader: { icon: <EyeOutlined />, zh: '分析图像内容', en: 'Analyzing visual content' },
   lightrag_query: { icon: <DatabaseOutlined />, zh: '查询 LightRAG 知识库', en: 'Querying LightRAG knowledge base' },
+  phage_kg: { icon: <DatabaseOutlined />, zh: '查询噬菌体知识图谱', en: 'Querying the phage knowledge graph' },
   graph_rag: { icon: <DatabaseOutlined />, zh: '查询本地小图谱', en: 'Querying local triples graph' },
   phagescope: { icon: <ExperimentOutlined />, zh: '运行 PhageScope', en: 'Running PhageScope' },
   result_interpreter: { icon: <DatabaseOutlined />, zh: '汇总分析结果', en: 'Interpreting results' },

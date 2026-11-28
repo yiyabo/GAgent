@@ -62,6 +62,7 @@ _OBSERVATION_ONLY_TOOLS = {
     "result_interpreter",
     "web_search",
     "lightrag_query",
+    "phage_kg",
     "graph_rag",
     "literature_pipeline",
 }

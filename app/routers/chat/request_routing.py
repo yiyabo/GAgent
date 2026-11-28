@@ -1114,6 +1114,7 @@ def get_all_tools() -> List[str]:
         code_executor_enabled,
         code_mode_enabled,
         delegate_task_enabled,
+        phage_kg_enabled,
         phagescope_data_enabled,
     )
 
@@ -1127,6 +1128,8 @@ def get_all_tools() -> List[str]:
         tools.append("code_executor")
     if phagescope_data_enabled():
         tools.append("phagescope_data")
+    if phage_kg_enabled():
+        tools.append("phage_kg")
     # Tools mounted from external MCP servers (empty unless MCP_MOUNTS_FILE is set).
     from tool_box.mcp_mount import get_mount_manager
 

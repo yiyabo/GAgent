@@ -39,6 +39,45 @@ const sanitizeResultItems = (items: unknown): ToolResultItem[] | null => {
   return sanitized.length > 0 ? sanitized : null;
 };
 
+const kgText = (value: unknown, max: number): string => {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return text.length > max ? `${text.slice(0, max)}...` : text;
+};
+
+// phage_kg returns entities/nodes/edges/evidence/content; the graph card renders
+// `triples` and `prompt`, so map onto those.
+const phageKgDisplay = (result: Record<string, any>): Record<string, any> => {
+  const out: Record<string, any> = {};
+  const edges = Array.isArray(result.edges) ? result.edges : [];
+  if (edges.length > 0) {
+    out.triples = edges.map((edge: any) => ({
+      entity1: edge?.source_name ?? edge?.source,
+      relation: kgText(edge?.description, 160),
+      entity2: edge?.target_name ?? edge?.target,
+    }));
+  }
+  const lines: string[] = [];
+  const entities = Array.isArray(result.entities) ? result.entities : [];
+  for (const entity of entities) {
+    const head = [entity?.name, entity?.entity_type ? `(${entity.entity_type})` : ''].filter(Boolean).join(' ');
+    lines.push(`- ${head}${entity?.description ? `: ${kgText(entity.description, 240)}` : ''}`);
+  }
+  const evidence = Array.isArray(result.evidence) ? result.evidence : [];
+  for (const chunk of evidence) {
+    lines.push(`- [${chunk?.file_path ?? chunk?.document_id ?? ''}] ${kgText(chunk?.content, 400)}`);
+  }
+  if (isNonEmptyString(result.content)) {
+    lines.push(kgText(result.content, 4000));
+  }
+  if (lines.length > 0) {
+    out.prompt = lines.join('\n');
+  }
+  if (isNonEmptyString(result.graph_version)) {
+    out.metadata = { graph_version: result.graph_version };
+  }
+  return out;
+};
+
 const normalizeToolResultPayload = (raw: any): ToolResultPayload | null => {
   if (!raw || typeof raw !== 'object') {
     return null;
@@ -98,6 +137,9 @@ const normalizeToolResultPayload = (raw: any): ToolResultPayload | null => {
 
   if (isNonEmptyString(result.prompt)) {
     normalized.result = { ...(normalized.result ?? {}), prompt: result.prompt };
+  }
+  if (name === 'phage_kg') {
+    normalized.result = { ...(normalized.result ?? {}), ...phageKgDisplay(result) };
   }
   if (Array.isArray(result.artifact_paths)) {
     normalized.result = {

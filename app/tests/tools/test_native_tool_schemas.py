@@ -38,6 +38,7 @@ GATED_DELEGATE_TOOL = "delegate_task"
 # golden fixture records the all-gates-off payload (without it).
 GATED_CODE_EXECUTOR_TOOL = "code_executor"
 GATED_PHAGESCOPE_DATA_TOOL = "phagescope_data"
+GATED_PHAGE_KG_TOOL = "phage_kg"
 
 # name -> flag reader. The golden fixture records the all-gates-off payload, so
 # both the expectation and the comparison filter read the same switches.
@@ -46,6 +47,7 @@ GATED_NATIVE_TOOLS = {
     GATED_DELEGATE_TOOL: tool_schemas.delegate_task_enabled,
     GATED_CODE_EXECUTOR_TOOL: tool_schemas.code_executor_enabled,
     GATED_PHAGESCOPE_DATA_TOOL: tool_schemas.phagescope_data_enabled,
+    GATED_PHAGE_KG_TOOL: tool_schemas.phage_kg_enabled,
 }
 
 ALL_NATIVE_TOOLS = [

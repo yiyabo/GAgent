@@ -1379,7 +1379,8 @@ class _DeepThinkMethods:
 
 
 def _execution_tools(names):
-    from app.services.tool_schemas import code_mode_enabled
+    from app.services.tool_schemas import code_mode_enabled, phage_kg_enabled
     names=list(names)+['load_skill']
     if code_mode_enabled():names.append('execute_code')
+    if phage_kg_enabled():names.append('phage_kg')
     return list(dict.fromkeys(names))

@@ -44,3 +44,24 @@ describe('collectToolResultsFromMetadata', () => {
     });
   });
 });
+
+describe('phage_kg tool results', () => {
+  it('maps graph edges and evidence onto the graph card fields', () => {
+    const [payload] = collectToolResultsFromMetadata([
+      {
+        name: 'phage_kg',
+        summary: 'phage_kg subgraph',
+        result: {
+          success: true,
+          operation: 'subgraph',
+          graph_version: 'g1',
+          edges: [{ source: 'e:a', target: 'e:b', source_name: 'phage therapy', target_name: 'endolysin', description: 'uses' }],
+          evidence: [{ file_path: 'paper_1', content: 'Endolysins lyse cells.' }],
+        },
+      },
+    ]);
+    expect(payload.result?.triples).toEqual([{ entity1: 'phage therapy', relation: 'uses', entity2: 'endolysin' }]);
+    expect(payload.result?.prompt).toContain('[paper_1] Endolysins lyse cells.');
+    expect(payload.result?.metadata).toEqual({ graph_version: 'g1' });
+  });
+});
