@@ -63,3 +63,14 @@ def test_expired_terminal_lease_can_reconcile_but_terminal_job_is_never_overwrit
     update_decomposition_job_status(pair,job_id='run',status='cancelled',error='Already closed')
     assert len(reconcile_terminal_chat_jobs('run'))==1
     assert load_decomposition_job(pair,'run')['status']=='cancelled'
+
+
+def test_job_of_a_deleted_session_is_closed(pair):
+    with get_db() as c:
+        c.execute("DELETE FROM chat_runs WHERE run_id='run'")
+        assert not reconcile_terminal_chat_jobs('run')
+        c.execute("DELETE FROM chat_sessions WHERE id='session'")
+    assert len(reconcile_terminal_chat_jobs())==2
+    row=load_decomposition_job(None,'run')
+    assert row['status']=='cancelled' and row['finished_at'] and row['error']=='chat session deleted'
+    assert row['metadata']['terminal_projection']['source']=='session_deleted'

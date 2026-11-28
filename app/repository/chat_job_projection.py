@@ -1,4 +1,5 @@
-"""Close chat-control job copies only from an immutable chat terminal without a live lease.
+"""Close chat-control job copies only from an immutable chat terminal without a live lease,
+or once their chat session (and with it the run) has been deleted.
 
 attach_plan can leave a historical copy in system_jobs.sqlite. Its logs remain
 useful; it must not remain running after the authoritative chat run has closed.
@@ -36,11 +37,18 @@ def reconcile_terminal_chat_jobs(run_id=None):
                         "AND status IN ('succeeded','failed','cancelled') "
                         "AND finished_at IS NOT NULL AND (lease_expires_at IS NULL OR lease_expires_at <= datetime('now'))",
                         (row['job_id'],row['owner_id'],row['session_id'])).fetchone()
+                    # Deleting a session deletes its runs; a job left running for it is never live work.
+                    orphaned = terminal is None and row['session_id'] and main.execute(
+                        "SELECT 1 FROM chat_sessions WHERE id=?", (row['session_id'],)).fetchone() is None \
+                        and main.execute("SELECT 1 FROM chat_runs WHERE run_id=?", (row['job_id'],)).fetchone() is None
+                    if orphaned:
+                        terminal = main.execute("SELECT 'cancelled' AS status, datetime('now') AS finished_at, "
+                            "'chat session deleted' AS error").fetchone()
                 if terminal is None:
                     continue
                 metadata = json.loads(row['metadata_json'] or '{}')
-                metadata['terminal_projection'] = {'source':'chat_runs', 'run_id':row['job_id'],
-                    'status':terminal['status'], 'finished_at':terminal['finished_at']}
+                metadata['terminal_projection'] = {'source':'session_deleted' if orphaned else 'chat_runs',
+                    'run_id':row['job_id'], 'status':terminal['status'], 'finished_at':terminal['finished_at']}
                 changed = jobs.execute("UPDATE decomposition_jobs SET status=?,finished_at=?,error=?,metadata_json=? "
                     "WHERE job_id=? AND status IN ('queued','running')",
                     (terminal['status'],terminal['finished_at'],terminal['error'],
