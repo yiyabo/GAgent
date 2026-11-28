@@ -860,6 +860,10 @@ def _append_reference_context(
     from app.services.skill_learning.context import format_skill_context
     recall_block = "\n".join(block for block in (recall_block, format_skill_context(context)) if block)
     blocks: list[str] = [recall_block] if recall_block else []
+    from app.services.phage_kg_grounding import format_grounding
+    kg_block = format_grounding(context)
+    if kg_block:
+        blocks.append(kg_block)
     if context.get("action_selection") == "model":
         blocks.append("=== PLAN REFERENCE INDEX (NOT AN EXECUTION ASSIGNMENT) ===")
         blocks.append(json.dumps(context.get("model_plan_index") or {}, ensure_ascii=False))

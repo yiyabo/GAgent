@@ -253,6 +253,9 @@ async def build_agent_for_chat_request(
     from app.services.skill_learning.context import hydrate_context as hydrate_skills
     await asyncio.to_thread(hydrate_skills, context, request.session_id, request.message, run_id)
 
+    from app.services.phage_kg_grounding import hydrate_chat_context as hydrate_kg
+    await hydrate_kg(context, request.message)
+
     agent_cls = get_structured_chat_agent_cls()
     agent = agent_cls(
         mode=request.mode,

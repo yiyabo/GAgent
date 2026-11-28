@@ -1940,5 +1940,10 @@
     "deliveryFailed": "Tasks finished, but final report delivery failed",
     "downloadDeliveryReport": "Download report",
     "downloadDeliveryReview": "Download domain review"
+  },
+  "phageKgDocument": {
+    "loading": "Loading source paper…",
+    "failed": "Could not load the source paper",
+    "truncated": "Only the first 40,000 characters of this paper are shown."
   }
 }
