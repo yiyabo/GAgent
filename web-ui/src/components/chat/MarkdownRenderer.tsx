@@ -16,6 +16,7 @@ import {
 } from '@/utils/generatedFileDownloads';
 import { SessionArtifactImage } from './SessionArtifactImage';
 import { useT } from '@/i18n/useT';
+import { PHAGE_KG_DOC_HREF_PREFIX, PhageKgDocumentLink, linkifyPhageKgCitations } from './PhageKgDocumentLink';
 
 interface MarkdownRendererProps {
     content: string;
@@ -112,7 +113,7 @@ const preprocessLaTeX = (content: string): string => {
 
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, className, sessionId, sourceType }) => {
     const t = useT();
-    const processedContent = React.useMemo(() => preprocessLaTeX(content), [content]);
+    const processedContent = React.useMemo(() => linkifyPhageKgCitations(preprocessLaTeX(content)), [content]);
 
     return (
         <div className={className}>
@@ -132,6 +133,13 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, cla
                     },
                     a({ href, children }) {
                         const hrefText = typeof href === 'string' ? href.trim() : '';
+                        if (hrefText.startsWith(PHAGE_KG_DOC_HREF_PREFIX)) {
+                            return (
+                                <PhageKgDocumentLink documentId={hrefText.slice(PHAGE_KG_DOC_HREF_PREFIX.length)}>
+                                    {children}
+                                </PhageKgDocumentLink>
+                            );
+                        }
                         const sid = typeof sessionId === 'string' ? sessionId.trim() : '';
                         const rel =
                             sid && hrefText && !/^https?:\/\//i.test(hrefText)

@@ -113,6 +113,10 @@ class DecompositionPromptBuilder:
         recall_block = "\n".join(block for block in (recall_block, format_skill_context(session_context)) if block)
         if recall_block:
             prompt.append(recall_block)
+        from app.services.phage_kg_grounding import format_grounding
+        kg_block = format_grounding(session_context)
+        if kg_block:
+            prompt.append(kg_block)
 
         if session_context:
             user_message = session_context.get("user_message")
@@ -286,6 +290,7 @@ class PlanDecomposer:
             for root_id in tree.root_node_ids():
                 queue.append(QueueItem(node_id=root_id, relative_depth=0))
         root_reference = queue[0].node_id if queue else None
+        session_context = self._with_kg_grounding(tree, None, session_context)
         return self._process_queue(
             plan_id,
             tree=tree,
@@ -298,6 +303,20 @@ class PlanDecomposer:
             root_reference=root_reference,
             session_context=session_context,
         )
+
+    @staticmethod
+    def _with_kg_grounding(
+        tree: PlanTree,
+        node: Optional[PlanNode],
+        session_context: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        from app.services.phage_kg_grounding import ground_decomposition
+
+        parts = [(session_context or {}).get("user_message"), tree.title, tree.description]
+        if node is not None:
+            parts += [node.name, node.instruction]
+        text = "\n".join(str(part) for part in parts if part)
+        return ground_decomposition(text, session_context)
 
     def decompose_node(
         self,
@@ -318,6 +337,7 @@ class PlanDecomposer:
         )
         queue: Deque[QueueItem] = deque([QueueItem(node_id=node_id, relative_depth=0)])
         root_reference = node_id
+        session_context = self._with_kg_grounding(tree, tree.nodes[node_id], session_context)
         result = self._process_queue(
             plan_id,
             tree=tree,
