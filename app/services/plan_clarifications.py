@@ -388,6 +388,23 @@ def normalize_clarification_response(raw: Any) -> dict[str, Any] | None:
     return {"request_id": request_id, "mode": mode, "answers": answers}
 
 
+_TYPED_RECOMMENDED_RE = re.compile(
+    r"^\s*(?:(?:就|请|那就)?(?:按|用|采用|接受)(?:你的|默认的?)?推荐(?:的?(?:选项|方案))?(?:继续|来|吧|执行)*"
+    r"|(?:please\s+)?(?:continue|go|proceed)\s+with\s+(?:the|your)\s+recommend(?:ed|ations?)(?:\s+options?)?"
+    r"|(?:use|accept)\s+(?:the|your)\s+recommend(?:ed|ations?)(?:\s+options?)?)\s*[。.!！]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def typed_recommendation_response(session_id: str | None, message: str | None) -> dict[str, Any] | None:
+    """A typed "按推荐继续" while a card waits means the same as clicking that button."""
+    if not session_id or not _TYPED_RECOMMENDED_RE.match(str(message or "")):
+        return None
+    pending = read_session_metadata(session_id).get(PENDING_KEY)
+    request_id = str(pending.get("request_id") or "").strip() if isinstance(pending, Mapping) else ""
+    return {"request_id": request_id, "mode": "recommended", "answers": []} if request_id else None
+
+
 def clarification_prompt_lines(response: Mapping[str, Any] | None) -> list[str]:
     """Prompt guidance for the turn that carries the user's answer."""
     if not isinstance(response, Mapping):
@@ -411,6 +428,11 @@ def clarification_prompt_lines(response: Mapping[str, Any] | None) -> list[str]:
             "The user chose these explicitly: "
             + ", ".join(explicit)
             + ". They are confirmed requirements: do not list them as assumptions or describe them as defaults."
+        )
+    if mode == "recommended" and not answers:
+        lines.append(
+            "The user accepted all of your recommended options without picking any explicitly. Record each "
+            "recommended option in plan_operation create assumptions=[...], marked as recommended defaults."
         )
     if defaults:
         lines.append(

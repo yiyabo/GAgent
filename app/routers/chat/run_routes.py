@@ -89,9 +89,17 @@ def _consume_plan_clarification(
     from app.services.plan_clarifications import (
         consume_pending_clarification,
         normalize_clarification_response,
+        typed_recommendation_response,
     )
 
     response = normalize_clarification_response((request.context or {}).get("plan_clarification_response"))
+    if response is None:
+        try:
+            response = typed_recommendation_response(session_id, request.message)
+        except Exception:
+            logger.warning("[CHAT][RUN] Failed to read pending clarification", exc_info=True)
+        if response:
+            request.context = {**(request.context or {}), "plan_clarification_response": response}
     if response:
         user_message_metadata["plan_clarification_response"] = response
     try:
