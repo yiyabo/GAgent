@@ -109,7 +109,7 @@ jobs:
             --build-arg APT_MIRROR_HOST= --build-arg PIP_INDEX_URL=https://pypi.org/simple \
             --build-arg APP_UID=1001 --build-arg APP_GID=1001 .
           DOCKER_BUILDKIT=1 docker build -f deploy/Dockerfile.gateway -t gagent-gateway:latest \
-            --build-arg GATEWAY_BASE_IMAGE=nginx:1.31-alpine3.24 .
+            --build-arg GATEWAY_BASE_IMAGE=nginx:1.31-alpine3.24 --build-arg APT_MIRROR_HOST= .
 
       - name: Check SSE delivery through two nginx hops
         run: python3 deploy/verify-sse-chain.py
@@ -128,18 +128,10 @@ jobs:
       - name: Trivy scan app image
         run: trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 gagent-app:latest
 
-      - name: Trivy scan gateway image (report)
-        run: trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0 gagent-gateway:latest
-
-      # The gateway is a third-party nginx base; its 44 HIGHs (measured
-      # 2026-10-11, run 38137518643, 0 CRITICAL) are alpine package lag with
-      # fixes pending an upstream rebuild — not patchable from this repo
-      # (production's base is the byoryn-maintained image and the .8 build is
-      # offline, so an `apk upgrade` layer would break production builds).
-      # Gate CRITICAL-only here; the HIGHs stay visible in the report step so
-      # a change in that picture is still noticed.
-      - name: Trivy scan gateway image (gate CRITICAL)
-        run: trivy image --severity CRITICAL --ignore-unfixed --exit-code 1 gagent-gateway:latest
+      # The gateway image upgrades its base's packages at build time
+      # (deploy/Dockerfile.gateway), so it is gated like the app image.
+      - name: Trivy scan gateway image
+        run: trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 gagent-gateway:latest
 
       - name: Prepare CI .env and host dirs
         run: |
