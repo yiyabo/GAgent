@@ -404,7 +404,10 @@ PARAMETERS_SCHEMA: Dict[str, Any] = {
             "type": "integer",
             "minimum": 1,
             "maximum": 100,
-            "description": "Max items (search_entities default 10, evidence default 5, hierarchy default 25).",
+            "description": (
+                "Max items: search_entities 1-50 (default 10), evidence 1-50 (default 5, page with "
+                "offset), hierarchy 1-100 (default 25)."
+            ),
         },
         "offset": {"type": "integer", "minimum": 0, "description": "evidence: page offset."},
         "node_limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "subgraph: max nodes (default 20)."},

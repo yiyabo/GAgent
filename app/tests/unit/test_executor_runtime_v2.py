@@ -55,6 +55,14 @@ def test_plan_tool_offer_and_execution_sets_agree(monkeypatch):
     assert {'execute_code','load_skill'}.issubset(_execution_tools(['file_operations']))
 
 
+def test_plan_tasks_execute_phage_kg_only_when_enabled(monkeypatch):
+    from app.services.plans.executor_deepthink import _execution_tools
+    monkeypatch.delenv('PHAGE_KG_ENABLED', raising=False)
+    assert 'phage_kg' not in _execution_tools(['file_operations'])
+    monkeypatch.setenv('PHAGE_KG_ENABLED', '1')
+    assert 'phage_kg' in _execution_tools(['file_operations'])
+
+
 def test_planner_outputs_are_precise_declarations_not_inferred_success():
     from app.services.plans.plan_decomposer import PlanDecomposer
     from app.services.plans.output_spec import parse_output_spec
