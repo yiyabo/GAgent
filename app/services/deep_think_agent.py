@@ -300,6 +300,13 @@ _PROCESS_ONLY_PATTERNS = (
     "let me gather",
     "let me collect",
     "let me review",
+    "i am finalizing",
+    "i'm finalizing",
+    "finalizing with",
+    "via submit_final_answer",
+    "via `submit_final_answer`",
+    "正在整理最终",
+    "正在提交最终",
 )
 
 
