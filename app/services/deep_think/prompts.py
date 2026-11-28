@@ -1196,6 +1196,8 @@ def _build_system_prompt(
             "PhageRAG literature knowledge graph (1.3M entities, 3M relations from the LightRAG phage corpus). "
             "Use for entity lookup, relation neighbourhoods, entity evidence and full source papers. "
             "Chain: search_entities -> subgraph -> evidence -> document; cite document_id/file_path. "
+            "If the operation enum lists rag_query, use it for broad literature questions (12-25s, server-side synthesis); "
+            "treat its answer as evidence, verify key claims via evidence/document, and write the reply yourself. "
             "Params: {\"operation\": \"search_entities|subgraph|evidence|document|hierarchy|topology\", "
             "\"query\": \"entity or phrase\", \"identifier\": \"e:... or name\", \"document_id\": \"doc-...\"}."
         ),

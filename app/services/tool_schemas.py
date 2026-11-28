@@ -243,10 +243,15 @@ def _build_registry() -> Dict[str, Dict[str, Any]]:
             gate = phagescope_data_enabled if name == "phagescope_data" else phage_kg_enabled
             if not gate():
                 continue
+            parameters = content["parameters"]
+            if name == "phage_kg":
+                from tool_box.tools_impl.phage_kg import parameters_schema
+
+                parameters = parameters_schema()
             registry[name] = _function_schema(
                 name,
                 content["description"],
-                content["parameters"],
+                parameters,
             )
         elif name == "bio_tools":
             registry[name] = _function_schema(
