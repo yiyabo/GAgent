@@ -1379,8 +1379,10 @@ class _DeepThinkMethods:
 
 
 def _execution_tools(names):
-    from app.services.tool_schemas import code_mode_enabled, phage_kg_enabled
-    names=list(names)+['load_skill']
+    from app.services.tool_schemas import code_executor_enabled, code_mode_enabled, phage_kg_enabled
+    # code_executor is offer-gated: with CODE_EXECUTOR_ENABLED off it has no schema, so the
+    # model could only call it blind (no `task` argument).
+    names=[name for name in names if name!='code_executor' or code_executor_enabled()]+['load_skill']
     if code_mode_enabled():names.append('execute_code')
     if phage_kg_enabled():names.append('phage_kg')
     return list(dict.fromkeys(names))

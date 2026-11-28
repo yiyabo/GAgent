@@ -2270,6 +2270,13 @@ def test_process_only_answer_detection_flags_collection_preface() -> None:
     assert not is_process_only_answer("综合近期文献，更值得优先投入的方向是宿主范围预测与鸡尾酒优化。")
 
 
+def test_process_only_answer_detection_flags_finalizing_narration() -> None:
+    assert is_process_only_answer(
+        "The request is satisfied. I am finalizing with the real result via `submit_final_answer`."
+    )
+    assert is_process_only_answer("任务已完成，正在整理最终结果。")
+
+
 def test_process_only_answer_detection_passes_substantive_answer_with_preface() -> None:
     substantive = (
         "我先说结论：可以分析。120 例（两组各 60）配基线与随访的 eGFR、肌酐、HbA1c，"
