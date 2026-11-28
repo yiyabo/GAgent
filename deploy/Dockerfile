@@ -25,8 +25,8 @@ WORKDIR /app
 # procps: orphan-process cleanup at startup. sqlite3: the ops container reuses
 # this image to VACUUM INTO backups.
 # Mirrors: CN hosts (the .8 reality) cannot reach deb.debian.org / pypi.org.
-# zlib1g: the python:3.12-slim base ships a zlib with HIGH CVEs that have a fix in Debian's
-# update channel (Trivy runs with --ignore-unfixed). Upgrade only this package.
+# zlib1g, libzstd1: the python:3.12-slim base ships packages with HIGH CVEs that have a fix in Debian's
+# update channel (Trivy runs with --ignore-unfixed). Upgrade only these packages.
 # Defaults point at TUNA; override with --build-arg for a networked builder.
 ARG APT_MIRROR_HOST=mirrors.tuna.tsinghua.edu.cn
 RUN if [ -n "${APT_MIRROR_HOST}" ]; then \
@@ -35,7 +35,7 @@ RUN if [ -n "${APT_MIRROR_HOST}" ]; then \
     fi \
     && apt-get update \
     && apt-get install -y --no-install-recommends docker-cli procps sqlite3 \
-    && apt-get install -y --only-upgrade --no-install-recommends zlib1g \
+    && apt-get install -y --only-upgrade --no-install-recommends zlib1g libzstd1 \
     && rm -rf /var/lib/apt/lists/*
 
 ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
