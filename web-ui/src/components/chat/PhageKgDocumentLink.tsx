@@ -7,15 +7,22 @@ export const PHAGE_KG_DOC_HREF_PREFIX = '#phage-kg-doc:';
 
 const DOC_ID = /(^|[^\w/#:-])(doc-[0-9a-f]{32})(?:-chunk-\d+)?(?![\w-])/g;
 
-/** Turn knowledge-graph citations (doc-<32 hex>) outside code into links the renderer opens in place. */
+const CITATION_ONLY_CODE = /^`[\s[\](),;，；、]*doc-[0-9a-f]{32}(?:-chunk-\d+)?(?:[\s[\](),;，；、]+doc-[0-9a-f]{32}(?:-chunk-\d+)?)*[\s[\](),;，；、]*`$/;
+
+const linkify = (text: string): string =>
+  text.replace(DOC_ID, (_m, lead: string, id: string) => `${lead}[${id}](${PHAGE_KG_DOC_HREF_PREFIX}${id})`);
+
+/**
+ * Turn knowledge-graph citations (doc-<32 hex>) into links the renderer opens in place. Code is left alone,
+ * except an inline code span holding nothing but citations (models often write `[doc-...]`).
+ */
 export const linkifyPhageKgCitations = (content: string): string =>
   content
     .split(/(```[\s\S]*?```|`[^`\n]*`|\]\([^)]*\))/)
-    .map((part, index) =>
-      index % 2 === 1
-        ? part
-        : part.replace(DOC_ID, (_m, lead: string, id: string) => `${lead}[${id}](${PHAGE_KG_DOC_HREF_PREFIX}${id})`),
-    )
+    .map((part, index) => {
+      if (index % 2 === 0) return linkify(part);
+      return CITATION_ONLY_CODE.test(part) ? linkify(part.slice(1, -1)) : part;
+    })
     .join('');
 
 export const PhageKgDocumentLink: React.FC<{ documentId: string; children: React.ReactNode }> = ({

@@ -11,8 +11,14 @@ describe('linkifyPhageKgCitations', () => {
     );
   });
 
-  it('leaves code, existing links and malformed ids untouched', () => {
-    const text = `\`${ID}\`\n\`\`\`\n${ID}\n\`\`\`\n[x](/files/${ID}) doc-123 x${ID}`;
+  it('links inline code that holds only citations', () => {
+    const link = `[${ID}](${PHAGE_KG_DOC_HREF_PREFIX}${ID})`;
+    expect(linkifyPhageKgCitations(`See \`${ID}\` and \`[${ID}]\`.`)).toBe(`See ${link} and [${link}].`);
+    expect(linkifyPhageKgCitations(`\`${ID}-chunk-003, ${ID}\``)).toBe(`${link}, ${link}`);
+  });
+
+  it('leaves other code, existing links and malformed ids untouched', () => {
+    const text = `\`id=${ID}\`\n\`\`\`\n${ID}\n\`\`\`\n[x](/files/${ID}) doc-123 x${ID}`;
     expect(linkifyPhageKgCitations(text)).toBe(text);
   });
 });
